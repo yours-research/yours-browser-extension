@@ -1,6 +1,6 @@
 # TinyGPT MV3 Extension — Qwen3.5-4B Comprehensive Benchmark Report
 
-Generated: `2026-11-25T17:16:09.238Z`
+Generated: `2026-11-25T18:00:47.851Z`
 
 ## 1. Environment, Phase 0 Storage & WebGPU Limits
 
@@ -125,8 +125,9 @@ Generated: `2026-11-25T17:16:09.238Z`
 
 ## 9. Track 6 — Cross-GPU 3-Tier Shaders, Tiered KV, Slot-0 / Tab Cache & Tier-1 Tools
 
-- **Auto-Load & Hardware Calibration (`25-track6-crossgpu-ux-tools`):** Auto-preloaded on Side Panel open in **`8.82s`**, auto-detected **`144Hz`** display pacing, initialized Tier 1 (`tier1-f16-subgroups`) with lean startup KV (**`33,280`** of `131,584` tokens), and pinned permanent Slot 0 Base System Prompt (`225` tokens, reset restore in **`2.70 ms`**).
-- **Speculative Tab Prefill & Compositor Smoothness:** Cold `9760 ms` -> Warm GPU Slot Restore **`127 ms`** (**`76.97x` faster**, slot restore **`3.00 ms`**) with immediate foreground preemption and **`140.89 FPS`** (`0.00%` jank).
-- **Dynamic Tiered KV Growth & 34K NIAH:** Live GPU KV reallocation from `33,280` -> **`66,048`** tokens passed 34K NIAH (`VELVET-ORBIT-7492`, `43.2 tok/s`).
-- **Cross-GPU 3-Tier Shader Parity:** Tier 1 (`f16+subgroups`, `71.9 tok/s` balanced), Tier 2 (`f16 shared`, **`95.2 tok/s`**), and Tier 3 (`universal f32`, **`90.1 tok/s`**) all passed WebGPU validation and produced identical output (`"4"`).
+- **Auto-Load & Hardware Calibration (`25-track6-crossgpu-ux-tools`):** Auto-preloaded on Side Panel open in **`8.97s`**, auto-detected **`144Hz`** display pacing, initialized Tier 1 (`tier1-f16-subgroups`) with lean startup KV (**`33,280`** of `131,584` tokens), and pinned permanent Slot 0 Base System Prompt (`184` tokens, reset restore in **`3.20 ms`**).
+- **Speculative Tab Prefill & Compositor Smoothness:** Cold `9879 ms` -> Warm GPU Slot Restore **`125 ms`** (**`79.22x` faster**, slot restore **`2.00 ms`**) with immediate foreground preemption and **`143.99 FPS`** (`0.00%` jank).
+- **Dynamic Tiered KV Growth & 34K NIAH:** Live GPU KV reallocation from `33,280` -> **`66,048`** tokens passed 34K NIAH (`VELVET-ORBIT-7492`, `39.0 tok/s`).
+- **Cross-GPU 3-Tier Shader Parity:** Tier 1 (`f16+subgroups`, `92.6 tok/s` balanced), Tier 2 (`f16 shared`, **`116.3 tok/s`**), and Tier 3 (`universal f32`, **`92.6 tok/s`**) all passed WebGPU validation and produced identical output (`"4"`).
 - **Option A Privacy & Offline Tools:** `js_calc` (`82.1371`), `list_open_tabs` (`2` tabs), and fail-closed `web_search` (`needsPermission=true`) verified with **`0` external network requests** and **`0` errors**.
+- **Track 6.1 4-Mode UI Matrix & 144Hz Pacing Fix (`26-track6-4mode-ui-matrix`):** Mode 1 (`Page: Off / Research: Off`) hit **`78.3 tok/s`** @ `144Hz` & **`144.05 FPS`** (`0.00%` jank, `js_calc` `2871 ms`, `0` HTTPS reqs); Mode 2 (`Page: On / Research: Off`) prefilled `1251t` background page in **`3599 ms`** with warm Q&A TTFT **`151 ms`** (`90.5 tok/s`, `0` VRAM warnings); Mode 3 (`Page: Off / Research: On`) verified live DDG `200` (`733 ms`), clean `</tool_call>` early stop (`858 ms`), and incremental live prefix reuse (`prefixReused=true`, `70.5 tok/s`); Mode 4 (`Page: On / Research: On`) answered attached page directly at **`84.3 tok/s`** with zero wasted tool calls and **`0` errors**.

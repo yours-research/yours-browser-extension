@@ -55,15 +55,34 @@ async function getActiveTabId(): Promise<number | null> {
   if (typeof chrome === 'undefined' || !chrome.tabs?.query) {
     return null;
   }
+  const isNormalWebUrl = (url?: string) =>
+    typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'));
+
   const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (activeTabs[0]?.id !== undefined) {
-    return activeTabs[0].id;
+  const focusedTab = activeTabs[0];
+  if (focusedTab?.id !== undefined && isNormalWebUrl(focusedTab.url)) {
+    return focusedTab.id;
   }
-  const fallbackTabs = await chrome.tabs.query({ active: true });
-  return fallbackTabs[0]?.id ?? null;
+
+  // Side Panel window or standalone extension tab can be focused: pick active normal web tab first
+  const allActiveTabs = await chrome.tabs.query({ active: true });
+  const activeWebTab = allActiveTabs.find((t) => t.id !== undefined && isNormalWebUrl(t.url));
+  if (activeWebTab?.id !== undefined) {
+    return activeWebTab.id;
+  }
+
+  const allTabs = await chrome.tabs.query({});
+  const webTabs = allTabs
+    .filter((t): t is chrome.tabs.Tab & { id: number } => t.id !== undefined && isNormalWebUrl(t.url))
+    .sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0));
+  if (webTabs[0]) {
+    return webTabs[0].id;
+  }
+
+  return focusedTab?.id ?? allActiveTabs[0]?.id ?? null;
 }
 
-export async function extractActiveTabPreview(): Promise<ExtractedPageContent> {
+export async function extractActiveTabPreview(maxChars = 4000): Promise<ExtractedPageContent> {
   const tabId = await getActiveTabId();
   if (tabId === null) {
     return {
@@ -77,7 +96,7 @@ export async function extractActiveTabPreview(): Promise<ExtractedPageContent> {
       error: 'No active browser tab found.',
     };
   }
-  return extractTabContent(tabId, { mode: 'auto', maxChars: 8000 });
+  return extractTabContent(tabId, { mode: 'auto', maxChars });
 }
 
 export interface ExecuteToolOptions {

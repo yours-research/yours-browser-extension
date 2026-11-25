@@ -15,11 +15,13 @@ interface ChatThreadProps {
   includeActivePage?: boolean;
   onToggleActivePage?: () => void;
   activePageTitle?: string | null;
-  backgroundWarm?: boolean;
-  researchGranted?: boolean;
-  onGrantResearch?: () => void;
+  activePageError?: string | null;
+  backgroundPrefillState?: 'idle' | 'prefilling' | 'warm';
+  researchEnabled?: boolean;
+  onToggleResearch?: () => void;
   toolStatus?: ToolStatusUpdate | null;
   permissionPrompt?: { toolName: string; label: string } | null;
+  onGrantResearchPermission?: () => void;
   onDismissPermission?: () => void;
   onComposerTextChange?: (text: string) => void;
 }
@@ -44,15 +46,31 @@ export function ChatThread({
   includeActivePage = true,
   onToggleActivePage,
   activePageTitle,
-  backgroundWarm = false,
-  researchGranted = false,
-  onGrantResearch,
+  activePageError,
+  backgroundPrefillState = 'idle',
+  researchEnabled = false,
+  onToggleResearch,
   toolStatus,
   permissionPrompt,
+  onGrantResearchPermission,
   onDismissPermission,
   onComposerTextChange,
 }: ChatThreadProps) {
   const runtime = useLocalRuntime(adapter);
+
+  const pageLabel = !includeActivePage
+    ? 'Page: Off'
+    : activePageTitle
+      ? `Page: ${activePageTitle.slice(0, 22)}${
+          backgroundPrefillState === 'warm'
+            ? ' (warm)'
+            : backgroundPrefillState === 'prefilling'
+              ? ' (prefilling...)'
+              : ''
+        }`
+      : activePageError
+        ? 'Page: No access'
+        : 'Page: Reading...';
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -63,7 +81,7 @@ export function ChatThread({
               <div className="empty-title">TinyGPT Local Assistant</div>
               <div className="empty-subtitle">
                 {modelReady
-                  ? 'Model & Base Slot 0 are warm in WebGPU VRAM. Ask about this tab, run calculations, or enable Web Research.'
+                  ? 'Model is warm in WebGPU VRAM. Toggle Page / Research below or start chatting.'
                   : 'Auto-loading Qwen3.5-4B into WebGPU... You can start typing right away.'}
               </div>
             </div>
@@ -79,23 +97,25 @@ export function ChatThread({
             {onToggleActivePage && (
               <button
                 type="button"
-                className={includeActivePage ? 'btn btn-active' : 'btn'}
+                className={includeActivePage && !activePageError ? 'btn btn-active' : 'btn'}
                 onClick={onToggleActivePage}
-                title="Speculatively extract and ground responses with active tab content"
+                title={
+                  activePageError
+                    ? `Active tab unreadable without activeTab gesture or Research grant (${activePageError}). Click to toggle off.`
+                    : 'Speculatively extract and ground responses with active tab content'
+                }
               >
-                {includeActivePage
-                  ? `Page: ${activePageTitle ? activePageTitle.slice(0, 22) : 'Auto'}${backgroundWarm ? ' (warm)' : ''}`
-                  : 'Page: Off'}
+                {pageLabel}
               </button>
             )}
-            {onGrantResearch && (
+            {onToggleResearch && (
               <button
                 type="button"
-                className={researchGranted ? 'btn btn-active' : 'btn'}
-                onClick={onGrantResearch}
-                title="Optional HTTPS host permission for live web_search & fetch_and_read_url"
+                className={researchEnabled ? 'btn btn-active' : 'btn'}
+                onClick={onToggleResearch}
+                title="Toggle live web_search and URL research (prompts for https://*/* on first enable)"
               >
-                {researchGranted ? 'Research: On' : 'Research: Off'}
+                {researchEnabled ? 'Research: On' : 'Research: Off'}
               </button>
             )}
             {toolStatus && (
@@ -105,11 +125,15 @@ export function ChatThread({
             )}
           </div>
 
-          {permissionPrompt && onGrantResearch && (
+          {permissionPrompt && (onGrantResearchPermission || onToggleResearch) && (
             <div className="progress-banner" style={{ marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
               <span>{permissionPrompt.label}</span>
               <span style={{ display: 'flex', gap: 4 }}>
-                <button type="button" className="btn btn-primary" onClick={onGrantResearch}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={onGrantResearchPermission ?? onToggleResearch}
+                >
                   Enable Web Research
                 </button>
                 {onDismissPermission && (

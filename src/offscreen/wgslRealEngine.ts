@@ -63,7 +63,7 @@ const MAX_SPEC_DRAFT = 4;
 const MAX_SPEC_TOKENS = 1 + MAX_SPEC_DRAFT;
 const UNIFORM_MAX_SLOTS = 1024;
 const MAX_SNAPSHOT_BYTES = 512 * 1024 * 1024;
-const MAX_GPU_PREFIX_VRAM_BYTES = 256 * 1024 * 1024;
+const MAX_GPU_PREFIX_VRAM_BYTES = 512 * 1024 * 1024;
 const BUNDLED_MODEL_MISSING_MSG =
   'Bundled model files missing in models/qwen35-4b/. Run npm run bundle:model.';
 
@@ -1652,7 +1652,7 @@ export class WgslQwen35Engine {
 
   private getGpuPrefixVramCapBytes(): number {
     if (this.maxBufferSize > 0) {
-      return Math.min(MAX_GPU_PREFIX_VRAM_BYTES, Math.floor(this.maxBufferSize * 0.1));
+      return Math.min(MAX_GPU_PREFIX_VRAM_BYTES, Math.floor(this.maxBufferSize * 0.25));
     }
     return MAX_GPU_PREFIX_VRAM_BYTES;
   }
@@ -1687,9 +1687,28 @@ export class WgslQwen35Engine {
     const totalBytes = dnStateBytes + dnConvBytes + kv0Bytes + kv1Bytes;
 
     const vramCap = this.getGpuPrefixVramCapBytes();
+    if (totalBytes > vramCap) {
+      throw new Error(
+        `GPU prefix slot "${slotId}" (${(totalBytes / (1024 * 1024)).toFixed(1)} MiB) exceeds VRAM cap (${(vramCap / (1024 * 1024)).toFixed(1)} MiB).`,
+      );
+    }
     let usedVram = 0;
     for (const slot of this.gpuPrefixSlots.values()) {
       usedVram += slot.byteSize;
+    }
+    if (usedVram + totalBytes > vramCap) {
+      // Auto-evict oldest volatile slots (keeping 'base-system' pinned) before rejecting new caches
+      for (const candidate of Array.from(this.gpuPrefixSlots.values())) {
+        if (candidate.slotId === 'base-system') {
+          continue;
+        }
+        this.destroyPrefixSlotBuffers(candidate);
+        this.gpuPrefixSlots.delete(candidate.slotId);
+        usedVram -= candidate.byteSize;
+        if (usedVram + totalBytes <= vramCap) {
+          break;
+        }
+      }
     }
     if (usedVram + totalBytes > vramCap) {
       throw new Error(

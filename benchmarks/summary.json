@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-25T17:16:09.238Z",
+  "generatedAt": "2026-11-25T18:00:47.851Z",
   "hardware": {
     "vendor": "nvidia",
     "architecture": "ampere",
@@ -1365,6 +1365,22 @@
       "niahTtftMs": null,
       "niahDecodeTokPerSec": null,
       "byContext": {}
+    },
+    {
+      "runId": "26-track6-4mode-ui-matrix",
+      "track": "track6-4mode-ui-matrix",
+      "label": "Track 6 End-to-End 4-Mode UI Matrix (Page On/Off x Research On/Off + 144Hz Pacing Fix)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 0,
+      "peakBandwidthPct": 0,
+      "speedupVsBaseline1k": null,
+      "speedupVsBaseline64k": null,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {}
     }
   ],
   "track3Rows": [
@@ -2014,34 +2030,34 @@
   "track6Run": {
     "runId": "25-track6-crossgpu-ux-tools",
     "track": "track6-crossgpu-ux-tools",
-    "recordedAt": "2026-11-25T17:15:22.065Z",
+    "recordedAt": "2026-11-25T18:00:07.000Z",
     "label": "Track 6 Cross-GPU 3-Tier Shaders + Tiered KV + Slot0/Tab Cache + Option-A Tools",
     "autoLoad": {
-      "coldLoadMs": 8822.89999999851,
+      "coldLoadMs": 8965.29999999702,
       "computeTier": "tier1-f16-subgroups",
       "displayHz": 144,
       "initialKvCapacity": 33280,
       "maxKvCapacity": 131584,
       "basePromptCached": true,
-      "basePromptTokens": 225,
-      "slot0RestoreMs": 2.6999999955296516
+      "basePromptTokens": 184,
+      "slot0RestoreMs": 3.1999999955296516
     },
     "uiTurnTier1": {
       "text": "4",
       "prefixReused": true,
-      "ttftMs": 143.60000000149012,
-      "decodeTokPerSec": 71.94244605087789
+      "ttftMs": 148,
+      "decodeTokPerSec": 92.59259261814327
     },
     "smoothness": {
-      "avgFps": 140.89,
+      "avgFps": 143.99,
       "p50FrameMs": 6.9,
       "p95FrameMs": 8,
-      "p99FrameMs": 11.6,
-      "maxFrameMs": 11.6,
+      "p99FrameMs": 12,
+      "maxFrameMs": 12,
       "jankPctOver33ms": 0,
       "freezePctOver100ms": 0,
-      "avgInputLatencyMs": 2.2,
-      "frameCount": 44
+      "avgInputLatencyMs": 2.9,
+      "frameCount": 49
     },
     "tools": {
       "jsCalcOk": true,
@@ -2051,10 +2067,10 @@
       "searchNeedsPermission": true
     },
     "backgroundTabPrefill": {
-      "coldTtftMs": 9760.29999999702,
-      "warmTtftMs": 126.79999999701977,
-      "speedupRatio": 76.97,
-      "slotRestoreMs": 3,
+      "coldTtftMs": 9879.20000000298,
+      "warmTtftMs": 124.69999999552965,
+      "speedupRatio": 79.22,
+      "slotRestoreMs": 2,
       "activePrefixSlot": "tab:track6",
       "answer": "SILVER-FALCON-904",
       "preemptOk": true
@@ -2063,26 +2079,26 @@
       "passed": true,
       "initialKvCapacity": 33280,
       "grownKvCapacity": 66048,
-      "prefillTokPerSec": 289.2686437894763,
-      "decodeTokPerSec": 43.17111459892861,
+      "prefillTokPerSec": 285.4734324989708,
+      "decodeTokPerSec": 38.95184135895124,
       "responseText": "VELVET-ORBIT-7492"
     },
     "crossGpuTiers": {
       "tier1": {
         "computeTier": "tier1-f16-subgroups",
-        "decodeTokPerSec": 71.94244605087789,
+        "decodeTokPerSec": 92.59259261814327,
         "answer": "4"
       },
       "tier2": {
         "computeTier": "tier2-f16-shared",
-        "coldLoadMs": 7290.5,
-        "decodeTokPerSec": 95.23809523809523,
+        "coldLoadMs": 8170.39999999851,
+        "decodeTokPerSec": 116.27906974729427,
         "answer": "4"
       },
       "tier3": {
         "computeTier": "tier3-f32-universal",
-        "coldLoadMs": 7161.39999999851,
-        "decodeTokPerSec": 90.09009013846655,
+        "coldLoadMs": 8385.5,
+        "decodeTokPerSec": 92.59259255426656,
         "answer": "4"
       }
     },

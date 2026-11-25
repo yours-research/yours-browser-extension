@@ -7,5 +7,6 @@ dist/
 .bench-profile-track4/
 .bench-profile-track5/
 .bench-profile-track6/
+.bench-profile-track6-matrix/
 .tmp-dl-bench/
 model-bundle/

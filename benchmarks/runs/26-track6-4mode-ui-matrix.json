@@ -1,0 +1,102 @@
+{
+  "runId": "26-track6-4mode-ui-matrix",
+  "track": "track6-4mode-ui-matrix",
+  "recordedAt": "2026-11-25T17:57:14.211Z",
+  "label": "Track 6 End-to-End 4-Mode UI Matrix (Page On/Off x Research On/Off + 144Hz Pacing Fix)",
+  "hardware": {
+    "computeTier": "tier1-f16-subgroups",
+    "displayHz": 144,
+    "autoLoadMs": 9114
+  },
+  "mode1_pageOff_researchOff": {
+    "pageBtn": "Page: Off",
+    "researchBtn": "Research: Off",
+    "generalChat": {
+      "wallMs": 2213,
+      "ttftMs": 476,
+      "prefillTokPerSec": 339,
+      "decodeTokPerSec": 78.3,
+      "activeContextTokens": 250,
+      "prefixReused": false,
+      "activePrefixSlot": null,
+      "permissionPromptShown": false,
+      "text": "WebGPU offloads heavy graphics and compute tasks to the GPU's specialized parallel hardware, bypassing the single-threaded bottleneck of CPU JavaScript. It utilizes a low-level, hardware-accelerated API that directly accesses GPU memory and compute units, eliminating the overhead of the JavaScript engine and the WebAssembly translation layer. This architecture enables massive parallel processing for tasks like 3D rendering and AI inference, which are orders of magnitude slower when executed on a CPU."
+    },
+    "fpsDuringGeneration": {
+      "avgFps": 144.05,
+      "jankPctOver33ms": 0,
+      "freezePctOver100ms": 0,
+      "frameCount": 319
+    },
+    "jsCalcTurn": {
+      "wallMs": 2871,
+      "ttftMs": 157,
+      "prefillTokPerSec": 377,
+      "decodeTokPerSec": 57.7,
+      "activeContextTokens": 382,
+      "prefixReused": true,
+      "activePrefixSlot": "live",
+      "permissionPromptShown": false,
+      "text": "The result of calculating the square root of 144 multiplied by 15 is **180**."
+    },
+    "externalHttpsRequests": 0
+  },
+  "mode2_pageOn_researchOff": {
+    "initUnclickedPageBtn": "Page: No access",
+    "warmPageBtn": "Page: WebGPU Local LLM Guide (warm)",
+    "articleChars": 3797,
+    "articleTokens": 1251,
+    "bgPrefillWallMs": 3599,
+    "pageQaTurn": {
+      "wallMs": 875,
+      "ttftMs": 151,
+      "prefillTokPerSec": 202.1,
+      "decodeTokPerSec": 90.5,
+      "activeContextTokens": 1291,
+      "prefixReused": true,
+      "activePrefixSlot": "tab:b81d8f0f",
+      "permissionPromptShown": false,
+      "text": "QUANTUM-ANCHOR-8821"
+    },
+    "vramCapWarnings": 0
+  },
+  "mode3_pageOff_researchOn": {
+    "ddgLiveMs": 733,
+    "ddgStatus": 200,
+    "step1ToolEmit": {
+      "reason": "stop",
+      "wallMs": 858,
+      "ttftMs": 473,
+      "prefillTokPerSec": 400.1,
+      "decodeTokPerSec": 76.6,
+      "prefixReused": false,
+      "activePrefixSlot": null,
+      "text": "<tool_call>{\"name\":\"web_search\",\"arguments\":{\"query\":\"W3C WebGPU specification status 2024\",\"limit\":5}}</tool_call>"
+    },
+    "step2GroundedAnswer": {
+      "reason": "stop",
+      "wallMs": 3987,
+      "ttftMs": 1101,
+      "prefillTokPerSec": 350.4,
+      "decodeTokPerSec": 70.5,
+      "prefixReused": true,
+      "activePrefixSlot": "live",
+      "text": "The latest W3C WebGPU specification status can be found directly on the official W3C page.\n\n**Status:** **Proposed** (as of late 2023/early 2024).\n\nThe specification is currently in the **Proposed** phase, meaning it has been reviewed and is ready for implementation by browsers and vendors, but it is not yet finalized. The final version is expected to be published in the near future.\n\nYou can view the full specification and voting status here:\n[https://www.w3.org/TR/webgpu/](https://www.w3.org/TR/webgpu/)\n\n**Key Details:**\n*   **Current Phase:** Proposed\n*   **Last Call for Comments:** The W3C typically opens a \"Last Call\" period for the final review before publication.\n*   **Implementation Status:** Major browsers (Chrome, Firefox, Edge, Safari) have implemented significant portions of the spec, though full compliance is still evolving."
+    }
+  },
+  "mode4_pageOn_researchOn": {
+    "directPageQaNoWastedToolCall": {
+      "reason": "stop",
+      "wallMs": 3523,
+      "ttftMs": 3382,
+      "prefillTokPerSec": 387.5,
+      "decodeTokPerSec": 84.3,
+      "prefixReused": false,
+      "activePrefixSlot": null,
+      "text": "QUANTUM-ANCHOR-8821"
+    }
+  },
+  "consoleErrorCount": 0,
+  "offscreenErrorCount": 0,
+  "status": "ok"
+}

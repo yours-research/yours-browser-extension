@@ -44,6 +44,7 @@ function main() {
   const track4Runs = runs.filter((r) => r.track === 'track4-speed');
   const track5Runs = runs.filter((r) => r.track === 'track5-speed');
   const track6Run = runs.find((r) => r.track === 'track6-crossgpu-ux-tools') ?? null;
+  const track6MatrixRun = runs.find((r) => r.track === 'track6-4mode-ui-matrix') ?? null;
 
   const baseLoadMs = baselineRun?.coldLoad?.opfsReloadMs ?? null;
   const base1kDecode = findPoint(baselineRun?.sweep?.points, 1024)?.decodeTokPerSec ?? null;
@@ -744,6 +745,16 @@ function main() {
     );
     lines.push(
       `- **Option A Privacy & Offline Tools:** \`js_calc\` (\`${fmtNum(track6Run.tools?.jsCalcResult, 4)}\`), \`list_open_tabs\` (\`${track6Run.tools?.openTabsCount}\` tabs), and fail-closed \`web_search\` (\`needsPermission=${track6Run.tools?.searchNeedsPermission}\`) verified with **\`${track6Run.externalNetworkRequestCount}\` external network requests** and **\`${track6Run.consoleErrorCount + (track6Run.offscreenErrors?.length ?? 0)}\` errors**.`,
+    );
+  }
+
+  if (track6MatrixRun) {
+    const m1 = track6MatrixRun.mode1_pageOff_researchOff;
+    const m2 = track6MatrixRun.mode2_pageOn_researchOff;
+    const m3 = track6MatrixRun.mode3_pageOff_researchOn;
+    const m4 = track6MatrixRun.mode4_pageOn_researchOn;
+    lines.push(
+      `- **Track 6.1 4-Mode UI Matrix & 144Hz Pacing Fix (\`${track6MatrixRun.runId}\`):** Mode 1 (\`Page: Off / Research: Off\`) hit **\`${fmtNum(m1?.generalChat?.decodeTokPerSec, 1)} tok/s\`** @ \`${track6MatrixRun.hardware?.displayHz}Hz\` & **\`${fmtNum(m1?.fpsDuringGeneration?.avgFps, 2)} FPS\`** (\`${fmtNum(m1?.fpsDuringGeneration?.jankPctOver33ms, 2)}%\` jank, \`js_calc\` \`${m1?.jsCalcTurn?.wallMs} ms\`, \`${m1?.externalHttpsRequests}\` HTTPS reqs); Mode 2 (\`Page: On / Research: Off\`) prefilled \`${m2?.articleTokens}t\` background page in **\`${m2?.bgPrefillWallMs} ms\`** with warm Q&A TTFT **\`${m2?.pageQaTurn?.ttftMs} ms\`** (\`${fmtNum(m2?.pageQaTurn?.decodeTokPerSec, 1)} tok/s\`, \`${m2?.vramCapWarnings}\` VRAM warnings); Mode 3 (\`Page: Off / Research: On\`) verified live DDG \`${m3?.ddgStatus}\` (\`${m3?.ddgLiveMs} ms\`), clean \`</tool_call>\` early stop (\`${m3?.step1ToolEmit?.wallMs} ms\`), and incremental live prefix reuse (\`prefixReused=${m3?.step2GroundedAnswer?.prefixReused}\`, \`${fmtNum(m3?.step2GroundedAnswer?.decodeTokPerSec, 1)} tok/s\`); Mode 4 (\`Page: On / Research: On\`) answered attached page directly at **\`${fmtNum(m4?.directPageQaNoWastedToolCall?.decodeTokPerSec, 1)} tok/s\`** with zero wasted tool calls and **\`${track6MatrixRun.consoleErrorCount + track6MatrixRun.offscreenErrorCount}\` errors**.`,
     );
   }
 

@@ -255,6 +255,7 @@ export class OffscreenEngineClient {
     callbacks: StreamCallbacks,
     config?: Partial<EngineConfig>,
     groundingText?: string,
+    stopOnToolCall?: boolean,
   ): Promise<void> {
     this.activeStreams.set(requestId, callbacks);
     try {
@@ -265,6 +266,7 @@ export class OffscreenEngineClient {
         messages,
         config,
         ...(groundingText ? { groundingText } : {}),
+        ...(stopOnToolCall ? { stopOnToolCall: true } : {}),
       });
     } catch (err) {
       this.activeStreams.delete(requestId);

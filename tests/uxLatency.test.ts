@@ -4,6 +4,7 @@ import {
   BASE_SYSTEM_PROMPT,
   buildActivePageContextMessage,
   buildBaseSystemMessage,
+  buildModeSystemMessage,
   buildToolResultFollowup,
   hashStringFnv1a,
 } from '../src/shared/systemPrompt.ts';
@@ -128,6 +129,28 @@ describe('systemPrompt', () => {
     expect(h1).toMatch(/^[0-9a-f]{8}$/);
     expect(h1).toBe(h2);
     expect(h1).not.toBe(h3);
+  });
+
+  it('builds strict deterministic mode-specific system prompts across all 4 Page x Research modes', () => {
+    const mOffOff = buildModeSystemMessage({ pageEnabled: false, pageAttached: false, researchEnabled: false });
+    expect(mOffOff.content).not.toContain('- web_search');
+    expect(mOffOff.content).not.toContain('- fetch_and_read_url');
+    expect(mOffOff.content).not.toContain('- read_active_page');
+    expect(mOffOff.content).toContain('- js_calc');
+
+    const mOnAttachedOff = buildModeSystemMessage({ pageEnabled: true, pageAttached: true, researchEnabled: false });
+    expect(mOnAttachedOff.content).not.toContain('- read_active_page');
+    expect(mOnAttachedOff.content).not.toContain('- web_search');
+    expect(mOnAttachedOff.content).toContain('already attached below');
+
+    const mOffOn = buildModeSystemMessage({ pageEnabled: false, pageAttached: false, researchEnabled: true });
+    expect(mOffOn.content).toContain('- web_search');
+    expect(mOffOn.content).toContain('- fetch_and_read_url');
+    expect(mOffOn.content).not.toContain('- read_active_page');
+
+    const mOnOn = buildModeSystemMessage({ pageEnabled: true, pageAttached: false, researchEnabled: true });
+    expect(mOnOn.content).toContain('- read_active_page');
+    expect(mOnOn.content).toContain('- web_search');
   });
 });
 

@@ -15,7 +15,7 @@ import {
   type WebGpuProbeInfo,
   type YieldMode,
 } from '../shared/protocol.ts';
-import { buildBaseSystemMessage } from '../shared/systemPrompt.ts';
+import { buildModeSystemMessage } from '../shared/systemPrompt.ts';
 import { buildNeedleInHaystackPrompt, buildSyntheticTokenIds, verifyNeedleAnswer } from './benchmarks.ts';
 import { resolveExtensionAssetUrl } from './gpuPacing.ts';
 import { clearWgslWeightCache } from './onnxWeightLoader.ts';
@@ -87,6 +87,7 @@ export class InferenceEngine {
   private cachedMessages: ChatMessage[] = [];
   private cachedTokenCount = 0;
   private cachedTokenIds: number[] = [];
+  private pendingLiveTokenIds: number[] = [];
   private cachedThinkingMode = false;
   private wgslSnapshot: WgslCpuSnapshot | null = null;
   private wgslSnapshotMeta: {
@@ -104,6 +105,7 @@ export class InferenceEngine {
   private prefixCache: PrefixCacheManager | null = null;
   private displayHz = 60;
   private bgAbortController: AbortController | null = null;
+  private activeBgSlotKey: string | null = null;
   private bgPrefillSeq = 0;
 
   constructor(
@@ -482,6 +484,7 @@ export class InferenceEngine {
         this.cachedMessages = restored.entry.messages.map((m) => ({ ...m }));
         this.cachedTokenCount = restored.seqPos;
         this.cachedTokenIds = [...restored.entry.tokenIds];
+        this.pendingLiveTokenIds = [];
         this.cachedThinkingMode = this.config.enableThinking;
         const wgslMem = this.wgslEngine.getMemoryStats();
         this.updateTelemetry({
@@ -508,6 +511,7 @@ export class InferenceEngine {
     this.cachedMessages = [];
     this.cachedTokenCount = 0;
     this.cachedTokenIds = [];
+    this.pendingLiveTokenIds = [];
     const wgslMem = this.wgslEngine ? this.wgslEngine.getMemoryStats() : null;
     this.updateTelemetry({
       activeContextTokens: 0,
@@ -596,7 +600,11 @@ export class InferenceEngine {
       return;
     }
     try {
-      const baseMsg = buildBaseSystemMessage();
+      const baseMsg = buildModeSystemMessage({
+        pageEnabled: true,
+        pageAttached: false,
+        researchEnabled: false,
+      });
       const baseTokenIds = this.encodePrefixMessages([baseMsg], false);
       if (baseTokenIds.length === 0 || baseTokenIds.length >= this.wgslEngine.maxContextTokens) {
         return;
@@ -611,6 +619,7 @@ export class InferenceEngine {
       await this.prefixCache.saveBasePromptSlot(baseTokenIds, [baseMsg]);
       this.cachedMessages = [baseMsg];
       this.cachedTokenIds = [...baseTokenIds];
+      this.pendingLiveTokenIds = [];
       this.cachedTokenCount = this.wgslEngine.activeSeqPos;
       this.cachedThinkingMode = this.config.enableThinking;
     } catch (err) {
@@ -624,6 +633,14 @@ export class InferenceEngine {
     messages: ChatMessage[],
     options?: { isDraft?: boolean; url?: string; contentHash?: string },
   ): void {
+    // Never let composer typing prefill abort and wipe an in-progress active-tab prefill.
+    if (
+      slotKey.startsWith('draft:') &&
+      this.bgAbortController !== null &&
+      this.activeBgSlotKey?.startsWith('tab:')
+    ) {
+      return;
+    }
     this.abortBackgroundPrefill();
     const mySeq = this.bgPrefillSeq;
     this.taskQueue = this.taskQueue
@@ -633,6 +650,15 @@ export class InferenceEngine {
           this.updateTelemetry({ backgroundPrefillState: 'idle' });
         }
       });
+  }
+
+  private getEvaluatedLiveTokenIds(): number[] {
+    if (!this.wgslEngine) {
+      return [];
+    }
+    return this.pendingLiveTokenIds.length === 0
+      ? this.cachedTokenIds
+      : this.cachedTokenIds.slice(0, this.wgslEngine.activeSeqPos);
   }
 
   private async runBackgroundPrefill(
@@ -658,7 +684,7 @@ export class InferenceEngine {
       return;
     }
 
-    const match = this.prefixCache.findBestMatch(targetTokenIds, this.cachedTokenIds);
+    const match = this.prefixCache.findBestMatch(targetTokenIds, this.getEvaluatedLiveTokenIds());
     if (match.matchedTokens === targetTokenIds.length) {
       if (match.source === 'live') {
         await this.prefixCache.saveTabSlot(slotKey, targetTokenIds, messages, {
@@ -675,6 +701,7 @@ export class InferenceEngine {
 
     const controller = new AbortController();
     this.bgAbortController = controller;
+    this.activeBgSlotKey = slotKey;
     this.updateTelemetry({ backgroundPrefillState: 'prefilling' });
 
     try {
@@ -682,11 +709,13 @@ export class InferenceEngine {
         const restored = await this.prefixCache.restoreSlot(match.slotId);
         this.cachedTokenIds = [...restored.entry.tokenIds];
         this.cachedMessages = restored.entry.messages.map((m) => ({ ...m }));
+        this.pendingLiveTokenIds = [];
         this.cachedTokenCount = restored.seqPos;
       } else if (match.source === 'none') {
         await this.wgslEngine.resetState();
         this.cachedTokenIds = [];
         this.cachedMessages = [];
+        this.pendingLiveTokenIds = [];
         this.cachedTokenCount = 0;
       }
 
@@ -697,9 +726,9 @@ export class InferenceEngine {
       const deltaTokens = targetTokenIds.slice(match.matchedTokens);
       if (deltaTokens.length > 0) {
         await this.wgslEngine.prefill(deltaTokens, {
-          chunkSize: Math.min(32, this.config.chunkSize || 32),
+          chunkSize: Math.min(64, this.config.chunkSize || 64),
           sampling: { temperature: 0, topK: 1, topP: 1 },
-          pacingMode: 'smooth-ui',
+          pacingMode: 'balanced',
           abortSignal: controller.signal,
           yieldFn: async () => {
             if (seq !== this.bgPrefillSeq || controller.signal.aborted) {
@@ -728,6 +757,7 @@ export class InferenceEngine {
       });
       this.cachedTokenIds = [...targetTokenIds];
       this.cachedMessages = messages.map((m) => ({ ...m }));
+      this.pendingLiveTokenIds = [];
       this.cachedTokenCount = this.wgslEngine.activeSeqPos;
       this.cachedThinkingMode = this.config.enableThinking;
       this.refreshCacheTelemetry();
@@ -741,6 +771,7 @@ export class InferenceEngine {
       if (msg === '__BG_ABORTED__' || msg === 'Generation aborted' || controller.signal.aborted) {
         this.cachedTokenIds = [];
         this.cachedMessages = [];
+        this.pendingLiveTokenIds = [];
         this.cachedTokenCount = 0;
         if (this.prefixCache.hasBasePrompt()) {
           await this.prefixCache.resetToBasePrompt().catch(() => {});
@@ -758,6 +789,7 @@ export class InferenceEngine {
     } finally {
       if (this.bgAbortController === controller) {
         this.bgAbortController = null;
+        this.activeBgSlotKey = null;
       }
     }
   }
@@ -802,6 +834,7 @@ export class InferenceEngine {
     this.cachedTokenCount = this.wgslSnapshot.seqPos;
     this.cachedThinkingMode = this.wgslSnapshotMeta.cachedThinkingMode;
     this.cachedTokenIds = [...this.wgslSnapshotMeta.cachedTokenIds];
+    this.pendingLiveTokenIds = [];
     this.refreshCacheTelemetry();
     this.log('info', 'offscreen', `Restored WGSL hybrid state (${this.cachedTokenCount} tokens).`);
   }
@@ -824,10 +857,13 @@ export class InferenceEngine {
     messages: ChatMessage[],
     overrideConfig?: Partial<EngineConfig>,
     groundingText?: string,
+    stopOnToolCall = false,
   ): void {
     this.abortBackgroundPrefill();
     this.taskQueue = this.taskQueue
-      .then(() => this.runGenerate(requestId, messages, overrideConfig, groundingText))
+      .then(() =>
+        this.runGenerate(requestId, messages, overrideConfig, groundingText, stopOnToolCall),
+      )
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         this.callbacks.onGenerationError(requestId, msg);
@@ -988,6 +1024,7 @@ export class InferenceEngine {
     messages: ChatMessage[],
     overrideConfig?: Partial<EngineConfig>,
     groundingText?: string,
+    stopOnToolCall = false,
   ): Promise<void> {
     if (this.abortedRequests.has(requestId)) {
       this.abortedRequests.delete(requestId);
@@ -1027,6 +1064,7 @@ export class InferenceEngine {
       });
 
       let promptTokenIds: number[] | null = null;
+      let prefixTokenIds: number[] = [];
       let reusedPrefix = false;
       let restoredSlotId: string | null = null;
       let lastSlotRestoreMs: number | null = null;
@@ -1034,19 +1072,30 @@ export class InferenceEngine {
 
       const normMessages = this.normalizeMessagesForChatTemplate(messages);
       const normCached = this.normalizeMessagesForChatTemplate(this.cachedMessages);
+      const evaluatedLiveIds = this.getEvaluatedLiveTokenIds();
+      const pendingMatchesCached =
+        this.wgslEngine !== null &&
+        this.cachedTokenIds.length ===
+          this.wgslEngine.activeSeqPos + this.pendingLiveTokenIds.length &&
+        this.pendingLiveTokenIds.length <= 2;
 
       if (
         !this.config.enableThinking &&
         !this.cachedThinkingMode &&
         hasActiveState &&
         normCached.length > 0 &&
-        this.cachedTokenIds.length === this.wgslEngine!.activeSeqPos &&
+        pendingMatchesCached &&
         isMessagePrefix(normCached, normMessages)
       ) {
         const suffixMessages = normMessages.slice(normCached.length);
         const incrementalText = this.buildIncrementalChatMlPrompt(suffixMessages);
         if (incrementalText !== null) {
-          promptTokenIds = this.tokenizer.encode(incrementalText, { add_special_tokens: false });
+          promptTokenIds = [
+            ...this.pendingLiveTokenIds,
+            ...this.tokenizer.encode(incrementalText, { add_special_tokens: false }),
+          ];
+          prefixTokenIds = evaluatedLiveIds;
+          this.pendingLiveTokenIds = [];
           reusedPrefix = true;
           restoredSlotId = 'live';
         }
@@ -1061,11 +1110,13 @@ export class InferenceEngine {
         });
 
         const match = this.prefixCache
-          ? this.prefixCache.findBestMatch(fullTokenIds, this.cachedTokenIds)
+          ? this.prefixCache.findBestMatch(fullTokenIds, evaluatedLiveIds)
           : { source: 'none' as const, slotId: null, matchedTokens: 0 };
 
         if (match.source === 'live' && match.matchedTokens < fullTokenIds.length) {
           promptTokenIds = fullTokenIds.slice(match.matchedTokens);
+          prefixTokenIds = evaluatedLiveIds;
+          this.pendingLiveTokenIds = [];
           reusedPrefix = true;
           restoredSlotId = 'live';
         } else if (
@@ -1076,14 +1127,18 @@ export class InferenceEngine {
           const restored = await this.prefixCache!.restoreSlot(match.slotId);
           this.cachedTokenIds = [...restored.entry.tokenIds];
           this.cachedMessages = restored.entry.messages.map((m) => ({ ...m }));
+          this.pendingLiveTokenIds = [];
           this.cachedTokenCount = restored.seqPos;
           promptTokenIds = fullTokenIds.slice(match.matchedTokens);
+          prefixTokenIds = [...restored.entry.tokenIds];
           reusedPrefix = true;
           restoredSlotId = match.slotId;
           lastSlotRestoreMs = restored.restoreMs;
         } else {
           await this.resetContext(false);
           promptTokenIds = fullTokenIds;
+          prefixTokenIds = [];
+          this.pendingLiveTokenIds = [];
           reusedPrefix = false;
         }
       }
@@ -1118,9 +1173,7 @@ export class InferenceEngine {
       let nextToken = firstToken;
 
       const generatedIds: number[] = [];
-      const sessionTokenIds = reusedPrefix
-        ? [...this.cachedTokenIds, ...promptTokenIds]
-        : [...promptTokenIds];
+      const sessionTokenIds = [...prefixTokenIds, ...promptTokenIds];
       const groundingTokens =
         groundingText && groundingText.trim().length > 0
           ? this.tokenizer.encode(groundingText, { add_special_tokens: false })
@@ -1166,6 +1219,11 @@ export class InferenceEngine {
           const delta = decodedFull.slice(emittedText.length, safeEnd);
           emittedText = decodedFull.slice(0, safeEnd);
           this.callbacks.onTokenDelta(requestId, delta, generatedIds.length);
+        }
+
+        if (stopOnToolCall && emittedText.includes('</tool_call>')) {
+          finishReason = 'stop';
+          return true;
         }
 
         if (generatedIds.length >= this.config.maxNewTokens) {
@@ -1277,9 +1335,18 @@ export class InferenceEngine {
         }
       }
 
-      this.cachedMessages = [...messages, { role: 'assistant', content: emittedText }];
-      this.cachedThinkingMode = this.config.enableThinking;
-      this.cachedTokenIds = sessionTokenIds;
+      const evalSeqPos = this.wgslEngine?.activeSeqPos ?? -1;
+      if (finishReason !== 'abort' && evalSeqPos >= 0 && evalSeqPos <= sessionTokenIds.length) {
+        this.pendingLiveTokenIds = sessionTokenIds.slice(evalSeqPos);
+        this.cachedMessages = [...messages, { role: 'assistant', content: emittedText }];
+        this.cachedThinkingMode = this.config.enableThinking;
+        this.cachedTokenIds = sessionTokenIds;
+      } else {
+        this.pendingLiveTokenIds = [];
+        this.cachedMessages = [];
+        this.cachedThinkingMode = this.config.enableThinking;
+        this.cachedTokenIds = [];
+      }
 
       this.updateTelemetry({ status: 'ready', prefillChunkProgress: null });
       this.callbacks.onGenerationComplete(requestId, finishReason);

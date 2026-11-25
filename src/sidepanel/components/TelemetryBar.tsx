@@ -122,10 +122,10 @@ export function TelemetryBar({
             type="button"
             className="btn"
             onClick={onResetContext}
-            disabled={telemetry.activeContextTokens === 0 || isBusy}
-            title="Clear KV cache & DeltaNet recurrent state"
+            disabled={isBusy}
+            title="Start a new chat and restore GPU Slot 0 base state"
           >
-            Reset KV
+            New Chat
           </button>
           <button
             type="button"

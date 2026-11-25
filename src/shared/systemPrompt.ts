@@ -29,6 +29,64 @@ export interface ActivePageContextInput {
   mode: string;
 }
 
+export interface AssistantModeOptions {
+  pageEnabled: boolean;
+  pageAttached: boolean;
+  researchEnabled: boolean;
+}
+
+/**
+ * Deterministic, mode-specific system prompt that advertises ONLY the tools enabled
+ * by the active Page / Research toggles so the model never wastes a turn calling
+ * disabled web search or re-reading an already-attached active tab.
+ */
+export function buildModeSystemMessage(options: AssistantModeOptions): ChatMessage {
+  const { pageEnabled, pageAttached, researchEnabled } = options;
+
+  const lines: string[] = [
+    'You are TinyGPT, a fast, accurate local browser assistant.',
+    'Answer general knowledge and coding questions directly and concisely without calling tools.',
+    'Never fabricate tool output or cite unseen URLs.',
+  ];
+
+  if (!researchEnabled) {
+    lines.push('Web search is OFF. Do NOT call web_search or fetch_and_read_url.');
+  }
+  if (pageEnabled && pageAttached) {
+    lines.push(
+      'The active browser tab content is already attached below. Answer questions about it directly without calling read_active_page.',
+    );
+  } else if (!pageEnabled) {
+    lines.push('Active page reading is OFF unless the user explicitly mentions another open tab.');
+  }
+
+  const tools: string[] = [];
+  if (pageEnabled && !pageAttached) {
+    tools.push('- read_active_page(mode?: "auto" | "article" | "selection" | "interactive"): Read the current tab.');
+  }
+  if (researchEnabled) {
+    tools.push('- web_search(query: string, limit?: number): Search the web for current events, facts, or URLs.');
+    tools.push('- fetch_and_read_url(urls: string[], query?: string): Fetch and extract readable content from URLs.');
+  }
+  if (pageEnabled) {
+    tools.push('- list_open_tabs(): List open browser tabs with tabId, title, and URL.');
+    tools.push('- read_tab(tabId: number, mode?: string): Read content from a specific open tab.');
+  }
+  tools.push('- js_calc(expression: string): Evaluate exact math, stats, units, or date arithmetic.');
+
+  lines.push('');
+  lines.push('Only invoke a listed tool when genuinely required by emitting one block and stopping:');
+  lines.push('<tool_call>{"name":"tool_name","arguments":{...}}</tool_call>');
+  lines.push('');
+  lines.push('Available tools:');
+  lines.push(...tools);
+
+  return {
+    role: 'system',
+    content: lines.join('\n'),
+  };
+}
+
 export function buildBaseSystemMessage(): ChatMessage {
   return {
     role: 'system',

@@ -409,7 +409,13 @@ function dispatchToLocalHost(genId: number, msg: ClientToEngineMessage): void {
       engine.abortBackgroundPrefill();
       break;
     case 'GENERATE':
-      engine.enqueueGenerate(msg.requestId, msg.messages, msg.config, msg.groundingText);
+      engine.enqueueGenerate(
+        msg.requestId,
+        msg.messages,
+        msg.config,
+        msg.groundingText,
+        msg.stopOnToolCall,
+      );
       break;
     case 'ABORT':
       engine.abort(msg.requestId);

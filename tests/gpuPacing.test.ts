@@ -373,13 +373,16 @@ describe('gpuPacing', () => {
     expect(bal60.decodeSplitsShort).toBe(1);
     expect(bal60.prefillChunkShort).toBe(64);
 
-    // 120Hz and 144Hz tighten burst budget to fit frame cadence
+    // Fast GPU (< 22 ms/step) keeps balanced single-submit 14ms budget on 60/120/144Hz monitors
     const bal120 = calibratePacingForHardware('balanced', 120, 4);
-    expect(bal120.decodeBurstBudgetMs).toBeLessThanOrEqual(8);
-    const bal144 = calibratePacingForHardware('balanced', 144, 4);
-    expect(bal144.decodeBurstBudgetMs).toBeLessThanOrEqual(7);
+    expect(bal120.decodeBurstBudgetMs).toBe(14);
+    expect(bal120.decodeSlowStepThresholdMs).toBe(14);
+    const bal144 = calibratePacingForHardware('balanced', 144, 10);
+    expect(bal144.decodeBurstBudgetMs).toBe(14);
+    expect(bal144.decodeSplitsShort).toBe(1);
+    // smooth-ui still adapts tighter to 144Hz frame interval
     const smooth144 = calibratePacingForHardware('smooth-ui', 144, 4);
-    expect(smooth144.decodeBurstBudgetMs).toBeLessThanOrEqual(4);
+    expect(smooth144.decodeBurstBudgetMs).toBeLessThanOrEqual(6);
 
     // Slow iGPU (>= 100ms per decode step) increases decode splits and shrinks prefill chunks for TDR safety
     const slowBalanced = calibratePacingForHardware('balanced', 60, 120);

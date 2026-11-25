@@ -461,6 +461,15 @@ describe('WgslQwen35Engine fallback, KV growth, and GPU prefix slots', () => {
     expect(engine.deleteGpuPrefixSlot('turn-0')).toBe(false);
     expect(engine.listGpuPrefixSlots()).toEqual([]);
 
+    // Verify auto-eviction of oldest non-base slot when exceeding VRAM cap (no throw)
+    await engine.saveGpuPrefixSlot('base-system');
+    await engine.saveGpuPrefixSlot('tab:first');
+    await engine.saveGpuPrefixSlot('tab:second');
+    await engine.saveGpuPrefixSlot('draft:third');
+    const slotIdsAfterFill = engine.listGpuPrefixSlots().map((s) => s.slotId);
+    expect(slotIdsAfterFill).toContain('base-system');
+    expect(slotIdsAfterFill).toContain('draft:third');
+
     const forcedEngine = new WgslQwen35Engine();
     vi.spyOn(
       forcedEngine as unknown as { verifyRealKernels: () => Promise<void> },

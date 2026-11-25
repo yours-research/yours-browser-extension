@@ -1,6 +1,6 @@
 import type { ChatModelAdapter, ThreadMessage } from '@assistant-ui/react';
 import type { ChatMessage } from '../shared/protocol.ts';
-import { buildBaseSystemMessage } from '../shared/systemPrompt.ts';
+import { buildModeSystemMessage } from '../shared/systemPrompt.ts';
 import {
   detectPendingToolCall,
   formatToolResultMessage,
@@ -17,6 +17,7 @@ import type { OffscreenEngineClient } from './engineClient.ts';
 
 export interface TinyGptChatAdapterOptions {
   enableAgentTools?: boolean;
+  getModeOptions?: () => { pageEnabled: boolean; researchEnabled: boolean };
   getActivePageContext?: () => { contextMsg: ChatMessage; groundingText: string } | null;
   onToolStatus?: (status: ToolStatusUpdate | null) => void;
   onPermissionRequired?: (req: { toolName: string; label: string }) => void;
@@ -65,6 +66,7 @@ function stripToolCallPreview(raw: string): string {
 function createSinglePassEngineBridge(
   client: OffscreenEngineClient,
   baseRequestId: string,
+  stopOnToolCall = false,
 ): AgentEngineBridge {
   let activeReqId = baseRequestId;
   return {
@@ -94,6 +96,7 @@ function createSinglePassEngineBridge(
           },
           undefined,
           options?.groundingText,
+          stopOnToolCall,
         );
       });
     },
@@ -192,8 +195,12 @@ export function createTinyGptChatAdapter(
       options.onBeforeGenerate?.();
       const baseRequestId = makeRequestId();
       const chatMessages = toChatMessages(messages);
-      const activePage = options.getActivePageContext?.() ?? null;
-      const engineBridge = createSinglePassEngineBridge(client, baseRequestId);
+      const modeOpts = options.getModeOptions?.() ?? {
+        pageEnabled: true,
+        researchEnabled: false,
+      };
+      const activePage = modeOpts.pageEnabled ? (options.getActivePageContext?.() ?? null) : null;
+      const engineBridge = createSinglePassEngineBridge(client, baseRequestId, true);
 
       const parserAdapter: ToolParserAdapter = {
         detectPendingToolCall(text: string) {
@@ -216,6 +223,17 @@ export function createTinyGptChatAdapter(
 
       const toolBridge: AgentToolBridge = {
         async executeTool(call, ctx) {
+          if (
+            !modeOpts.researchEnabled &&
+            (call.name === 'web_search' || call.name === 'fetch_and_read_url')
+          ) {
+            return {
+              ok: false,
+              text: 'Web Research is toggled Off. Enable Research to search the web.',
+              needsPermission: true,
+              permissionLabel: 'Enable Web Research',
+            };
+          }
           const res = await client.execTool(call);
           const text = formatToolResultMessage(call.name, res);
           if (res.ok && res.formatted && call.name === 'fetch_and_read_url') {
@@ -244,10 +262,15 @@ export function createTinyGptChatAdapter(
       };
 
       let committedPrefix = '';
+      let hasStreamedVisibleText = false;
 
       void runAgentTurn({
         messages: chatMessages,
-        baseSystemMessage: buildBaseSystemMessage(),
+        baseSystemMessage: buildModeSystemMessage({
+          pageEnabled: modeOpts.pageEnabled,
+          pageAttached: Boolean(activePage),
+          researchEnabled: modeOpts.researchEnabled,
+        }),
         activePageContext: activePage?.contextMsg ?? null,
         initialGroundingText: activePage?.groundingText ?? '',
         engine: engineBridge,
@@ -260,12 +283,20 @@ export function createTinyGptChatAdapter(
             ? `${committedPrefix}${cleanStep ? `\n\n${cleanStep}` : ''}`
             : cleanStep;
           if (combined) {
+            hasStreamedVisibleText = true;
             updates.push(combined);
             wake();
           }
         },
         onToolStatus(status) {
           options.onToolStatus?.(status);
+          if (
+            !hasStreamedVisibleText &&
+            (status.phase === 'pending_call' || status.phase === 'running')
+          ) {
+            updates.push(`${status.label}`);
+            wake();
+          }
         },
         onToolResult(info) {
           if (info.result.ok && committedPrefix) {
@@ -284,8 +315,8 @@ export function createTinyGptChatAdapter(
           if (res.stoppedForPermission && res.permissionRequest) {
             options.onPermissionRequired?.(res.permissionRequest);
             const fallbackMsg = res.finalText
-              ? `${res.finalText}\n\nWeb Research permission is off. Enable Web Research above to run live web searches.`
-              : 'Web Research permission is off. Click "Enable Web Research" above to allow HTTPS search and page fetching.';
+              ? `${res.finalText}\n\nWeb Research is off. Enable Research above to run live web searches.`
+              : 'Web Research is off. Click "Enable Web Research" above to allow HTTPS search and page fetching.';
             updates.push(fallbackMsg);
           } else {
             options.onToolStatus?.(null);

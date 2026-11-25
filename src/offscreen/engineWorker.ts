@@ -132,7 +132,13 @@ function handleClientMessage(msg: ClientToEngineMessage): void {
       activeEngine.abortBackgroundPrefill();
       break;
     case 'GENERATE':
-      activeEngine.enqueueGenerate(msg.requestId, msg.messages, msg.config, msg.groundingText);
+      activeEngine.enqueueGenerate(
+        msg.requestId,
+        msg.messages,
+        msg.config,
+        msg.groundingText,
+        msg.stopOnToolCall,
+      );
       break;
     case 'ABORT':
       activeEngine.abort(msg.requestId);

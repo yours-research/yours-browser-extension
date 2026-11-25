@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { buildActivePageContextMessage, buildBaseSystemMessage } from '../shared/systemPrompt.ts';
+import { buildActivePageContextMessage, buildModeSystemMessage } from '../shared/systemPrompt.ts';
 import type { ExtractedPageContent } from '../tools/types.ts';
 import {
   ActiveTabSpeculativePrefillController,
@@ -21,9 +21,12 @@ const engineClient = new OffscreenEngineClient();
 export function App() {
   const snapshot = useSyncExternalStore(engineClient.subscribe, engineClient.getSnapshot);
   const [labOpen, setLabOpen] = useState(false);
+  const [threadKey, setThreadKey] = useState(0);
   const [includeActivePage, setIncludeActivePage] = useState(true);
   const [researchGranted, setResearchGranted] = useState(false);
+  const [researchEnabled, setResearchEnabled] = useState(false);
   const [activePagePreview, setActivePagePreview] = useState<ExtractedPageContent | null>(null);
+  const [activePageError, setActivePageError] = useState<string | null>(null);
   const [toolStatus, setToolStatus] = useState<ToolStatusUpdate | null>(null);
   const [permissionPrompt, setPermissionPrompt] = useState<{
     toolName: string;
@@ -34,10 +37,17 @@ export function App() {
   const userUnloadedRef = useRef(false);
   const statusRef = useRef(snapshot.telemetry.status);
   statusRef.current = snapshot.telemetry.status;
+  const bgStateRef = useRef(snapshot.telemetry.backgroundPrefillState);
+  bgStateRef.current = snapshot.telemetry.backgroundPrefillState;
   const activePageRef = useRef<ExtractedPageContent | null>(null);
   activePageRef.current = activePagePreview;
+  const activePageErrorRef = useRef<string | null>(null);
+  activePageErrorRef.current = activePageError;
   const includeActivePageRef = useRef(includeActivePage);
   includeActivePageRef.current = includeActivePage;
+  const researchEnabledRef = useRef(researchEnabled);
+  researchEnabledRef.current = researchEnabled;
+  const overriddenPageRef = useRef<ExtractedPageContent | null>(null);
 
   useEffect(() => {
     void engineClient.connect().catch(() => {
@@ -46,7 +56,13 @@ export function App() {
     void measureDisplayRefreshRate().then((hz) => {
       engineClient.setDisplayHz(hz);
     });
-    void engineClient.checkResearchPermission().then(setResearchGranted).catch(() => {});
+    void engineClient
+      .checkResearchPermission()
+      .then((granted) => {
+        setResearchGranted(granted);
+        setResearchEnabled(granted);
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -69,9 +85,16 @@ export function App() {
     () =>
       new TypingSpeculativePrefillController({
         buildMessages: (stableText) => {
-          const msgs = [buildBaseSystemMessage()];
           const page = includeActivePageRef.current ? activePageRef.current : null;
-          if (page && page.content.trim().length > 0) {
+          const hasPage = Boolean(page && page.content.trim().length > 0);
+          const msgs = [
+            buildModeSystemMessage({
+              pageEnabled: includeActivePageRef.current,
+              pageAttached: hasPage,
+              researchEnabled: researchEnabledRef.current,
+            }),
+          ];
+          if (hasPage && page) {
             msgs.push(
               buildActivePageContextMessage({
                 title: page.title,
@@ -84,7 +107,7 @@ export function App() {
           msgs.push({ role: 'user', content: stableText });
           return msgs;
         },
-        isEngineIdle: () => statusRef.current === 'ready',
+        isEngineIdle: () => statusRef.current === 'ready' && bgStateRef.current !== 'prefilling',
         onPrefill: async (slotKey, messages) => {
           engineClient.prefillBackground(slotKey, messages, { isDraft: true });
         },
@@ -99,8 +122,9 @@ export function App() {
     () =>
       new ActiveTabSpeculativePrefillController({
         extractActiveTab: async () => {
-          const page = await engineClient.extractActiveTabPreview();
+          const page = overriddenPageRef.current ?? (await engineClient.extractActiveTabPreview());
           if (page && page.content.trim().length > 0 && !page.error) {
+            setActivePageError(null);
             setActivePagePreview(page);
             return {
               title: page.title,
@@ -109,10 +133,16 @@ export function App() {
               mode: page.mode,
             };
           }
+          setActivePagePreview(null);
+          setActivePageError(page?.error ?? 'Active tab could not be accessed.');
           return null;
         },
         buildMessages: (tab) => [
-          buildBaseSystemMessage(),
+          buildModeSystemMessage({
+            pageEnabled: true,
+            pageAttached: true,
+            researchEnabled: researchEnabledRef.current,
+          }),
           buildActivePageContextMessage({
             title: tab.title,
             url: tab.url,
@@ -139,7 +169,7 @@ export function App() {
     if (includeActivePage && snapshot.telemetry.status === 'ready') {
       tabCtrl.scheduleExtraction();
     }
-  }, [includeActivePage, snapshot.telemetry.status, tabCtrl]);
+  }, [includeActivePage, researchEnabled, snapshot.telemetry.status, tabCtrl]);
 
   useEffect(() => {
     if (typeof chrome === 'undefined' || !chrome.tabs?.onActivated || !chrome.tabs?.onUpdated) {
@@ -147,6 +177,8 @@ export function App() {
     }
     const onActivated = () => {
       if (includeActivePageRef.current) {
+        setActivePagePreview(null);
+        setActivePageError(null);
         tabCtrl.notifyTabChanged(true);
       }
     };
@@ -169,6 +201,10 @@ export function App() {
     () =>
       createTinyGptChatAdapter(engineClient, {
         enableAgentTools: true,
+        getModeOptions: () => ({
+          pageEnabled: includeActivePageRef.current,
+          researchEnabled: researchEnabledRef.current,
+        }),
         getActivePageContext: () => {
           const page = includeActivePageRef.current ? activePageRef.current : null;
           if (!page || !page.content.trim()) {
@@ -197,11 +233,82 @@ export function App() {
   const modelReady =
     snapshot.telemetry.status === 'ready' || snapshot.telemetry.status === 'generating';
 
-  const handleGrantResearch = async () => {
-    const granted = await engineClient.requestResearchPermission();
+  const handleGrantResearchPermission = async () => {
+    const granted = researchGranted ? true : await engineClient.requestResearchPermission();
     setResearchGranted(granted);
     if (granted) {
+      setResearchEnabled(true);
       setPermissionPrompt(null);
+      if (includeActivePageRef.current) {
+        tabCtrl.notifyTabChanged(true);
+      }
+    }
+  };
+
+  const handleToggleResearch = async () => {
+    if (researchEnabled) {
+      setResearchEnabled(false);
+      setPermissionPrompt(null);
+      return;
+    }
+    if (researchGranted) {
+      setResearchEnabled(true);
+      setPermissionPrompt(null);
+      if (includeActivePageRef.current) {
+        tabCtrl.notifyTabChanged(true);
+      }
+      return;
+    }
+    await handleGrantResearchPermission();
+  };
+
+  useEffect(() => {
+    (
+      window as unknown as {
+        __TINYGPT_UI__?: {
+          getState: () => {
+            includeActivePage: boolean;
+            researchEnabled: boolean;
+            researchGranted: boolean;
+            activePageTitle: string | null;
+            activePageError: string | null;
+            backgroundPrefillState: string;
+          };
+          setSimulatedActivePage: (page: ExtractedPageContent | null) => void;
+        };
+      }
+    ).__TINYGPT_UI__ = {
+      getState: () => ({
+        includeActivePage: includeActivePageRef.current,
+        researchEnabled: researchEnabledRef.current,
+        researchGranted,
+        activePageTitle: activePageRef.current?.title ?? null,
+        activePageError: activePageErrorRef.current,
+        backgroundPrefillState: bgStateRef.current,
+      }),
+      setSimulatedActivePage: (page: ExtractedPageContent | null) => {
+        overriddenPageRef.current = page;
+        if (page) {
+          setActivePageError(null);
+          setActivePagePreview(page);
+          tabCtrl.notifyTabChanged(true);
+        } else {
+          setActivePagePreview(null);
+          tabCtrl.notifyTabChanged(false);
+        }
+      },
+    };
+  }, [researchGranted, tabCtrl]);
+
+  const handleNewChat = () => {
+    typingCtrl.cancelForSubmit();
+    tabCtrl.cancelForSubmit();
+    setToolStatus(null);
+    setPermissionPrompt(null);
+    setThreadKey((k) => k + 1);
+    engineClient.resetContext(snapshot.telemetry.basePromptCached);
+    if (includeActivePageRef.current && statusRef.current === 'ready') {
+      tabCtrl.scheduleExtraction();
     }
   };
 
@@ -222,7 +329,7 @@ export function App() {
           tabCtrl.cancelForSubmit();
           void engineClient.send({ type: 'UNLOAD_MODEL' });
         }}
-        onResetContext={() => engineClient.resetContext(snapshot.telemetry.basePromptCached)}
+        onResetContext={handleNewChat}
       />
 
       {labOpen && (
@@ -251,7 +358,7 @@ export function App() {
           onClearModelCache={() => void engineClient.send({ type: 'CLEAR_MODEL_CACHE' })}
           onSnapshotContext={() => void engineClient.send({ type: 'SNAPSHOT_CONTEXT' })}
           onRestoreContext={() => void engineClient.send({ type: 'RESTORE_CONTEXT' })}
-          onResetContext={() => engineClient.resetContext(snapshot.telemetry.basePromptCached)}
+          onResetContext={handleNewChat}
           onRunBenchmarkSuite={(contextLengths, decodeTokens) =>
             void engineClient.send({
               type: 'RUN_BENCHMARK_SUITE',
@@ -271,6 +378,7 @@ export function App() {
 
       <main className="chat-main">
         <ChatThread
+          key={threadKey}
           adapter={adapter}
           modelReady={modelReady}
           includeActivePage={includeActivePage}
@@ -279,6 +387,8 @@ export function App() {
               const next = !prev;
               if (!next) {
                 tabCtrl.cancelForSubmit();
+                setActivePagePreview(null);
+                setActivePageError(null);
               } else {
                 tabCtrl.scheduleExtraction();
               }
@@ -286,11 +396,13 @@ export function App() {
             })
           }
           activePageTitle={activePagePreview?.title ?? null}
-          backgroundWarm={snapshot.telemetry.backgroundPrefillState === 'warm'}
-          researchGranted={researchGranted}
-          onGrantResearch={() => void handleGrantResearch()}
+          activePageError={activePageError}
+          backgroundPrefillState={snapshot.telemetry.backgroundPrefillState}
+          researchEnabled={researchEnabled}
+          onToggleResearch={() => void handleToggleResearch()}
           toolStatus={toolStatus}
           permissionPrompt={permissionPrompt}
+          onGrantResearchPermission={() => void handleGrantResearchPermission()}
           onDismissPermission={() => setPermissionPrompt(null)}
           onComposerTextChange={(txt) => typingCtrl.onTextChanged(txt)}
         />

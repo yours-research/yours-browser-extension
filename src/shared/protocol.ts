@@ -461,6 +461,7 @@ export type ClientToEngineMessage =
       messages: ChatMessage[];
       config?: Partial<EngineConfig>;
       groundingText?: string;
+      stopOnToolCall?: boolean;
     }
   | { type: 'ABORT'; requestId: string }
   | {
