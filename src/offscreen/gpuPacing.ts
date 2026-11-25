@@ -42,8 +42,8 @@ const GPU_PACING_POLICIES: Record<GpuPacingMode, GpuPacingPolicy> = {
   },
   balanced: {
     mode: 'balanced',
-    prefillChunkShort: 32,
-    prefillChunkLong: 16,
+    prefillChunkShort: 64,
+    prefillChunkLong: 64,
     prefillLongThreshold: 16384,
     prefillBurstBudgetMs: 8,
     prefillBreatherMs: 4,
@@ -59,8 +59,8 @@ const GPU_PACING_POLICIES: Record<GpuPacingMode, GpuPacingPolicy> = {
   },
   'smooth-ui': {
     mode: 'smooth-ui',
-    prefillChunkShort: 16,
-    prefillChunkLong: 16,
+    prefillChunkShort: 64,
+    prefillChunkLong: 32,
     prefillLongThreshold: 8192,
     prefillBurstBudgetMs: 6,
     prefillBreatherMs: 8,

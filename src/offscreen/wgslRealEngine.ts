@@ -39,7 +39,7 @@ import {
 const GQA_NUM_SPLITS = 32;
 const PREFILL_NUM_SPLITS = 16;
 const PREFILL_MAX_CHUNK = 64;
-const UNIFORM_MAX_SLOTS = 512;
+const UNIFORM_MAX_SLOTS = 1024;
 const MAX_SNAPSHOT_BYTES = 512 * 1024 * 1024;
 const BUNDLED_MODEL_MISSING_MSG =
   'Bundled model files missing in models/qwen35-4b/. Run npm run bundle:model.';
@@ -113,6 +113,8 @@ export class WgslQwen35Engine {
   private gemmPipe!: unknown;
   private convPipe!: unknown;
   private gdnRecPipe!: unknown;
+  private gdnChunkPrepPipe!: unknown;
+  private gdnChunkApplyPipe!: unknown;
   private qkRopePipe!: unknown;
   private gqaSplitPipe!: unknown;
   private gqaReducePipe!: unknown;
@@ -147,6 +149,8 @@ export class WgslQwen35Engine {
   private pBgW1AttnToHidden!: unknown;
   private pBgConv!: unknown;
   private pBgGdnRec!: unknown;
+  private pBgGdnChunkPrep!: unknown;
+  private pBgGdnChunkApply!: unknown;
   private pBgQkRope!: unknown;
   private pBgGqaReduce!: unknown;
   private pBgLmHead!: unknown;
@@ -155,8 +159,6 @@ export class WgslQwen35Engine {
 
   private decodeSteps: DispatchStep[] = [];
   private decodeLayerEndStepIndices: number[] = [];
-  private decodeRopePosByteOffsets: number[] = [];
-  private decodeGqaPosByteOffsets: number[] = [];
   private lastDecodeGpuMs = 0;
   private layerOffsets: Array<{
     isFullAttn: boolean;
@@ -373,6 +375,26 @@ export class WgslQwen35Engine {
         { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true } },
         { binding: 1, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 2, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+        { binding: 3, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+      ],
+    });
+    const gqaSplitBgl = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true } },
+        { binding: 1, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+        { binding: 3, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+        { binding: 4, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+      ],
+    });
+    const gdnApplyBgl = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true } },
+        { binding: 1, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 3, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 4, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+        { binding: 5, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
       ],
     });
     const staticBgl = device.createBindGroupLayout({
@@ -395,7 +417,9 @@ export class WgslQwen35Engine {
     const dyn4Layout = device.createPipelineLayout({ bindGroupLayouts: [dynStorage4Bgl] });
     const dynRwLayout = device.createPipelineLayout({ bindGroupLayouts: [dynRwStorageBgl] });
     const gdnLayout = device.createPipelineLayout({ bindGroupLayouts: [gdnRecBgl] });
+    const gdnApplyLayout = device.createPipelineLayout({ bindGroupLayouts: [gdnApplyBgl] });
     const qkRopeLayout = device.createPipelineLayout({ bindGroupLayouts: [qkRopeBgl] });
+    const gqaSplitLayout = device.createPipelineLayout({ bindGroupLayouts: [gqaSplitBgl] });
 
     [
       this.embedPipe,
@@ -405,6 +429,8 @@ export class WgslQwen35Engine {
       this.gemmPipe,
       this.convPipe,
       this.gdnRecPipe,
+      this.gdnChunkPrepPipe,
+      this.gdnChunkApplyPipe,
       this.qkRopePipe,
       this.gqaSplitPipe,
       this.gqaReducePipe,
@@ -419,12 +445,14 @@ export class WgslQwen35Engine {
       createValidatedPipeline(device, 'real-q4-gemm-f16', getWgslShaderSource(wasm, 13), dyn4Layout),
       createValidatedPipeline(device, 'real-gdn-conv1d', getWgslShaderSource(wasm, 14), dynRwLayout),
       createValidatedPipeline(device, 'real-gdn-recurrent', getWgslShaderSource(wasm, 15), gdnLayout),
+      createValidatedPipeline(device, 'real-gdn-chunk-prep', getWgslShaderSource(wasm, 19), dyn4Layout),
+      createValidatedPipeline(device, 'real-gdn-chunk-apply', getWgslShaderSource(wasm, 20), gdnApplyLayout),
       createValidatedPipeline(device, 'real-qk-norm-rope', getWgslShaderSource(wasm, 16), qkRopeLayout),
       createValidatedPipeline(
         device,
         `real-gqa-${this.kvMode}-split`,
         getWgslShaderSource(wasm, this.kvMode === 'int8' ? 5 : 4),
-        dynRwLayout,
+        gqaSplitLayout,
       ),
       createValidatedPipeline(device, 'real-gqa-reduce', getWgslShaderSource(wasm, 9), dyn4Layout),
       createValidatedPipeline(
@@ -450,7 +478,7 @@ export class WgslQwen35Engine {
     const pipelineCompileMs = performance.now() - compileStart;
 
     // Verify new real-model compute kernels against CPU reference before running user prompts
-    await this.verifyRealKernels(device, dynStorage4Bgl, gdnRecBgl, qkRopeBgl, dynRwStorageBgl);
+    await this.verifyRealKernels(device, dynStorage4Bgl, gdnRecBgl, gdnApplyBgl, qkRopeBgl, dynRwStorageBgl);
 
     // Allocate hybrid state buffers
     this.dnSingleBytes = 32 * 128 * 128 * 4;
@@ -573,8 +601,26 @@ export class WgslQwen35Engine {
     this.bgLmHead = makeDyn4(this.decodeUniformBuf, this.weightSlab2, this.normBuf, this.logitsBuf);
     this.bgGqaReduce = makeDyn4(this.decodeUniformBuf, this.workBuf, this.gqaSplitBuf, this.attnOutBuf);
     this.bgConv = makeDynRw(this.decodeUniformBuf, this.auxBuf, this.dnConvBuf, this.workBuf);
-    this.bgGqaSplit0 = makeDynRw(this.decodeUniformBuf, this.workBuf, this.kvSlab0, this.gqaSplitBuf);
-    this.bgGqaSplit1 = makeDynRw(this.decodeUniformBuf, this.workBuf, this.kvSlab1, this.gqaSplitBuf);
+    this.bgGqaSplit0 = device.createBindGroup({
+      layout: gqaSplitBgl,
+      entries: [
+        { binding: 0, resource: { buffer: this.decodeUniformBuf, size: 32 } },
+        { binding: 1, resource: { buffer: this.workBuf } },
+        { binding: 2, resource: { buffer: this.kvSlab0 } },
+        { binding: 3, resource: { buffer: this.gqaSplitBuf } },
+        { binding: 4, resource: { buffer: this.tokenIdsBuf } },
+      ],
+    });
+    this.bgGqaSplit1 = device.createBindGroup({
+      layout: gqaSplitBgl,
+      entries: [
+        { binding: 0, resource: { buffer: this.decodeUniformBuf, size: 32 } },
+        { binding: 1, resource: { buffer: this.workBuf } },
+        { binding: 2, resource: { buffer: this.kvSlab1 } },
+        { binding: 3, resource: { buffer: this.gqaSplitBuf } },
+        { binding: 4, resource: { buffer: this.tokenIdsBuf } },
+      ],
+    });
     this.bgGdnRec = device.createBindGroup({
       layout: gdnRecBgl,
       entries: [
@@ -591,6 +637,7 @@ export class WgslQwen35Engine {
         { binding: 0, resource: { buffer: this.decodeUniformBuf, size: 32 } },
         { binding: 1, resource: { buffer: this.auxBuf } },
         { binding: 2, resource: { buffer: this.workBuf } },
+        { binding: 3, resource: { buffer: this.tokenIdsBuf } },
       ],
     });
 
@@ -617,12 +664,25 @@ export class WgslQwen35Engine {
         { binding: 4, resource: { buffer: this.attnOutBuf } },
       ],
     });
+    this.pBgGdnChunkPrep = makeDyn4(this.prefillUniformBuf, this.auxBuf, this.workBuf, this.gqaSplitBuf);
+    this.pBgGdnChunkApply = device.createBindGroup({
+      layout: gdnApplyBgl,
+      entries: [
+        { binding: 0, resource: { buffer: this.prefillUniformBuf, size: 32 } },
+        { binding: 1, resource: { buffer: this.auxBuf } },
+        { binding: 2, resource: { buffer: this.workBuf } },
+        { binding: 3, resource: { buffer: this.gqaSplitBuf } },
+        { binding: 4, resource: { buffer: this.dnStateBuf } },
+        { binding: 5, resource: { buffer: this.attnOutBuf } },
+      ],
+    });
     this.pBgQkRope = device.createBindGroup({
       layout: qkRopeBgl,
       entries: [
         { binding: 0, resource: { buffer: this.prefillUniformBuf, size: 32 } },
         { binding: 1, resource: { buffer: this.auxBuf } },
         { binding: 2, resource: { buffer: this.workBuf } },
+        { binding: 3, resource: { buffer: this.tokenIdsBuf } },
       ],
     });
 
@@ -717,8 +777,6 @@ export class WgslQwen35Engine {
 
     this.decodeSteps = [];
     this.decodeLayerEndStepIndices = [];
-    this.decodeRopePosByteOffsets = [];
-    this.decodeGqaPosByteOffsets = [];
     let nextSlot = 0;
 
     const push = (
@@ -740,7 +798,7 @@ export class WgslQwen35Engine {
       return byteOff;
     };
 
-    const gemvWx = (rows: number) => Math.ceil(rows / 4);
+    const gemvWx = (rows: number) => Math.ceil(rows / 16);
 
     // 0. Embedding lookup for single token
     push(this.embedPipe, this.bgEmbed, [1, QWEN35_HIDDEN, 0, 0, 0, 0, 0, 0], 1, 80);
@@ -774,26 +832,24 @@ export class WgslQwen35Engine {
         push(this.gemvPipe, bgNormToWork, [1024, QWEN35_HIDDEN, wK, 0, 8192, 0, 0, 0], gemvWx(1024));
         push(this.gemvPipe, bgNormToWork, [1024, QWEN35_HIDDEN, wV, 0, 9216, 0, 0, 0], gemvWx(1024));
 
-        const ropeSlot = push(
+        push(
           this.qkRopePipe,
           this.bgQkRope,
-          [1, 0, 0, 8192, la.qNormOff, la.kNormOff, this.auxLayout.invFreqOff, 0],
+          [1, 0xffffffff, 0, 8192, la.qNormOff, la.kNormOff, this.auxLayout.invFreqOff, 0],
           20,
           1,
         );
-        this.decodeRopePosByteOffsets.push(ropeSlot);
 
         const inKv0 = lo.faIdx < 4;
         const localKv = inKv0 ? lo.faIdx : lo.faIdx - 4;
         const kvBaseU32 = localKv * (this.kvSingleBytes / 4);
-        const gqaSlot = push(
+        push(
           this.gqaSplitPipe,
           inKv0 ? this.bgGqaSplit0 : this.bgGqaSplit1,
-          [kvBaseU32, this.maxSeqCapacity, 0, 0, 8192, 9216, GQA_NUM_SPLITS, 512],
+          [kvBaseU32, this.maxSeqCapacity, 0xffffffff, 0, 8192, 9216, GQA_NUM_SPLITS, 512],
           16,
           GQA_NUM_SPLITS,
         );
-        this.decodeGqaPosByteOffsets.push(gqaSlot);
 
         push(this.gqaReducePipe, this.bgGqaReduce, [GQA_NUM_SPLITS, 256, 0, 512, 0, 0, 0, 0], 16);
         push(this.gemvPipe, bgAttnToHidden, [QWEN35_HIDDEN, 4096, wO, 0, 0, 1, 0, 0], gemvWx(QWEN35_HIDDEN));
@@ -970,7 +1026,7 @@ export class WgslQwen35Engine {
       steps.push({ pipeline, bindGroup, uniformByteOffset: byteOff, wx, wy, wz });
     };
 
-    const mTiles = Math.ceil(M / 32);
+    const mTiles = Math.ceil(M / 64);
     const prefillSplits = startPos + M <= 512 ? 1 : startPos + M <= 4096 ? 4 : PREFILL_NUM_SPLITS;
 
     push(this.embedPipe, this.pBgEmbed, [M, QWEN35_HIDDEN, 0, 0, 0, 0, 0, 0], M, 80);
@@ -985,23 +1041,44 @@ export class WgslQwen35Engine {
 
       if (!lo.isFullAttn) {
         const [wQkv, wZ, wAb, wOut, wGate, wUp, wDown] = lo.w;
-        push(this.gemmPipe, bgNormToWork, [M, 8192, QWEN35_HIDDEN, wQkv, 0, 0, 0, 0], Math.ceil(8192 / 32), mTiles);
-        push(this.gemmPipe, bgNormToWork, [M, 4096, QWEN35_HIDDEN, wZ, 0, M * 8192, 0, 0], Math.ceil(4096 / 32), mTiles);
-        push(this.gemmPipe, bgNormToWork, [M, 64, QWEN35_HIDDEN, wAb, 0, M * 12288, 0, 0], Math.ceil(64 / 32), mTiles);
+        push(this.gemmPipe, bgNormToWork, [M, 8192, QWEN35_HIDDEN, wQkv, 0, 0, 0, 0], Math.ceil(8192 / 64), mTiles);
+        push(this.gemmPipe, bgNormToWork, [M, 4096, QWEN35_HIDDEN, wZ, 0, M * 8192, 0, 0], Math.ceil(4096 / 64), mTiles);
+        push(this.gemmPipe, bgNormToWork, [M, 64, QWEN35_HIDDEN, wAb, 0, M * 12288, 0, 0], Math.ceil(64 / 64), mTiles);
         push(this.convPipe, this.pBgConv, [M, la.convWOff, lo.dnIdx * 24576, 0, 0, 0, 0, 0], 64);
-        push(this.gdnRecPipe, this.pBgGdnRec, [M, lo.dnIdx * 524288, la.dnAuxOff, 0, M * 8192, M * 12288, 0, 0], 32);
-        push(this.gemmPipe, bgAttnToHidden, [M, QWEN35_HIDDEN, 4096, wOut, 0, 0, 1, 0], Math.ceil(QWEN35_HIDDEN / 32), mTiles);
+        if (M === 1) {
+          push(this.gdnRecPipe, this.pBgGdnRec, [1, lo.dnIdx * 524288, la.dnAuxOff, 0, M * 8192, M * 12288, 0, 0], 32);
+        } else {
+          for (let tokStart = 0; tokStart < M; tokStart += 32) {
+            const C = Math.min(32, M - tokStart);
+            push(this.gdnChunkPrepPipe, this.pBgGdnChunkPrep, [C, tokStart, la.dnAuxOff, 0, M * 12288, 0, 0, 0], 32);
+            push(
+              this.gdnChunkApplyPipe,
+              this.pBgGdnChunkApply,
+              [0, C, tokStart, lo.dnIdx * 524288, la.dnAuxOff, M * 8192, 0, 0],
+              32,
+              8,
+            );
+          }
+          push(
+            this.gdnChunkApplyPipe,
+            this.pBgGdnChunkApply,
+            [1, M, 0, lo.dnIdx * 524288, la.dnAuxOff, M * 8192, 0, 0],
+            32,
+            M,
+          );
+        }
+        push(this.gemmPipe, bgAttnToHidden, [M, QWEN35_HIDDEN, 4096, wOut, 0, 0, 1, 0], Math.ceil(QWEN35_HIDDEN / 64), mTiles);
 
         push(this.rmsNormPipe, this.pBgRmsNorm, [M, QWEN35_HIDDEN, la.postNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
-        push(this.gemmPipe, bgNormToWork, [M, QWEN35_INTERMEDIATE, QWEN35_HIDDEN, wGate, 0, 0, 0, 0], Math.ceil(QWEN35_INTERMEDIATE / 32), mTiles);
-        push(this.gemmPipe, bgNormToWork, [M, QWEN35_INTERMEDIATE, QWEN35_HIDDEN, wUp, 0, M * QWEN35_INTERMEDIATE, 0, 0], Math.ceil(QWEN35_INTERMEDIATE / 32), mTiles);
+        push(this.gemmPipe, bgNormToWork, [M, QWEN35_INTERMEDIATE, QWEN35_HIDDEN, wGate, 0, 0, 0, 0], Math.ceil(QWEN35_INTERMEDIATE / 64), mTiles);
+        push(this.gemmPipe, bgNormToWork, [M, QWEN35_INTERMEDIATE, QWEN35_HIDDEN, wUp, 0, M * QWEN35_INTERMEDIATE, 0, 0], Math.ceil(QWEN35_INTERMEDIATE / 64), mTiles);
         push(this.swigluPipe, this.pBgSwiGlu, [M * QWEN35_INTERMEDIATE, 0, M * QWEN35_INTERMEDIATE, 0, 0, 0, 0, 0], Math.ceil((M * QWEN35_INTERMEDIATE) / 256));
-        push(this.gemmPipe, bgAttnToHidden, [M, QWEN35_HIDDEN, QWEN35_INTERMEDIATE, wDown, 0, 0, 1, 0], Math.ceil(QWEN35_HIDDEN / 32), mTiles);
+        push(this.gemmPipe, bgAttnToHidden, [M, QWEN35_HIDDEN, QWEN35_INTERMEDIATE, wDown, 0, 0, 1, 0], Math.ceil(QWEN35_HIDDEN / 64), mTiles);
       } else {
         const [wQg, wK, wV, wO, wGate, wUp, wDown] = lo.w;
-        push(this.gemmPipe, bgNormToWork, [M, 8192, QWEN35_HIDDEN, wQg, 0, 0, 0, 0], Math.ceil(8192 / 32), mTiles);
-        push(this.gemmPipe, bgNormToWork, [M, 1024, QWEN35_HIDDEN, wK, 0, M * 8192, 0, 0], Math.ceil(1024 / 32), mTiles);
-        push(this.gemmPipe, bgNormToWork, [M, 1024, QWEN35_HIDDEN, wV, 0, M * 9216, 0, 0], Math.ceil(1024 / 32), mTiles);
+        push(this.gemmPipe, bgNormToWork, [M, 8192, QWEN35_HIDDEN, wQg, 0, 0, 0, 0], Math.ceil(8192 / 64), mTiles);
+        push(this.gemmPipe, bgNormToWork, [M, 1024, QWEN35_HIDDEN, wK, 0, M * 8192, 0, 0], Math.ceil(1024 / 64), mTiles);
+        push(this.gemmPipe, bgNormToWork, [M, 1024, QWEN35_HIDDEN, wV, 0, M * 9216, 0, 0], Math.ceil(1024 / 64), mTiles);
         push(
           this.qkRopePipe,
           this.pBgQkRope,
@@ -1017,13 +1094,13 @@ export class WgslQwen35Engine {
         push(this.gqaPrefillPipe, bgGqaPrefill, [0, kvBaseU32, this.maxSeqCapacity, startPos, M, M * 8192, M * 9216, 0], 4, M);
         push(this.gqaPrefillPipe, bgGqaPrefill, [1, kvBaseU32, this.maxSeqCapacity, startPos, M, 0, 0, prefillSplits], 4, Math.ceil(M / 2), prefillSplits);
         push(this.gqaReducePipe, this.pBgGqaReduce, [prefillSplits, 256, 0, 512, 0, 0, 0, 0], 16, M);
-        push(this.gemmPipe, bgAttnToHidden, [M, QWEN35_HIDDEN, 4096, wO, 0, 0, 1, 0], Math.ceil(QWEN35_HIDDEN / 32), mTiles);
+        push(this.gemmPipe, bgAttnToHidden, [M, QWEN35_HIDDEN, 4096, wO, 0, 0, 1, 0], Math.ceil(QWEN35_HIDDEN / 64), mTiles);
 
         push(this.rmsNormPipe, this.pBgRmsNorm, [M, QWEN35_HIDDEN, la.postNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
-        push(this.gemmPipe, bgNormToWork, [M, QWEN35_INTERMEDIATE, QWEN35_HIDDEN, wGate, 0, 0, 0, 0], Math.ceil(QWEN35_INTERMEDIATE / 32), mTiles);
-        push(this.gemmPipe, bgNormToWork, [M, QWEN35_INTERMEDIATE, QWEN35_HIDDEN, wUp, 0, M * QWEN35_INTERMEDIATE, 0, 0], Math.ceil(QWEN35_INTERMEDIATE / 32), mTiles);
+        push(this.gemmPipe, bgNormToWork, [M, QWEN35_INTERMEDIATE, QWEN35_HIDDEN, wGate, 0, 0, 0, 0], Math.ceil(QWEN35_INTERMEDIATE / 64), mTiles);
+        push(this.gemmPipe, bgNormToWork, [M, QWEN35_INTERMEDIATE, QWEN35_HIDDEN, wUp, 0, M * QWEN35_INTERMEDIATE, 0, 0], Math.ceil(QWEN35_INTERMEDIATE / 64), mTiles);
         push(this.swigluPipe, this.pBgSwiGlu, [M * QWEN35_INTERMEDIATE, 0, M * QWEN35_INTERMEDIATE, 0, 0, 0, 0, 0], Math.ceil((M * QWEN35_INTERMEDIATE) / 256));
-        push(this.gemmPipe, bgAttnToHidden, [M, QWEN35_HIDDEN, QWEN35_INTERMEDIATE, wDown, 0, 0, 1, 0], Math.ceil(QWEN35_HIDDEN / 32), mTiles);
+        push(this.gemmPipe, bgAttnToHidden, [M, QWEN35_HIDDEN, QWEN35_INTERMEDIATE, wDown, 0, 0, 1, 0], Math.ceil(QWEN35_HIDDEN / 64), mTiles);
       }
       if (l % 4 === 3) {
         layerSplitEnds.push(steps.length);
@@ -1045,7 +1122,7 @@ export class WgslQwen35Engine {
         this.gemvPipe,
         this.pBgLmHead,
         [QWEN35_VOCAB_SIZE, QWEN35_HIDDEN, 0, 0, 0, 0, 0, 0],
-        Math.ceil(QWEN35_VOCAB_SIZE / 4),
+        Math.ceil(QWEN35_VOCAB_SIZE / 16),
       );
     }
 
@@ -1177,14 +1254,7 @@ export class WgslQwen35Engine {
     if (this.seqPos + 1 > this.maxSeqCapacity) {
       throw new Error(`Context overflow at seqPos=${this.seqPos} (maxSeqCapacity=${this.maxSeqCapacity})`);
     }
-    device.queue.writeBuffer(this.tokenIdsBuf, 0, new Uint32Array([tokenId]));
-    const posArr = new Uint32Array([this.seqPos]);
-    for (const ropeOff of this.decodeRopePosByteOffsets) {
-      device.queue.writeBuffer(this.decodeUniformBuf, ropeOff + 4, posArr);
-    }
-    for (const gqaOff of this.decodeGqaPosByteOffsets) {
-      device.queue.writeBuffer(this.decodeUniformBuf, gqaOff + 8, posArr);
-    }
+    device.queue.writeBuffer(this.tokenIdsBuf, 0, new Uint32Array([tokenId, this.seqPos]));
 
     const greedy = sampling.temperature <= 0 || sampling.topK === 1;
     const numSlices = selectDecodeSliceCount(pacingMode, this.seqPos, this.lastDecodeGpuMs);
@@ -1260,6 +1330,7 @@ export class WgslQwen35Engine {
     device: GpuDeviceLike,
     dynStorage4Bgl: unknown,
     gdnRecBgl: unknown,
+    gdnApplyBgl: unknown,
     qkRopeBgl: unknown,
     dynRwStorageBgl: unknown,
   ): Promise<void> {
@@ -1272,11 +1343,71 @@ export class WgslQwen35Engine {
     };
 
     try {
-      // 1. Verify batched WGSL_Q4_GEMM_F16 (M=7, N=40, K=96 -> non-32-aligned M & N!)
-      {
-        const M = 7;
-        const N = 40;
-        const K = 96;
+      // 0. Verify higher-occupancy WGSL_Q4_SUBGROUPS_F16 GEMV on (64x1024), (64x512), and odd (37x96)
+      for (const [rows, cols] of [
+        [64, 1024],
+        [64, 512],
+        [37, 96],
+      ] as const) {
+        const blocks = cols / 32;
+        const wU32Len = rows * blocks * 5;
+        const scratchBase = wasm.wasm_scratch_ptr();
+        const wPtr = scratchBase;
+        const xPtr = wPtr + wU32Len * 4;
+        const refOutPtr = xPtr + cols * 4;
+        const wCpu = new Uint32Array(wasm.memory.buffer, wPtr, wU32Len);
+        for (let b = 0; b < rows * blocks; b++) {
+          const i = b * 5;
+          wCpu[i] = (0x13572468 + b * 13) >>> 0;
+          wCpu[i + 1] = (0x24681357 ^ (b * 23)) >>> 0;
+          wCpu[i + 2] = (0x0a1b2c3d + b * 7) >>> 0;
+          wCpu[i + 3] = (0x55aa33cc ^ (b * 31)) >>> 0;
+          wCpu[i + 4] = (0x2b80 | (0xae00 << 16)) >>> 0;
+        }
+        const xCpu = new Float32Array(wasm.memory.buffer, xPtr, cols);
+        for (let k = 0; k < cols; k++) xCpu[k] = Math.cos(k * 0.13) * 0.7;
+
+        const wGpu = mk(wU32Len * 4, GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST);
+        const xGpu = mk(cols * 4, GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST);
+        const yGpu = mk(rows * 4, GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC);
+        const uGpu = mk(256, GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST);
+        device.queue.writeBuffer(wGpu, 0, new Uint32Array(wasm.memory.buffer, wPtr, wU32Len));
+        device.queue.writeBuffer(xGpu, 0, xCpu.slice());
+        device.queue.writeBuffer(uGpu, 0, new Uint32Array([rows, cols, 0, 0, 0, 0, 0, 0]));
+        const bg = device.createBindGroup({
+          layout: dynStorage4Bgl,
+          entries: [
+            { binding: 0, resource: { buffer: uGpu, size: 32 } },
+            { binding: 1, resource: { buffer: wGpu } },
+            { binding: 2, resource: { buffer: xGpu } },
+            { binding: 3, resource: { buffer: yGpu } },
+          ],
+        });
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(this.gemvPipe);
+        pass.setBindGroup(0, bg, [0]);
+        pass.dispatchWorkgroups(Math.ceil(rows / 16), 1, 1);
+        pass.end();
+        device.queue.submit([enc.finish()]);
+        const gpuOut = await readGpuF32Slice(device, yGpu, 0, rows * 4);
+
+        wasm.cpu_ref_q4_gemv(rows, cols, wPtr, xPtr, refOutPtr);
+        const refRow = new Float32Array(wasm.memory.buffer, refOutPtr, rows);
+        let maxErr = 0;
+        for (let r = 0; r < rows; r++) {
+          maxErr = Math.max(maxErr, Math.abs(gpuOut[r] - refRow[r]));
+        }
+        if (maxErr >= 0.05) {
+          throw new Error(`WGSL_Q4_SUBGROUPS_F16 (${rows}x${cols}) verification failed: maxAbsError=${maxErr}`);
+        }
+      }
+
+      // 1. Verify batched WGSL_Q4_GEMM_F16 (64x64 tiles) on (M=7, N=40, K=96) and (M=64, N=128, K=256)
+      for (const [M, N, K] of [
+        [7, 40, 96],
+        [64, 128, 256],
+      ] as const) {
         const blocks = K / 32;
         const wU32Len = N * blocks * 5;
         const scratchBase = wasm.wasm_scratch_ptr();
@@ -1290,7 +1421,6 @@ export class WgslQwen35Engine {
           wCpu[i + 1] = (0x87654321 ^ (b * 29)) >>> 0;
           wCpu[i + 2] = (0x0f1e2d3c + b * 11) >>> 0;
           wCpu[i + 3] = (0x5a6b7c8d ^ (b * 19)) >>> 0;
-          wCpu[i + 4] = 0xc666399a; // f16 scale ~0.015 (0x21ec?) -> let's use exact bits 0x2b80 (~0.0117) and -0.09375 (0xae00)
           wCpu[i + 4] = (0x2b80 | (0xae00 << 16)) >>> 0;
         }
         const xFull = new Float32Array(M * K);
@@ -1318,7 +1448,7 @@ export class WgslQwen35Engine {
         const pass = enc.beginComputePass();
         pass.setPipeline(this.gemmPipe);
         pass.setBindGroup(0, bg, [0]);
-        pass.dispatchWorkgroups(Math.ceil(N / 32), Math.ceil(M / 32), 1);
+        pass.dispatchWorkgroups(Math.ceil(N / 64), Math.ceil(M / 64), 1);
         pass.end();
         device.queue.submit([enc.finish()]);
         const gpuOut = await readGpuF32Slice(device, yGpu, 0, M * N * 4);
@@ -1332,107 +1462,232 @@ export class WgslQwen35Engine {
             maxErr = Math.max(maxErr, Math.abs(gpuOut[t * N + r] - refRow[r]));
           }
         }
-        if (maxErr > 0.05) {
-          throw new Error(`WGSL_Q4_GEMM_F16 verification failed: maxAbsError=${maxErr}`);
+        if (maxErr >= 0.05) {
+          throw new Error(`WGSL_Q4_GEMM_F16 (${M}x${N}x${K}) verification failed: maxAbsError=${maxErr}`);
         }
       }
 
-      // 2. Verify WGSL_GDN_RECURRENT (M=2, L2 norm + Gated RMSNorm + softplus decay) vs TS CPU ref
+      // 2. Verify WGSL_GDN_RECURRENT (M=2) AND Chunkwise WY (M=37 -> 32+5, non-zero initial state) vs TS CPU ref
       {
-        const M = 2;
-        const workCpu = new Float32Array(M * 12352);
-        for (let t = 0; t < M; t++) {
-          for (let i = 0; i < 128; i++) {
-            workCpu[t * 8192 + i] = Math.sin(t + i * 0.07) * 0.8; // q head 0
-            workCpu[t * 8192 + 2048 + i] = Math.cos(t * 0.5 + i * 0.05) * 0.7; // k head 0
-            workCpu[t * 8192 + 4096 + i] = Math.sin(t * 0.9 + i * 0.03) * 0.6; // v head 0
-            workCpu[M * 8192 + t * 4096 + i] = Math.cos(i * 0.04 - t) * 0.5; // z head 0
-          }
-          workCpu[M * 12288 + t * 64 + 0] = -0.3 + t * 0.2; // b
-          workCpu[M * 12288 + t * 64 + 32] = 0.4 - t * 0.3; // a
-        }
-        const auxCpu = new Float32Array(192);
-        auxCpu[0] = -0.15; // A_neg_exp[0]
-        auxCpu[32] = 0.25; // dt_bias[0]
-        for (let i = 0; i < 128; i++) auxCpu[64 + i] = 0.85 + 0.1 * Math.sin(i);
-
-        // Exact TS reference for head 0
-        const stateRef = new Float32Array(128 * 128);
-        const outRef = new Float32Array(128);
-        for (let t = 0; t < M; t++) {
-          let qSq = 0;
-          let kSq = 0;
-          for (let i = 0; i < 128; i++) {
-            const qv = workCpu[t * 8192 + i];
-            const kv = workCpu[t * 8192 + 2048 + i];
-            qSq += qv * qv;
-            kSq += kv * kv;
-          }
-          const invQ = (1 / Math.sqrt(qSq + 1e-6)) * (1 / Math.sqrt(128));
-          const invK = 1 / Math.sqrt(kSq + 1e-6);
-          const qn = new Float32Array(128);
-          const kn = new Float32Array(128);
-          for (let i = 0; i < 128; i++) {
-            qn[i] = workCpu[t * 8192 + i] * invQ;
-            kn[i] = workCpu[t * 8192 + 2048 + i] * invK;
-          }
-          const beta = 1 / (1 + Math.exp(-workCpu[M * 12288 + t * 64]));
-          const u = workCpu[M * 12288 + t * 64 + 32] + auxCpu[32];
-          const sp = u > 20 ? u : Math.log(1 + Math.exp(u));
-          const decay = Math.exp(auxCpu[0] * sp);
-
-          const rawOut = new Float32Array(128);
-          for (let j = 0; j < 128; j++) {
-            let sk = 0;
-            for (let i = 0; i < 128; i++) sk += stateRef[i * 128 + j] * decay * kn[i];
-            const delta = (workCpu[t * 8192 + 4096 + j] - sk) * beta;
-            let o = 0;
+        const runGdnCpuRef = (
+          M: number,
+          workCpu: Float32Array,
+          auxCpu: Float32Array,
+          initStateHead0: Float32Array,
+        ): { outputs: Float32Array[]; finalState: Float32Array } => {
+          const stateRef = new Float32Array(initStateHead0);
+          const outputs: Float32Array[] = [];
+          for (let t = 0; t < M; t++) {
+            let qSq = 0;
+            let kSq = 0;
             for (let i = 0; i < 128; i++) {
-              const sn = stateRef[i * 128 + j] * decay + kn[i] * delta;
-              stateRef[i * 128 + j] = sn;
-              o += sn * qn[i];
+              const qv = workCpu[t * 8192 + i];
+              const kv = workCpu[t * 8192 + 2048 + i];
+              qSq += qv * qv;
+              kSq += kv * kv;
             }
-            rawOut[j] = o;
+            const invQ = (1 / Math.sqrt(qSq + 1e-6)) * (1 / Math.sqrt(128));
+            const invK = 1 / Math.sqrt(kSq + 1e-6);
+            const qn = new Float32Array(128);
+            const kn = new Float32Array(128);
+            for (let i = 0; i < 128; i++) {
+              qn[i] = workCpu[t * 8192 + i] * invQ;
+              kn[i] = workCpu[t * 8192 + 2048 + i] * invK;
+            }
+            const beta = 1 / (1 + Math.exp(-workCpu[M * 12288 + t * 64]));
+            const u = workCpu[M * 12288 + t * 64 + 32] + auxCpu[32];
+            const sp = u > 20 ? u : Math.log(1 + Math.exp(u));
+            const decay = Math.exp(auxCpu[0] * sp);
+
+            const rawOut = new Float32Array(128);
+            for (let j = 0; j < 128; j++) {
+              let sk = 0;
+              for (let i = 0; i < 128; i++) sk += stateRef[i * 128 + j] * decay * kn[i];
+              const delta = (workCpu[t * 8192 + 4096 + j] - sk) * beta;
+              let o = 0;
+              for (let i = 0; i < 128; i++) {
+                const sn = stateRef[i * 128 + j] * decay + kn[i] * delta;
+                stateRef[i * 128 + j] = sn;
+                o += sn * qn[i];
+              }
+              rawOut[j] = o;
+            }
+            let oSq = 0;
+            for (let j = 0; j < 128; j++) oSq += rawOut[j] * rawOut[j];
+            const invRms = 1 / Math.sqrt(oSq / 128 + 1e-6);
+            const tokOut = new Float32Array(128);
+            for (let j = 0; j < 128; j++) {
+              const zv = workCpu[M * 8192 + t * 4096 + j];
+              tokOut[j] = rawOut[j] * invRms * (zv / (1 + Math.exp(-zv))) * auxCpu[64 + j];
+            }
+            outputs.push(tokOut);
           }
-          let oSq = 0;
-          for (let j = 0; j < 128; j++) oSq += rawOut[j] * rawOut[j];
-          const invRms = 1 / Math.sqrt(oSq / 128 + 1e-6);
-          for (let j = 0; j < 128; j++) {
-            const zv = workCpu[M * 8192 + t * 4096 + j];
-            outRef[j] = rawOut[j] * invRms * (zv / (1 + Math.exp(-zv))) * auxCpu[64 + j];
+          return { outputs, finalState: stateRef };
+        };
+
+        // 2a. Recurrent (M=2)
+        {
+          const M = 2;
+          const workCpu = new Float32Array(M * 12352);
+          for (let t = 0; t < M; t++) {
+            for (let i = 0; i < 128; i++) {
+              workCpu[t * 8192 + i] = Math.sin(t + i * 0.07) * 0.8;
+              workCpu[t * 8192 + 2048 + i] = Math.cos(t * 0.5 + i * 0.05) * 0.7;
+              workCpu[t * 8192 + 4096 + i] = Math.sin(t * 0.9 + i * 0.03) * 0.6;
+              workCpu[M * 8192 + t * 4096 + i] = Math.cos(i * 0.04 - t) * 0.5;
+            }
+            workCpu[M * 12288 + t * 64 + 0] = -0.3 + t * 0.2;
+            workCpu[M * 12288 + t * 64 + 32] = 0.4 - t * 0.3;
+          }
+          const auxCpu = new Float32Array(192);
+          auxCpu[0] = -0.15;
+          auxCpu[32] = 0.25;
+          for (let i = 0; i < 128; i++) auxCpu[64 + i] = 0.85 + 0.1 * Math.sin(i);
+          const { outputs } = runGdnCpuRef(M, workCpu, auxCpu, new Float32Array(128 * 128));
+          const outRef = outputs[1];
+
+          const auxG = mk(auxCpu.byteLength, GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST);
+          const workG = mk(workCpu.byteLength, GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST);
+          const stG = mk(32 * 128 * 128 * 4, GPU_USAGE.STORAGE);
+          const outG = mk(M * 4096 * 4, GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC);
+          const uG = mk(256, GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST);
+          device.queue.writeBuffer(auxG, 0, auxCpu);
+          device.queue.writeBuffer(workG, 0, workCpu);
+          device.queue.writeBuffer(uG, 0, new Uint32Array([M, 0, 0, 0, M * 8192, M * 12288, 0, 0]));
+          const bg = device.createBindGroup({
+            layout: gdnRecBgl,
+            entries: [
+              { binding: 0, resource: { buffer: uG, size: 32 } },
+              { binding: 1, resource: { buffer: auxG } },
+              { binding: 2, resource: { buffer: workG } },
+              { binding: 3, resource: { buffer: stG } },
+              { binding: 4, resource: { buffer: outG } },
+            ],
+          });
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(this.gdnRecPipe);
+          pass.setBindGroup(0, bg, [0]);
+          pass.dispatchWorkgroups(32, 1, 1);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+          const gpuOut = await readGpuF32Slice(device, outG, 4096 * 4, 128 * 4);
+          let maxErr = 0;
+          for (let i = 0; i < 128; i++) maxErr = Math.max(maxErr, Math.abs(gpuOut[i] - outRef[i]));
+          if (maxErr > 1e-4) {
+            throw new Error(`WGSL_GDN_RECURRENT verification failed: maxAbsError=${maxErr}`);
           }
         }
 
-        const auxG = mk(auxCpu.byteLength, GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST);
-        const workG = mk(workCpu.byteLength, GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST);
-        const stG = mk(32 * 128 * 128 * 4, GPU_USAGE.STORAGE);
-        const outG = mk(M * 4096 * 4, GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC);
-        const uG = mk(256, GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST);
-        device.queue.writeBuffer(auxG, 0, auxCpu);
-        device.queue.writeBuffer(workG, 0, workCpu);
-        device.queue.writeBuffer(uG, 0, new Uint32Array([M, 0, 0, 0, M * 8192, M * 12288, 0, 0]));
-        const bg = device.createBindGroup({
-          layout: gdnRecBgl,
-          entries: [
-            { binding: 0, resource: { buffer: uG, size: 32 } },
-            { binding: 1, resource: { buffer: auxG } },
-            { binding: 2, resource: { buffer: workG } },
-            { binding: 3, resource: { buffer: stG } },
-            { binding: 4, resource: { buffer: outG } },
-          ],
-        });
-        const enc = device.createCommandEncoder();
-        const pass = enc.beginComputePass();
-        pass.setPipeline(this.gdnRecPipe);
-        pass.setBindGroup(0, bg, [0]);
-        pass.dispatchWorkgroups(32, 1, 1);
-        pass.end();
-        device.queue.submit([enc.finish()]);
-        const gpuOut = await readGpuF32Slice(device, outG, 4096 * 4, 128 * 4);
-        let maxErr = 0;
-        for (let i = 0; i < 128; i++) maxErr = Math.max(maxErr, Math.abs(gpuOut[i] - outRef[i]));
-        if (maxErr > 1e-4) {
-          throw new Error(`WGSL_GDN_RECURRENT verification failed: maxAbsError=${maxErr}`);
+        // 2b. Chunkwise Parallel WY (M=37 -> 32 + 5) with non-zero initial dn_state
+        {
+          const M = 37;
+          const workCpu = new Float32Array(M * 12352);
+          for (let t = 0; t < M; t++) {
+            for (let i = 0; i < 128; i++) {
+              workCpu[t * 8192 + i] = Math.sin(t * 0.31 + i * 0.07) * 0.8;
+              workCpu[t * 8192 + 2048 + i] = Math.cos(t * 0.23 + i * 0.05) * 0.7;
+              workCpu[t * 8192 + 4096 + i] = Math.sin(t * 0.47 + i * 0.03) * 0.6;
+              workCpu[M * 8192 + t * 4096 + i] = Math.cos(i * 0.04 - t * 0.19) * 0.5;
+            }
+            workCpu[M * 12288 + t * 64 + 0] = -0.3 + Math.sin(t * 0.3) * 0.4;
+            workCpu[M * 12288 + t * 64 + 32] = 0.2 + Math.cos(t * 0.2) * 0.5;
+          }
+          const auxCpu = new Float32Array(192);
+          auxCpu[0] = -0.15;
+          auxCpu[32] = 0.25;
+          for (let i = 0; i < 128; i++) auxCpu[64 + i] = 0.85 + 0.1 * Math.sin(i);
+
+          const initStateHead0 = new Float32Array(128 * 128);
+          for (let idx = 0; idx < initStateHead0.length; idx++) {
+            initStateHead0[idx] = Math.sin(idx * 0.017) * 0.05;
+          }
+          const { outputs: refOutputs, finalState: refState } = runGdnCpuRef(
+            M,
+            workCpu,
+            auxCpu,
+            initStateHead0,
+          );
+
+          const auxG = mk(auxCpu.byteLength, GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST);
+          const workG = mk(workCpu.byteLength, GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST);
+          const scratchG = mk(558080 * 4, GPU_USAGE.STORAGE);
+          const stG = mk(32 * 128 * 128 * 4, GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST | GPU_USAGE.COPY_SRC);
+          const outG = mk(M * 4096 * 4, GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC);
+          const uG = mk(6 * 256, GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST);
+
+          device.queue.writeBuffer(auxG, 0, auxCpu);
+          device.queue.writeBuffer(workG, 0, workCpu);
+          device.queue.writeBuffer(stG, 0, initStateHead0);
+
+          // Sub-chunk 0 (0..31, C=32), Sub-chunk 1 (32..36, C=5), then mode=1 Gated RMSNorm
+          device.queue.writeBuffer(uG, 0, new Uint32Array([32, 0, 0, 0, M * 12288, 0, 0, 0]));
+          device.queue.writeBuffer(uG, 256, new Uint32Array([0, 32, 0, 0, 0, M * 8192, 0, 0]));
+          device.queue.writeBuffer(uG, 512, new Uint32Array([5, 32, 0, 0, M * 12288, 0, 0, 0]));
+          device.queue.writeBuffer(uG, 768, new Uint32Array([0, 5, 32, 0, 0, M * 8192, 0, 0]));
+          device.queue.writeBuffer(uG, 1024, new Uint32Array([1, M, 0, 0, 0, M * 8192, 0, 0]));
+
+          const bgPrep = device.createBindGroup({
+            layout: dynStorage4Bgl,
+            entries: [
+              { binding: 0, resource: { buffer: uG, size: 32 } },
+              { binding: 1, resource: { buffer: auxG } },
+              { binding: 2, resource: { buffer: workG } },
+              { binding: 3, resource: { buffer: scratchG } },
+            ],
+          });
+          const bgApply = device.createBindGroup({
+            layout: gdnApplyBgl,
+            entries: [
+              { binding: 0, resource: { buffer: uG, size: 32 } },
+              { binding: 1, resource: { buffer: auxG } },
+              { binding: 2, resource: { buffer: workG } },
+              { binding: 3, resource: { buffer: scratchG } },
+              { binding: 4, resource: { buffer: stG } },
+              { binding: 5, resource: { buffer: outG } },
+            ],
+          });
+
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          pass.setPipeline(this.gdnChunkPrepPipe);
+          pass.setBindGroup(0, bgPrep, [0]);
+          pass.dispatchWorkgroups(32, 1, 1);
+          pass.setPipeline(this.gdnChunkApplyPipe);
+          pass.setBindGroup(0, bgApply, [256]);
+          pass.dispatchWorkgroups(32, 8, 1);
+          pass.setPipeline(this.gdnChunkPrepPipe);
+          pass.setBindGroup(0, bgPrep, [512]);
+          pass.dispatchWorkgroups(32, 1, 1);
+          pass.setPipeline(this.gdnChunkApplyPipe);
+          pass.setBindGroup(0, bgApply, [768]);
+          pass.dispatchWorkgroups(32, 8, 1);
+          pass.setPipeline(this.gdnChunkApplyPipe);
+          pass.setBindGroup(0, bgApply, [1024]);
+          pass.dispatchWorkgroups(32, M, 1);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+
+          for (const tokCheck of [0, 31, 32, 36]) {
+            const gpuOut = await readGpuF32Slice(device, outG, tokCheck * 4096 * 4, 128 * 4);
+            let outErr = 0;
+            for (let j = 0; j < 128; j++) {
+              outErr = Math.max(outErr, Math.abs(gpuOut[j] - refOutputs[tokCheck][j]));
+            }
+            if (outErr >= 1e-4) {
+              throw new Error(
+                `WGSL_GDN_CHUNK_WY output verification failed (tok=${tokCheck}): maxAbsError=${outErr}`,
+              );
+            }
+          }
+          const gpuState = await readGpuF32Slice(device, stG, 0, 128 * 128 * 4);
+          let stErr = 0;
+          for (let idx = 0; idx < 128 * 128; idx++) {
+            stErr = Math.max(stErr, Math.abs(gpuState[idx] - refState[idx]));
+          }
+          if (stErr >= 1e-4) {
+            throw new Error(`WGSL_GDN_CHUNK_WY state verification failed: maxAbsError=${stErr}`);
+          }
         }
       }
 
@@ -1528,6 +1783,7 @@ export class WgslQwen35Engine {
             { binding: 0, resource: { buffer: uG, size: 32 } },
             { binding: 1, resource: { buffer: auxG } },
             { binding: 2, resource: { buffer: workG } },
+            { binding: 3, resource: { buffer: auxG } },
           ],
         });
         const bgPref = device.createBindGroup({

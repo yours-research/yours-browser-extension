@@ -1,0 +1,191 @@
+{
+  "runId": "22-track4-wgsl-worker-balanced-smoothness",
+  "track": "track4-speed",
+  "recordedAt": "2026-11-25T04:25:54.332Z",
+  "label": "Track 4 WGSL Speedups (Dedicated Worker, Balanced Default Smoothness + Extended Suite)",
+  "config": {
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "dtype": "q4f16",
+    "chunkSize": 64,
+    "maxNewTokens": 128,
+    "temperature": 0,
+    "topP": 0.95,
+    "topK": 20,
+    "enableThinking": false,
+    "gpuBandwidthGBs": 936,
+    "wasmVariant": "asyncify",
+    "yieldMode": "none",
+    "fastDecodePath": true,
+    "fastOpfsLoad": true,
+    "graphOptimizationLevel": "all",
+    "validationMode": "basic",
+    "storageBufferCacheMode": "default",
+    "enableMatmulFp32Accumulation": null,
+    "backend": "wgsl",
+    "wgslKvMode": "int8",
+    "wgslMaxContext": 131072,
+    "gpuPacingMode": "balanced",
+    "executionHost": "worker"
+  },
+  "idleSmoothness": {
+    "avgFps": 134.44,
+    "p50FrameMs": 6.9,
+    "p95FrameMs": 7.1,
+    "p99FrameMs": 7.3,
+    "maxFrameMs": 182,
+    "jankPctOver33ms": 0.25,
+    "freezePctOver100ms": 0.25,
+    "avgInputLatencyMs": 5.34,
+    "frameCount": 395
+  },
+  "coldLoad": {
+    "coldLoadMs": 8591.800000000745,
+    "loadSource": "bundled",
+    "executionHost": "worker",
+    "loadBreakdown": {
+      "opfsReadMs": 7323.800000000745,
+      "tokenizerMs": 826.5,
+      "modelLoadMs": 175.89999999850988,
+      "totalMs": 8591.800000000745
+    },
+    "estVramMb": 2560.1680908203125
+  },
+  "loadSmoothness": {
+    "avgFps": 138.75,
+    "p50FrameMs": 6.9,
+    "p95FrameMs": 7.4,
+    "p99FrameMs": 9.5,
+    "maxFrameMs": 170.8,
+    "jankPctOver33ms": 0.16,
+    "freezePctOver100ms": 0.08,
+    "avgInputLatencyMs": 5.07,
+    "frameCount": 1217
+  },
+  "sweep": {
+    "startedAt": "2026-11-25T04:21:51.917Z",
+    "finishedAt": "2026-11-25T04:24:07.910Z",
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "dtype": "q4f16",
+    "gpuBandwidthGBs": 936,
+    "points": [
+      {
+        "targetTokens": 8192,
+        "actualPromptTokens": 8192,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 23029.200000001118,
+        "ttftMs": 23029.60000000149,
+        "prefillTokPerSec": 355.7223003838432,
+        "decodeTokPerSec": 52.69224436038019,
+        "kvCacheMb": 130.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 2690.6759033203125,
+        "achievedBandwidthGBs": 129.15353258402618,
+        "bandwidthUtilizationPct": 13.798454335900235,
+        "breakdown": {
+          "avgForwardMs": 12.38124999991851,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 6.343750000407454
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 32768,
+        "actualPromptTokens": 32768,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 111482,
+        "ttftMs": 111482,
+        "prefillTokPerSec": 293.9308587933478,
+        "decodeTokPerSec": 37.536656891495596,
+        "kvCacheMb": 520.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 3080.6759033203125,
+        "achievedBandwidthGBs": 92.00579511804663,
+        "bandwidthUtilizationPct": 9.829678965603271,
+        "breakdown": {
+          "avgForwardMs": 18.484374999883585,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 7.937500000232831
+        },
+        "status": "ok"
+      }
+    ],
+    "maxSafeTokens": 32800,
+    "oomTokenCount": null,
+    "recommendation": "Below 40% theoretical bandwidth (13.8% of 936 GB/s): Phase 2 Decision Gate triggers custom Rust/WASM + WGSL engine."
+  },
+  "sweepSmoothness": {
+    "avgFps": 143.9,
+    "p50FrameMs": 6.9,
+    "p95FrameMs": 7.1,
+    "p99FrameMs": 7.5,
+    "maxFrameMs": 23.9,
+    "jankPctOver33ms": 0,
+    "freezePctOver100ms": 0,
+    "avgInputLatencyMs": 3.54,
+    "frameCount": 19574
+  },
+  "chatTurn1": {
+    "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+    "responseText": "* **Enhanced Privacy**: Data never leaves the user's device, ensuring complete confidentiality for sensitive inputs and outputs.\n* **Reduced Latency**: Local execution eliminates network round-trips, enabling near-instantaneous response times.\n* **Lower Costs**: Running models on-device removes the need for expensive cloud API subscriptions or server infrastructure.\n* **Improved Reliability**: The application remains function",
+    "responseLength": 429,
+    "ttftMs": 143.40000000037253,
+    "prefillTokPerSec": 252.67993874497805,
+    "decodeTokPerSec": 76.39791937578961,
+    "activeContextTokens": 127,
+    "prefixReused": false,
+    "estVramMb": 2562.1834716796875
+  },
+  "chatSmoothness": {
+    "avgFps": 143.61,
+    "p50FrameMs": 7,
+    "p95FrameMs": 8.3,
+    "p99FrameMs": 10,
+    "maxFrameMs": 21.9,
+    "jankPctOver33ms": 0,
+    "freezePctOver100ms": 0,
+    "avgInputLatencyMs": 3.72,
+    "frameCount": 222
+  },
+  "turn2": {
+    "prompt": "Summarize bullet 1 in one short sentence.",
+    "responseText": "Running locally ensures all data stays private on the us",
+    "responseLength": 56,
+    "ttftMs": 136.2999999988824,
+    "prefillTokPerSec": 183.95879323233348,
+    "decodeTokPerSec": 80.29647930803019,
+    "activeContextTokens": 165,
+    "prefixReused": true,
+    "estVramMb": 2562.7864990234375
+  },
+  "snapshotRestore": {
+    "snapshottedTokens": 165,
+    "restoredTokens": 165,
+    "passed": true
+  },
+  "abortMetrics": {
+    "stoppedCleanly": true,
+    "abortLatencyMs": 97.6,
+    "preservedPartialChars": 38,
+    "partialPreview": "# The Architecture of Parallelism: A D"
+  },
+  "niah": {
+    "targetTokens": 32768,
+    "actualTokens": 32768,
+    "needleDepthPct": 0.5,
+    "passkey": "VELVET-ORBIT-7492",
+    "responseText": "VELVET-ORBIT-7492",
+    "passed": true,
+    "ttftMs": 102738.10000000149,
+    "prefillTokPerSec": 318.9472249800463,
+    "decodeTokPerSec": 40.05826656961006
+  },
+  "externalNetworkRequestCount": 0,
+  "externalNetworkRequests": [],
+  "consoleErrorCount": 0,
+  "offscreenErrors": [],
+  "status": "ok"
+}

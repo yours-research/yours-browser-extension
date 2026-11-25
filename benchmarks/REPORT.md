@@ -1,6 +1,6 @@
 # TinyGPT MV3 Extension — Qwen3.5-4B Comprehensive Benchmark Report
 
-Generated: `2026-11-24T23:48:57.939Z`
+Generated: `2026-11-25T04:28:14.859Z`
 
 ## 1. Environment, Phase 0 Storage & WebGPU Limits
 
@@ -99,3 +99,14 @@ Generated: `2026-11-24T23:48:57.939Z`
 - **Default Production Config (`19-track3-worker-balanced`, `worker / balanced`):** Offline bundled load in **`8.13s`** (`loadSource=bundled`), **32K NIAH PASS (`VELVET-ORBIT-7492`, 31.28 tok/s)**, Warm Prefix Reuse `prefixReused=true`, Snapshot/Restore `165t -> 165t` (`passed=true`), Mid-Generation Abort Latency **`106.3 ms`** (`33` chars preserved).
 - **Smoothness vs. Unpaced Main Thread:** `19-track3-worker-balanced` (`worker / balanced`) achieved **`144.0 FPS`** during 8K+32K inference (`p99=7.3 ms`, max stall `20.8 ms`, `0.00%` jank >33ms, `143.5 FPS` chat streaming) vs. `17-track3-mainthread-max-speed` (`offscreen-main / max-speed`) at **`142.5 FPS`** (`p99=11.6 ms`, max stall `35.5 ms`, `0.00%` jank >33ms, `143.3 FPS` chat streaming).
 - **Strict Offline Zero-Network Verification:** Across all `4` Track 3 runs, `0` external `http(s)://` requests were intercepted.
+
+## 7. Track 4 — Chunkwise WY DeltaNet Prefill, High-Occupancy Q4 GEMV (`16` rows/WG), `64×64` Tiled GEMM & Fixed Balanced Pacing
+
+| Run ID | Host / Pacing | Offline Load | 1K Dec / Prefill | 8K Dec / Prefill | 32K Dec / Prefill | 64K Dec / Prefill | 96K Dec / Prefill | 128K Dec / Prefill | Peak % BW | NIAH 32K | Sweep FPS (% Jank) | Net Reqs | Errors |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: |
+| `21-track4-wgsl-max-speed-128k` | `worker` / `max-speed` | **7.81s** | 106.60 / 565 | 84.37 / 495 | 52.44 / 359 | 44.59 / 271 | 34.31 / 227 | 26.73 / 181 | **27.9%** | PASS (63.25 tok/s) | — | 0 | 0 |
+| `22-track4-wgsl-worker-balanced-smoothness` | `worker` / `balanced` | **8.59s** | — | 52.69 / 356 | 37.54 / 294 | — | — | — | **13.8%** | PASS (40.06 tok/s) | 143.9 (0.00%) | 0 | 0 |
+
+- **Track 4 Max-Speed (`21-track4-wgsl-max-speed-128k`) vs. Track 2 Real (`16-wgsl-real-int8kv-128k`):** 1K decode jumped from `73.91` -> **`106.60 tok/s`** (**+44.2%**, **7.83x** vs Baseline ORT), 1K prefill `383` -> **`564.90 tok/s`** (**+47.4%**), 8K `64.39/386` -> **`84.37/495 tok/s`**, 32K `47.68/307` -> **`52.44/359 tok/s`**, 64K `36.26/240` -> **`44.59/271 tok/s`**, and 128K `23.80/165` -> **`26.73/181 tok/s`** (**9.48x** vs Track 1 `08`). Peak RTX 3090 memory bandwidth utilization reached **`27.9%`**, with **32K NIAH PASS** at `392.14 / 63.25 tok/s` and Chat Turn 1 at **`104.74 tok/s`** (`TTFT 104.8 ms`).
+- **Track 4 Balanced Default (`22-track4-wgsl-worker-balanced-smoothness`) vs. Track 3 Balanced (`19-track3-worker-balanced`):** Restoring `chunk=64` plus WY prefill + 16-row GEMV boosted 8K `36.99/194` -> **`52.69/356 tok/s`**, 32K prefill `128.10` -> **`293.93 tok/s`** (**+129.5%**), Chat Turn 1 `40.14` -> **`76.40 tok/s`** (**+90.3%**, `TTFT 143.4 ms`), and Turn 2 (`prefixReused=true`) -> **`80.30 tok/s`** — while maintaining **`143.9 FPS`** (`0.00%` jank >33ms, max `23.9 ms`), **`143.6 FPS`** chat streaming, Snapshot/Restore `165t -> 165t`, **`97.6 ms`** abort latency, and **32K NIAH PASS** (`318.95 / 40.06 tok/s`).
+- **Strict Offline Zero-Network Verification:** Across all `2` Track 4 runs, `0` external `http(s)://` requests and `0` console/offscreen errors were recorded.

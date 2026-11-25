@@ -1,0 +1,213 @@
+{
+  "runId": "21-track4-wgsl-max-speed-128k",
+  "track": "track4-speed",
+  "recordedAt": "2026-11-25T04:21:38.485Z",
+  "label": "Track 4 WGSL Speedups (Dedicated Worker, Max Speed, 1K-128K Sweep + 32K NIAH + Chat)",
+  "config": {
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "dtype": "q4f16",
+    "chunkSize": 64,
+    "maxNewTokens": 128,
+    "temperature": 0,
+    "topP": 0.95,
+    "topK": 20,
+    "enableThinking": false,
+    "gpuBandwidthGBs": 936,
+    "wasmVariant": "asyncify",
+    "yieldMode": "none",
+    "fastDecodePath": true,
+    "fastOpfsLoad": true,
+    "graphOptimizationLevel": "all",
+    "validationMode": "basic",
+    "storageBufferCacheMode": "default",
+    "enableMatmulFp32Accumulation": null,
+    "backend": "wgsl",
+    "wgslKvMode": "int8",
+    "wgslMaxContext": 131072,
+    "gpuPacingMode": "max-speed",
+    "executionHost": "worker"
+  },
+  "coldLoad": {
+    "coldLoadMs": 7811.60000000149,
+    "loadSource": "bundled",
+    "executionHost": "worker",
+    "loadBreakdown": {
+      "opfsReadMs": 6556.700000001118,
+      "tokenizerMs": 581.7999999988824,
+      "modelLoadMs": 225.59999999962747,
+      "totalMs": 7811.60000000149
+    },
+    "estVramMb": 2560.1680908203125
+  },
+  "sweep": {
+    "startedAt": "2026-11-25T03:54:59.933Z",
+    "finishedAt": "2026-11-25T04:20:13.360Z",
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "dtype": "q4f16",
+    "gpuBandwidthGBs": 936,
+    "points": [
+      {
+        "targetTokens": 1024,
+        "actualPromptTokens": 1024,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 1812.699999999255,
+        "ttftMs": 1813,
+        "prefillTokPerSec": 564.9031830972697,
+        "decodeTokPerSec": 106.59560293098225,
+        "kvCacheMb": 16.7578125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 2576.9259033203125,
+        "achievedBandwidthGBs": 261.27561738122176,
+        "bandwidthUtilizationPct": 27.91406168602797,
+        "breakdown": {
+          "avgForwardMs": 9.134375000197906,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 8192,
+        "actualPromptTokens": 8192,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 16552.800000000745,
+        "ttftMs": 16552.800000000745,
+        "prefillTokPerSec": 494.90116475760186,
+        "decodeTokPerSec": 84.36593725266846,
+        "kvCacheMb": 130.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 2690.6759033203125,
+        "achievedBandwidthGBs": 206.788664218246,
+        "bandwidthUtilizationPct": 22.09280600622286,
+        "breakdown": {
+          "avgForwardMs": 11.668750000244472,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 32768,
+        "actualPromptTokens": 32768,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 91222.19999999925,
+        "ttftMs": 91222.19999999925,
+        "prefillTokPerSec": 359.2108061414904,
+        "decodeTokPerSec": 52.44182235323073,
+        "kvCacheMb": 520.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 3080.6759033203125,
+        "achievedBandwidthGBs": 128.5397252343348,
+        "bandwidthUtilizationPct": 13.732876627599872,
+        "breakdown": {
+          "avgForwardMs": 18.746874999953434,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 65536,
+        "actualPromptTokens": 65536,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 241779.8999999985,
+        "ttftMs": 241779.8999999985,
+        "prefillTokPerSec": 271.05644431154286,
+        "decodeTokPerSec": 44.586874738679356,
+        "kvCacheMb": 1040.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 3600.6759033203125,
+        "achievedBandwidthGBs": 109.28652687475636,
+        "bandwidthUtilizationPct": 11.675910990892774,
+        "breakdown": {
+          "avgForwardMs": 22.212499999732245,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 98304,
+        "actualPromptTokens": 98304,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 433975.19999999925,
+        "ttftMs": 433975.2999999989,
+        "prefillTokPerSec": 226.51985643419295,
+        "decodeTokPerSec": 34.31267424399407,
+        "kvCacheMb": 1560.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 4120.6759033203125,
+        "achievedBandwidthGBs": 84.10351741154776,
+        "bandwidthUtilizationPct": 8.98541852687476,
+        "breakdown": {
+          "avgForwardMs": 28.94687499961583,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 131072,
+        "actualPromptTokens": 131072,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 723900.4000000004,
+        "ttftMs": 723900.5,
+        "prefillTokPerSec": 181.06358278017242,
+        "decodeTokPerSec": 26.726801971085017,
+        "kvCacheMb": 2080.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 4640.6759033203125,
+        "achievedBandwidthGBs": 65.50984743847488,
+        "bandwidthUtilizationPct": 6.998915324623385,
+        "breakdown": {
+          "avgForwardMs": 37.20624999993015,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      }
+    ],
+    "maxSafeTokens": 131104,
+    "oomTokenCount": null,
+    "recommendation": "Below 40% theoretical bandwidth (27.9% of 936 GB/s): Phase 2 Decision Gate triggers custom Rust/WASM + WGSL engine."
+  },
+  "niah": {
+    "targetTokens": 32768,
+    "actualTokens": 32768,
+    "needleDepthPct": 0.5,
+    "passkey": "VELVET-ORBIT-7492",
+    "responseText": "VELVET-ORBIT-7492",
+    "passed": true,
+    "ttftMs": 83562.60000000149,
+    "prefillTokPerSec": 392.1376215407629,
+    "decodeTokPerSec": 63.25474410634995
+  },
+  "chatTurn1": {
+    "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+    "responseText": "* **Enhanced Privacy**: Data never leaves the user's device, ensuring complete confidentiality for sensitive inputs and outputs.\n* **Reduced Latency**: Local execution eliminates network round-trips, enabling near-instantaneous response times.\n* **Lower Costs**: Running models on-device removes the need for expensive cloud API subscriptions or server infrastructure.\n* **Improved Reliab",
+    "responseLength": 388,
+    "ttftMs": 104.80000000074506,
+    "prefillTokPerSec": 331.6582914572864,
+    "decodeTokPerSec": 104.73537604456826,
+    "activeContextTokens": 127,
+    "prefixReused": false,
+    "estVramMb": 2562.1834716796875
+  },
+  "externalNetworkRequestCount": 0,
+  "externalNetworkRequests": [],
+  "consoleErrorCount": 0,
+  "offscreenErrors": [],
+  "status": "ok"
+}

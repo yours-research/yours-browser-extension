@@ -83,8 +83,8 @@ describe('gpuPacing', () => {
 
     expect(getGpuPacingPolicy('balanced')).toEqual({
       mode: 'balanced',
-      prefillChunkShort: 32,
-      prefillChunkLong: 16,
+      prefillChunkShort: 64,
+      prefillChunkLong: 64,
       prefillLongThreshold: 16384,
       prefillBurstBudgetMs: 8,
       prefillBreatherMs: 4,
@@ -101,8 +101,8 @@ describe('gpuPacing', () => {
 
     expect(getGpuPacingPolicy('smooth-ui')).toEqual({
       mode: 'smooth-ui',
-      prefillChunkShort: 16,
-      prefillChunkLong: 16,
+      prefillChunkShort: 64,
+      prefillChunkLong: 32,
       prefillLongThreshold: 8192,
       prefillBurstBudgetMs: 6,
       prefillBreatherMs: 8,
@@ -119,7 +119,7 @@ describe('gpuPacing', () => {
 
     const mutated = getGpuPacingPolicy('balanced');
     mutated.prefillChunkShort = 999;
-    expect(getGpuPacingPolicy('balanced').prefillChunkShort).toBe(32);
+    expect(getGpuPacingPolicy('balanced').prefillChunkShort).toBe(64);
   });
 
   it('selects prefill chunk size across modes, sequence thresholds, and requested caps', () => {
@@ -129,18 +129,18 @@ describe('gpuPacing', () => {
     expect(selectPrefillChunkSize('max-speed', 100, 24)).toBe(24);
     expect(selectPrefillChunkSize('max-speed', 100, -4)).toBe(1);
 
-    expect(selectPrefillChunkSize('balanced', 0)).toBe(32);
-    expect(selectPrefillChunkSize('balanced', 16383)).toBe(32);
-    expect(selectPrefillChunkSize('balanced', 16384)).toBe(16);
-    expect(selectPrefillChunkSize('balanced', 500, 64)).toBe(32);
+    expect(selectPrefillChunkSize('balanced', 0)).toBe(64);
+    expect(selectPrefillChunkSize('balanced', 16383)).toBe(64);
+    expect(selectPrefillChunkSize('balanced', 16384)).toBe(64);
+    expect(selectPrefillChunkSize('balanced', 500, 64)).toBe(64);
     expect(selectPrefillChunkSize('balanced', 500, 12)).toBe(12);
-    expect(selectPrefillChunkSize('balanced', 500, 0)).toBe(32);
-    expect(selectPrefillChunkSize('balanced', 20000, 24)).toBe(16);
+    expect(selectPrefillChunkSize('balanced', 500, 0)).toBe(64);
+    expect(selectPrefillChunkSize('balanced', 20000, 24)).toBe(24);
     expect(selectPrefillChunkSize('balanced', 20000, 8)).toBe(8);
 
-    expect(selectPrefillChunkSize('smooth-ui', 0)).toBe(16);
-    expect(selectPrefillChunkSize('smooth-ui', 8191, 32)).toBe(16);
-    expect(selectPrefillChunkSize('smooth-ui', 8192, 64)).toBe(16);
+    expect(selectPrefillChunkSize('smooth-ui', 0)).toBe(64);
+    expect(selectPrefillChunkSize('smooth-ui', 8191, 32)).toBe(32);
+    expect(selectPrefillChunkSize('smooth-ui', 8192, 64)).toBe(32);
     expect(selectPrefillChunkSize('smooth-ui', 8192, 4)).toBe(4);
     expect(selectPrefillChunkSize('smooth-ui', 100, 0.2)).toBe(1);
   });

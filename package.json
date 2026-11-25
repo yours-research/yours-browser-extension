@@ -17,7 +17,8 @@
     "e2e:track2": "node scripts/run-track2-wgsl.mjs",
     "e2e:track2:real": "node scripts/run-track2-real.mjs",
     "bundle:model": "node scripts/bundle-model.mjs",
-    "e2e:track3": "node scripts/run-track3-smoothness.mjs"
+    "e2e:track3": "node scripts/run-track3-smoothness.mjs",
+    "e2e:track4": "node scripts/run-track4-speed.mjs"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.15.38",

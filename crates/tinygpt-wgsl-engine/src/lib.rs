@@ -119,6 +119,8 @@ pub extern "C" fn full_attn_layer_kv_bytes(max_seq: u32, int8_kv: u32) -> u64 {
 /// 16 = qk_norm_rope
 /// 17 = gqa_fp16_prefill
 /// 18 = gqa_int8_prefill
+/// 19 = gdn_chunk_prep
+/// 20 = gdn_chunk_apply
 #[no_mangle]
 pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
     match shader_id {
@@ -141,6 +143,8 @@ pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
         16 => set_shader_bytes(WGSL_QK_NORM_ROPE.as_bytes()),
         17 => set_shader_bytes(WGSL_GQA_FP16_PREFILL.as_bytes()),
         18 => set_shader_bytes(WGSL_GQA_INT8_PREFILL.as_bytes()),
+        19 => set_shader_bytes(WGSL_GDN_CHUNK_PREP.as_bytes()),
+        20 => set_shader_bytes(WGSL_GDN_CHUNK_APPLY.as_bytes()),
         _ => 0,
     }
 }
@@ -264,8 +268,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-// Uses 1 workgroup of 32 threads (1 warp on NVIDIA) per 4 output rows (register-held f16 activations + subgroupAdd).
-// Works across subgroup_size <= 32 without relying on @builtin(subgroup_id).
+// Uses 1 workgroup of 128 threads (8 x 16-lane groups) per 16 output rows.
+// Stages 512 f16 activations per K-tile in workgroup memory and reduces 16 lanes via subgroupShuffleXor.
 const WGSL_Q4_SUBGROUPS_F16: &str = r#"
 enable f16;
 enable subgroups;
@@ -286,7 +290,8 @@ struct GemvParams {
 @group(0) @binding(2) var<storage, read> x: array<f32>;
 @group(0) @binding(3) var<storage, read_write> y: array<f32>;
 
-var<workgroup> sg_tmp: array<vec4<f32>, 32>;
+var<workgroup> x_sh: array<vec4<f16>, 128>;
+var<workgroup> red_sh: array<vec2<f32>, 128>;
 
 fn dot_q4_word(p: u32, s4: vec4<f16>, z4: vec4<f16>, xa: vec4<f16>, xb: vec4<f16>) -> f16 {
   let q0 = vec4<f16>(f16(p & 0xFu), f16((p >> 4u) & 0xFu), f16((p >> 8u) & 0xFu), f16((p >> 12u) & 0xFu));
@@ -311,79 +316,93 @@ fn dot_q4_block(
   return f32(s);
 }
 
-@compute @workgroup_size(32)
+@compute @workgroup_size(128)
 fn main(
   @builtin(workgroup_id) wid: vec3<u32>,
   @builtin(local_invocation_id) lid: vec3<u32>,
-  @builtin(subgroup_invocation_id) sg_inv: u32,
   @builtin(subgroup_size) sg_size: u32,
 ) {
-  let row_base_idx = wid.x * 4u;
+  if (params.rows == 0u) {
+    return;
+  }
   let tid = lid.x;
+  let grp = tid >> 4u;  // 0..7
+  let lane = tid & 15u; // 0..15
+  let rA = wid.x * 16u + grp * 2u;
+  let rB = rA + 1u;
+  let r0 = min(rA, params.rows - 1u);
+  let r1 = min(rB, params.rows - 1u);
+
   let blocks = params.cols >> 5u;
   let row_stride = blocks * 5u;
-
-  var acc = vec4<f32>(0.0);
-  let r0 = row_base_idx;
-  let r1 = min(row_base_idx + 1u, params.rows - 1u);
-  let r2 = min(row_base_idx + 2u, params.rows - 1u);
-  let r3 = min(row_base_idx + 3u, params.rows - 1u);
-
   let o0 = params.w_u32_offset + r0 * row_stride;
   let o1 = params.w_u32_offset + r1 * row_stride;
-  let o2 = params.w_u32_offset + r2 * row_stride;
-  let o3 = params.w_u32_offset + r3 * row_stride;
 
-  for (var b: u32 = tid; b < blocks; b = b + 32u) {
-    let kb = params.in_offset + (b << 5u);
-    let b5 = b * 5u;
+  var acc0: f32 = 0.0;
+  var acc1: f32 = 0.0;
 
-    // Load 32 activations once into f16 register vectors and reuse across all 4 rows
-    let x0a = vec4<f16>(f16(x[kb]), f16(x[kb + 1u]), f16(x[kb + 2u]), f16(x[kb + 3u]));
-    let x0b = vec4<f16>(f16(x[kb + 4u]), f16(x[kb + 5u]), f16(x[kb + 6u]), f16(x[kb + 7u]));
-    let x1a = vec4<f16>(f16(x[kb + 8u]), f16(x[kb + 9u]), f16(x[kb + 10u]), f16(x[kb + 11u]));
-    let x1b = vec4<f16>(f16(x[kb + 12u]), f16(x[kb + 13u]), f16(x[kb + 14u]), f16(x[kb + 15u]));
-    let x2a = vec4<f16>(f16(x[kb + 16u]), f16(x[kb + 17u]), f16(x[kb + 18u]), f16(x[kb + 19u]));
-    let x2b = vec4<f16>(f16(x[kb + 20u]), f16(x[kb + 21u]), f16(x[kb + 22u]), f16(x[kb + 23u]));
-    let x3a = vec4<f16>(f16(x[kb + 24u]), f16(x[kb + 25u]), f16(x[kb + 26u]), f16(x[kb + 27u]));
-    let x3b = vec4<f16>(f16(x[kb + 28u]), f16(x[kb + 29u]), f16(x[kb + 30u]), f16(x[kb + 31u]));
+  for (var b_tile: u32 = 0u; b_tile < blocks; b_tile = b_tile + 16u) {
+    let k_rel = (b_tile << 5u) + (tid << 2u);
+    let k_base = params.in_offset + k_rel;
+    if (k_rel + 3u < params.cols) {
+      x_sh[tid] = vec4<f16>(f16(x[k_base]), f16(x[k_base + 1u]), f16(x[k_base + 2u]), f16(x[k_base + 3u]));
+    } else {
+      let e0 = select(0.0h, f16(x[k_base + 0u]), k_rel + 0u < params.cols);
+      let e1 = select(0.0h, f16(x[k_base + 1u]), k_rel + 1u < params.cols);
+      let e2 = select(0.0h, f16(x[k_base + 2u]), k_rel + 2u < params.cols);
+      let e3 = select(0.0h, f16(x[k_base + 3u]), k_rel + 3u < params.cols);
+      x_sh[tid] = vec4<f16>(e0, e1, e2, e3);
+    }
+    workgroupBarrier();
 
-    let i0 = o0 + b5;
-    let i1 = o1 + b5;
-    let i2 = o2 + b5;
-    let i3 = o3 + b5;
+    let b = b_tile + lane;
+    if (b < blocks) {
+      let xb = lane << 3u;
+      let x0a = x_sh[xb + 0u];
+      let x0b = x_sh[xb + 1u];
+      let x1a = x_sh[xb + 2u];
+      let x1b = x_sh[xb + 3u];
+      let x2a = x_sh[xb + 4u];
+      let x2b = x_sh[xb + 5u];
+      let x3a = x_sh[xb + 6u];
+      let x3b = x_sh[xb + 7u];
 
-    acc.x += dot_q4_block(weights[i0], weights[i0 + 1u], weights[i0 + 2u], weights[i0 + 3u], weights[i0 + 4u], x0a, x0b, x1a, x1b, x2a, x2b, x3a, x3b);
-    acc.y += dot_q4_block(weights[i1], weights[i1 + 1u], weights[i1 + 2u], weights[i1 + 3u], weights[i1 + 4u], x0a, x0b, x1a, x1b, x2a, x2b, x3a, x3b);
-    acc.z += dot_q4_block(weights[i2], weights[i2 + 1u], weights[i2 + 2u], weights[i2 + 3u], weights[i2 + 4u], x0a, x0b, x1a, x1b, x2a, x2b, x3a, x3b);
-    acc.w += dot_q4_block(weights[i3], weights[i3 + 1u], weights[i3 + 2u], weights[i3 + 3u], weights[i3 + 4u], x0a, x0b, x1a, x1b, x2a, x2b, x3a, x3b);
+      let b5 = b * 5u;
+      let i0 = o0 + b5;
+      let i1 = o1 + b5;
+      acc0 += dot_q4_block(weights[i0], weights[i0 + 1u], weights[i0 + 2u], weights[i0 + 3u], weights[i0 + 4u], x0a, x0b, x1a, x1b, x2a, x2b, x3a, x3b);
+      acc1 += dot_q4_block(weights[i1], weights[i1 + 1u], weights[i1 + 2u], weights[i1 + 3u], weights[i1 + 4u], x0a, x0b, x1a, x1b, x2a, x2b, x3a, x3b);
+    }
+    workgroupBarrier();
   }
 
-  let sg_sum = subgroupAdd(acc);
-  sg_tmp[tid] = select(vec4<f32>(0.0), sg_sum, sg_inv == 0u);
-  workgroupBarrier();
+  var sum2 = vec2<f32>(acc0, acc1);
+  if (sg_size >= 16u) {
+    sum2 += subgroupShuffleXor(sum2, 8u);
+    sum2 += subgroupShuffleXor(sum2, 4u);
+    sum2 += subgroupShuffleXor(sum2, 2u);
+    sum2 += subgroupShuffleXor(sum2, 1u);
+  } else {
+    red_sh[tid] = sum2;
+    workgroupBarrier();
+    if (lane == 0u) {
+      var s_acc = vec2<f32>(0.0);
+      let g_base = grp * 16u;
+      for (var l: u32 = 0u; l < 16u; l = l + 1u) {
+        s_acc += red_sh[g_base + l];
+      }
+      sum2 = s_acc;
+    }
+  }
 
-  if (tid == 0u) {
-    var total = vec4<f32>(0.0);
-    let step = max(sg_size, 1u);
-    for (var s: u32 = 0u; s < 32u; s = s + step) {
-      total += sg_tmp[s];
+  if (lane == 0u) {
+    if (rA < params.rows) {
+      let out0 = params.out_offset + rA;
+      y[out0] = select(sum2.x, y[out0] + sum2.x, params.add_residual != 0u);
     }
-    if (r0 < params.rows) {
-      let out0 = params.out_offset + r0;
-      y[out0] = select(total.x, y[out0] + total.x, params.add_residual != 0u);
-    }
-    if (row_base_idx + 1u < params.rows) {
-      let out1 = params.out_offset + row_base_idx + 1u;
-      y[out1] = select(total.y, y[out1] + total.y, params.add_residual != 0u);
-    }
-    if (row_base_idx + 2u < params.rows) {
-      let out2 = params.out_offset + row_base_idx + 2u;
-      y[out2] = select(total.z, y[out2] + total.z, params.add_residual != 0u);
-    }
-    if (row_base_idx + 3u < params.rows) {
-      let out3 = params.out_offset + row_base_idx + 3u;
-      y[out3] = select(total.w, y[out3] + total.w, params.add_residual != 0u);
+    if (rB < params.rows) {
+      let out1 = params.out_offset + rB;
+      y[out1] = select(sum2.y, y[out1] + sum2.y, params.add_residual != 0u);
     }
   }
 }
@@ -486,6 +505,7 @@ struct GqaSplitParams {
 @group(0) @binding(1) var<storage, read> act: array<f32>;
 @group(0) @binding(2) var<storage, read_write> kv_cache: array<u32>; // packed 2x f16 per u32
 @group(0) @binding(3) var<storage, read_write> split_out: array<f32>; // 260 f32s per (q_head, split)
+@group(0) @binding(4) var<storage, read> pos_buf: array<u32>;
 
 var<workgroup> red_buf: array<f32, 128>;
 var<workgroup> cur_buf: array<f32, 64>;
@@ -503,6 +523,7 @@ fn main(
   let tid = lid.x;          // 0..63 -> 4 dims per thread (2 u32s)
   let d2 = tid * 2u;
   let d = tid * 4u;
+  let seq_pos = select(params.seq_pos, pos_buf[1], params.seq_pos == 0xFFFFFFFFu);
 
   let head_u32_stride = params.max_seq * 128u; // 256 f16 = 128 u32 per token
   let kv_plane_u32s = 4u * head_u32_stride;
@@ -519,9 +540,9 @@ fn main(
   var l_sum: f32 = 0.0;
   var acc_v = vec4<f32>(0.0);
 
-  let chunk = (params.seq_pos + params.num_splits - 1u) / params.num_splits;
-  let t_start = min(split_id * chunk, params.seq_pos);
-  let t_end = min(t_start + chunk, params.seq_pos);
+  let chunk = (seq_pos + params.num_splits - 1u) / params.num_splits;
+  let t_start = min(split_id * chunk, seq_pos);
+  let t_end = min(t_start + chunk, seq_pos);
 
   for (var t: u32 = t_start; t < t_end; t = t + 1u) {
     let k_src = k_head_base + t * 128u + d2;
@@ -562,8 +583,8 @@ fn main(
     let v1h = vec2<f16>(f16(act[v_in + 2u]), f16(act[v_in + 3u]));
 
     if ((q_head & 3u) == 0u) {
-      let k_dst = k_head_base + params.seq_pos * 128u + d2;
-      let v_dst = v_head_base + params.seq_pos * 128u + d2;
+      let k_dst = k_head_base + seq_pos * 128u + d2;
+      let v_dst = v_head_base + seq_pos * 128u + d2;
       kv_cache[k_dst] = bitcast<u32>(k0h);
       kv_cache[k_dst + 1u] = bitcast<u32>(k1h);
       kv_cache[v_dst] = bitcast<u32>(v0h);
@@ -621,6 +642,7 @@ struct GqaSplitParams {
 @group(0) @binding(1) var<storage, read> act: array<f32>;
 @group(0) @binding(2) var<storage, read_write> kv_cache: array<u32>;
 @group(0) @binding(3) var<storage, read_write> split_out: array<f32>;
+@group(0) @binding(4) var<storage, read> pos_buf: array<u32>;
 
 var<workgroup> red_buf: array<f32, 128>;
 var<workgroup> cur_kv_max: array<vec2<f32>, 64>;
@@ -656,6 +678,7 @@ fn main(
   let kv_head = q_head >> 2u;
   let tid = lid.x; // 0..63 -> 1 packed u32 (4 int8 dims) per thread
   let d = tid * 4u;
+  let seq_pos = select(params.seq_pos, pos_buf[1], params.seq_pos == 0xFFFFFFFFu);
 
   let head_u32_stride = params.max_seq * 65u;
   let kv_plane_u32s = 4u * head_u32_stride;
@@ -672,9 +695,9 @@ fn main(
   var l_sum: f32 = 0.0;
   var acc_v = vec4<f32>(0.0);
 
-  let chunk = (params.seq_pos + params.num_splits - 1u) / params.num_splits;
-  let t_start = min(split_id * chunk, params.seq_pos);
-  let t_end = min(t_start + chunk, params.seq_pos);
+  let chunk = (seq_pos + params.num_splits - 1u) / params.num_splits;
+  let t_start = min(split_id * chunk, seq_pos);
+  let t_end = min(t_start + chunk, seq_pos);
 
   for (var t: u32 = t_start; t < t_end; t = t + 1u) {
     let k_src = k_head_base + t * 65u;
@@ -727,8 +750,8 @@ fn main(
     let qv = pack4_i8(vv4 / scales.y);
 
     if ((q_head & 3u) == 0u) {
-      let k_dst = k_head_base + params.seq_pos * 65u;
-      let v_dst = v_head_base + params.seq_pos * 65u;
+      let k_dst = k_head_base + seq_pos * 65u;
+      let v_dst = v_head_base + seq_pos * 65u;
       kv_cache[k_dst + tid] = qk;
       kv_cache[v_dst + tid] = qv;
       if (tid == 0u) {
@@ -1104,7 +1127,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-// Batched Q4-f16 GEMM [M, K] x [N, K]^T -> [M, N] via 32x32x32 shared-memory tiling
+// Batched Q4-f16 GEMM [M, K] x [N, K]^T -> [M, N] via 64x64x32 shared-memory tiling
 const WGSL_Q4_GEMM_F16: &str = r#"
 enable f16;
 
@@ -1124,8 +1147,8 @@ struct GemmParams {
 @group(0) @binding(2) var<storage, read> x: array<f32>;
 @group(0) @binding(3) var<storage, read_write> y: array<f32>;
 
-var<workgroup> x_sh: array<vec4<f16>, 256>;
-var<workgroup> w_sh: array<vec4<f16>, 256>;
+var<workgroup> x_sh: array<vec4<f16>, 512>;
+var<workgroup> w_sh: array<vec4<f16>, 512>;
 
 fn unpack_nibble_vec(word: u32, shift_base: u32, s4: vec4<f16>, z4: vec4<f16>) -> vec4<f16> {
   let q = vec4<f16>(
@@ -1148,16 +1171,16 @@ fn store_cell(tok: u32, row: u32, val: f32) {
   }
 }
 
-@compute @workgroup_size(8, 8)
+@compute @workgroup_size(16, 16)
 fn main(
   @builtin(workgroup_id) wid: vec3<u32>,
   @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
-  let row_tile = wid.x * 32u;
-  let tok_tile = wid.y * 32u;
+  let row_tile = wid.x * 64u;
+  let tok_tile = wid.y * 64u;
   let lx = lid.x;
   let ly = lid.y;
-  let tid = ly * 8u + lx;
+  let tid = ly * 16u + lx;
   let blocks = params.K >> 5u;
 
   var acc0 = vec4<f32>(0.0);
@@ -1165,23 +1188,20 @@ fn main(
   var acc2 = vec4<f32>(0.0);
   var acc3 = vec4<f32>(0.0);
 
-  let loc_idx = tid >> 1u;
-  let half = tid & 1u;
-  let sh_base = loc_idx * 8u + half * 4u;
+  let loc_idx = tid >> 2u; // 0..63
+  let qtr = tid & 3u;      // 0..3 (8 elements per quarter)
+  let k4_0 = qtr * 2u;
+  let k4_1 = k4_0 + 1u;
 
   for (var b: u32 = 0u; b < blocks; b = b + 1u) {
     let gt = tok_tile + loc_idx;
     if (gt < params.M) {
-      let xb = params.in_offset + gt * params.K + (b << 5u) + (half << 4u);
-      x_sh[sh_base + 0u] = vec4<f16>(f16(x[xb + 0u]), f16(x[xb + 1u]), f16(x[xb + 2u]), f16(x[xb + 3u]));
-      x_sh[sh_base + 1u] = vec4<f16>(f16(x[xb + 4u]), f16(x[xb + 5u]), f16(x[xb + 6u]), f16(x[xb + 7u]));
-      x_sh[sh_base + 2u] = vec4<f16>(f16(x[xb + 8u]), f16(x[xb + 9u]), f16(x[xb + 10u]), f16(x[xb + 11u]));
-      x_sh[sh_base + 3u] = vec4<f16>(f16(x[xb + 12u]), f16(x[xb + 13u]), f16(x[xb + 14u]), f16(x[xb + 15u]));
+      let xb = params.in_offset + gt * params.K + (b << 5u) + (qtr << 3u);
+      x_sh[k4_0 * 64u + loc_idx] = vec4<f16>(f16(x[xb + 0u]), f16(x[xb + 1u]), f16(x[xb + 2u]), f16(x[xb + 3u]));
+      x_sh[k4_1 * 64u + loc_idx] = vec4<f16>(f16(x[xb + 4u]), f16(x[xb + 5u]), f16(x[xb + 6u]), f16(x[xb + 7u]));
     } else {
-      x_sh[sh_base + 0u] = vec4<f16>(0.0h);
-      x_sh[sh_base + 1u] = vec4<f16>(0.0h);
-      x_sh[sh_base + 2u] = vec4<f16>(0.0h);
-      x_sh[sh_base + 3u] = vec4<f16>(0.0h);
+      x_sh[k4_0 * 64u + loc_idx] = vec4<f16>(0.0h);
+      x_sh[k4_1 * 64u + loc_idx] = vec4<f16>(0.0h);
     }
 
     let gr = row_tile + loc_idx;
@@ -1190,31 +1210,25 @@ fn main(
       let blk_meta = bitcast<vec2<f16>>(weights[bi + 4u]);
       let s4 = vec4<f16>(blk_meta.x);
       let z4 = vec4<f16>(blk_meta.y);
-      let p0 = weights[bi + half * 2u];
-      let p1 = weights[bi + half * 2u + 1u];
-      w_sh[sh_base + 0u] = unpack_nibble_vec(p0, 0u, s4, z4);
-      w_sh[sh_base + 1u] = unpack_nibble_vec(p0, 16u, s4, z4);
-      w_sh[sh_base + 2u] = unpack_nibble_vec(p1, 0u, s4, z4);
-      w_sh[sh_base + 3u] = unpack_nibble_vec(p1, 16u, s4, z4);
+      let pw = weights[bi + qtr];
+      w_sh[k4_0 * 64u + loc_idx] = unpack_nibble_vec(pw, 0u, s4, z4);
+      w_sh[k4_1 * 64u + loc_idx] = unpack_nibble_vec(pw, 16u, s4, z4);
     } else {
-      w_sh[sh_base + 0u] = vec4<f16>(0.0h);
-      w_sh[sh_base + 1u] = vec4<f16>(0.0h);
-      w_sh[sh_base + 2u] = vec4<f16>(0.0h);
-      w_sh[sh_base + 3u] = vec4<f16>(0.0h);
+      w_sh[k4_0 * 64u + loc_idx] = vec4<f16>(0.0h);
+      w_sh[k4_1 * 64u + loc_idx] = vec4<f16>(0.0h);
     }
     workgroupBarrier();
 
-    let r0 = ly << 2u;
-    let t0 = lx << 2u;
     for (var k4: u32 = 0u; k4 < 8u; k4 = k4 + 1u) {
-      let wv0 = w_sh[(r0 + 0u) * 8u + k4];
-      let wv1 = w_sh[(r0 + 1u) * 8u + k4];
-      let wv2 = w_sh[(r0 + 2u) * 8u + k4];
-      let wv3 = w_sh[(r0 + 3u) * 8u + k4];
-      let xv0 = x_sh[(t0 + 0u) * 8u + k4];
-      let xv1 = x_sh[(t0 + 1u) * 8u + k4];
-      let xv2 = x_sh[(t0 + 2u) * 8u + k4];
-      let xv3 = x_sh[(t0 + 3u) * 8u + k4];
+      let kb = k4 * 64u;
+      let wv0 = w_sh[kb + ly + 0u];
+      let wv1 = w_sh[kb + ly + 16u];
+      let wv2 = w_sh[kb + ly + 32u];
+      let wv3 = w_sh[kb + ly + 48u];
+      let xv0 = x_sh[kb + lx + 0u];
+      let xv1 = x_sh[kb + lx + 16u];
+      let xv2 = x_sh[kb + lx + 32u];
+      let xv3 = x_sh[kb + lx + 48u];
       acc0 += vec4<f32>(f32(dot(wv0, xv0)), f32(dot(wv0, xv1)), f32(dot(wv0, xv2)), f32(dot(wv0, xv3)));
       acc1 += vec4<f32>(f32(dot(wv1, xv0)), f32(dot(wv1, xv1)), f32(dot(wv1, xv2)), f32(dot(wv1, xv3)));
       acc2 += vec4<f32>(f32(dot(wv2, xv0)), f32(dot(wv2, xv1)), f32(dot(wv2, xv2)), f32(dot(wv2, xv3)));
@@ -1223,27 +1237,27 @@ fn main(
     workgroupBarrier();
   }
 
-  let out_t = tok_tile + (lx << 2u);
-  let out_r = row_tile + (ly << 2u);
+  let out_t = tok_tile + lx;
+  let out_r = row_tile + ly;
   store_cell(out_t + 0u, out_r + 0u, acc0.x);
-  store_cell(out_t + 1u, out_r + 0u, acc0.y);
-  store_cell(out_t + 2u, out_r + 0u, acc0.z);
-  store_cell(out_t + 3u, out_r + 0u, acc0.w);
+  store_cell(out_t + 16u, out_r + 0u, acc0.y);
+  store_cell(out_t + 32u, out_r + 0u, acc0.z);
+  store_cell(out_t + 48u, out_r + 0u, acc0.w);
 
-  store_cell(out_t + 0u, out_r + 1u, acc1.x);
-  store_cell(out_t + 1u, out_r + 1u, acc1.y);
-  store_cell(out_t + 2u, out_r + 1u, acc1.z);
-  store_cell(out_t + 3u, out_r + 1u, acc1.w);
+  store_cell(out_t + 0u, out_r + 16u, acc1.x);
+  store_cell(out_t + 16u, out_r + 16u, acc1.y);
+  store_cell(out_t + 32u, out_r + 16u, acc1.z);
+  store_cell(out_t + 48u, out_r + 16u, acc1.w);
 
-  store_cell(out_t + 0u, out_r + 2u, acc2.x);
-  store_cell(out_t + 1u, out_r + 2u, acc2.y);
-  store_cell(out_t + 2u, out_r + 2u, acc2.z);
-  store_cell(out_t + 3u, out_r + 2u, acc2.w);
+  store_cell(out_t + 0u, out_r + 32u, acc2.x);
+  store_cell(out_t + 16u, out_r + 32u, acc2.y);
+  store_cell(out_t + 32u, out_r + 32u, acc2.z);
+  store_cell(out_t + 48u, out_r + 32u, acc2.w);
 
-  store_cell(out_t + 0u, out_r + 3u, acc3.x);
-  store_cell(out_t + 1u, out_r + 3u, acc3.y);
-  store_cell(out_t + 2u, out_r + 3u, acc3.z);
-  store_cell(out_t + 3u, out_r + 3u, acc3.w);
+  store_cell(out_t + 0u, out_r + 48u, acc3.x);
+  store_cell(out_t + 16u, out_r + 48u, acc3.y);
+  store_cell(out_t + 32u, out_r + 48u, acc3.z);
+  store_cell(out_t + 48u, out_r + 48u, acc3.w);
 }
 "#;
 
@@ -1418,6 +1432,7 @@ struct QkRopeParams {
 @group(0) @binding(0) var<uniform> params: QkRopeParams;
 @group(0) @binding(1) var<storage, read> aux: array<f32>;
 @group(0) @binding(2) var<storage, read_write> work: array<f32>;
+@group(0) @binding(3) var<storage, read> pos_buf: array<u32>;
 
 var<workgroup> sq_buf: array<f32, 256>;
 var<workgroup> sh_head: array<f32, 256>;
@@ -1456,7 +1471,8 @@ fn main(
   sh_head[d] = val * inv_rms * nw;
   workgroupBarrier();
 
-  let pos = f32(params.start_pos + tok);
+  let start_pos_u32 = select(params.start_pos, pos_buf[1], params.start_pos == 0xFFFFFFFFu);
+  let pos = f32(start_pos_u32 + tok);
   var out_val = sh_head[d];
   if (d < 32u) {
     let ang = pos * aux[params.inv_freq_offset + d];
@@ -1940,6 +1956,462 @@ fn main(
     write_split_out(tok1, qh0 + 2u, split_id, num_splits, d, tid, acc6, mB.z, lB.z);
     write_split_out(tok1, qh0 + 3u, split_id, num_splits, d, tid, acc7, mB.w, lB.w);
   }
+}
+"#;
+
+// Chunkwise Parallel Gated DeltaNet WY Prep (C <= 32 tokens per sub-chunk, zero local-array spills)
+// Dispatch (32, 1, 1) with @workgroup_size(128) -> 1 workgroup per v_head
+const WGSL_GDN_CHUNK_PREP: &str = r#"
+enable subgroups;
+
+struct GdnPrepParams {
+  num_tokens: u32,
+  tok_start: u32,
+  aux_dn_offset: u32,
+  qkv_offset: u32,
+  ab_offset: u32,
+  scratch_offset: u32,
+  _pad0: u32,
+  _pad1: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: GdnPrepParams;
+@group(0) @binding(1) var<storage, read> aux: array<f32>;
+@group(0) @binding(2) var<storage, read> work: array<f32>;
+@group(0) @binding(3) var<storage, read_write> scratch: array<f32>;
+
+var<workgroup> sh_M: array<f32, 1024>;
+var<workgroup> sh_a: array<f32, 1024>;
+var<workgroup> sh_b: array<f32, 1024>;
+var<workgroup> sh_red_q: array<f32, 256>;
+var<workgroup> sh_red_k: array<f32, 256>;
+var<workgroup> sh_G: array<f32, 32>;
+var<workgroup> sh_beta: array<f32, 32>;
+
+@compute @workgroup_size(128)
+fn main(
+  @builtin(workgroup_id) wid: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(subgroup_invocation_id) sg_inv: u32,
+  @builtin(subgroup_size) sg_size: u32,
+) {
+  let C = params.num_tokens;
+  if (C == 0u) {
+    return;
+  }
+  let v_head = wid.x;
+  let j = lid.x;
+  let k_head = v_head >> 1u;
+  let sg_step = max(sg_size, 1u);
+
+  let G_off = params.scratch_offset + 0u;
+  let QK_off = params.scratch_offset + 1024u;
+  let W_off = params.scratch_offset + 33792u;
+  let Q_off = params.scratch_offset + 164864u;
+  let K_dec_off = params.scratch_offset + 295936u;
+  let U_off = params.scratch_offset + 427008u;
+
+  let a_neg = aux[params.aux_dn_offset + v_head];
+  let dt_b = aux[params.aux_dn_offset + 32u + v_head];
+  var g_cum: f32 = 0.0;
+
+  // Step 1: L2-normalize Q/K directly to scratch + compute beta_t, cumulative G_t
+  for (var t: u32 = 0u; t < C; t = t + 1u) {
+    let qkv_t = params.qkv_offset + (params.tok_start + t) * 8192u;
+    let q_raw = work[qkv_t + k_head * 128u + j];
+    let k_raw = work[qkv_t + 2048u + k_head * 128u + j];
+
+    let slot = (t & 1u) * 128u;
+    let sg_q = subgroupAdd(q_raw * q_raw);
+    let sg_k = subgroupAdd(k_raw * k_raw);
+    sh_red_q[slot + j] = select(0.0, sg_q, sg_inv == 0u);
+    sh_red_k[slot + j] = select(0.0, sg_k, sg_inv == 0u);
+    workgroupBarrier();
+
+    var sq_q: f32 = 0.0;
+    var sq_k: f32 = 0.0;
+    for (var s: u32 = 0u; s < 128u; s = s + sg_step) {
+      sq_q += sh_red_q[slot + s];
+      sq_k += sh_red_k[slot + s];
+    }
+    let inv_q = inverseSqrt(sq_q + 1e-6) * 0.08838834764831845;
+    let inv_k = inverseSqrt(sq_k + 1e-6);
+    let sc_idx = (v_head * 128u + j) * 32u + t;
+    scratch[Q_off + sc_idx] = q_raw * inv_q;
+    scratch[K_dec_off + sc_idx] = k_raw * inv_k;
+
+    if (j == 0u) {
+      let ab_t = params.ab_offset + (params.tok_start + t) * 64u;
+      let b_raw = work[ab_t + v_head];
+      let a_raw = work[ab_t + 32u + v_head];
+      sh_beta[t] = 1.0 / (1.0 + exp(-b_raw));
+      let u = a_raw + dt_b;
+      let sp = select(log(1.0 + exp(u)), u, u > 20.0);
+      g_cum += a_neg * sp;
+      sh_G[t] = g_cum;
+      scratch[G_off + v_head * 32u + t] = g_cum;
+    }
+  }
+
+  for (var k: u32 = 0u; k < 8u; k = k + 1u) {
+    let idx = k * 128u + j;
+    let tr = idx >> 5u;
+    let tc = idx & 31u;
+    sh_M[idx] = select(0.0, 1.0, tr == tc);
+  }
+  storageBarrier();
+  workgroupBarrier();
+
+  // Step 2: Compute A[t, r] and QK_causal[t, r] across 4 i-tiles (32 dims/tile, 8 barriers total)
+  let tx = j & 31u;
+  let r0 = (j >> 5u) * 8u;
+  var kk0: f32 = 0.0; var kk1: f32 = 0.0; var kk2: f32 = 0.0; var kk3: f32 = 0.0;
+  var kk4: f32 = 0.0; var kk5: f32 = 0.0; var kk6: f32 = 0.0; var kk7: f32 = 0.0;
+  var qk0: f32 = 0.0; var qk1: f32 = 0.0; var qk2: f32 = 0.0; var qk3: f32 = 0.0;
+  var qk4: f32 = 0.0; var qk5: f32 = 0.0; var qk6: f32 = 0.0; var qk7: f32 = 0.0;
+
+  for (var i_tile: u32 = 0u; i_tile < 4u; i_tile = i_tile + 1u) {
+    for (var k: u32 = 0u; k < 8u; k = k + 1u) {
+      let idx = k * 128u + j;
+      let i_sub = idx >> 5u;
+      let t_sub = idx & 31u;
+      if (t_sub < C) {
+        let sc_idx = (v_head * 128u + i_tile * 32u + i_sub) * 32u + t_sub;
+        sh_a[idx] = scratch[K_dec_off + sc_idx];
+        sh_b[idx] = scratch[Q_off + sc_idx];
+      } else {
+        sh_a[idx] = 0.0;
+        sh_b[idx] = 0.0;
+      }
+    }
+    workgroupBarrier();
+
+    for (var ii: u32 = 0u; ii < 32u; ii = ii + 1u) {
+      let rb = ii * 32u;
+      let k_tx = sh_a[rb + tx];
+      let q_tx = sh_b[rb + tx];
+      let kr0 = sh_a[rb + r0 + 0u]; let kr1 = sh_a[rb + r0 + 1u];
+      let kr2 = sh_a[rb + r0 + 2u]; let kr3 = sh_a[rb + r0 + 3u];
+      let kr4 = sh_a[rb + r0 + 4u]; let kr5 = sh_a[rb + r0 + 5u];
+      let kr6 = sh_a[rb + r0 + 6u]; let kr7 = sh_a[rb + r0 + 7u];
+      kk0 += k_tx * kr0; kk1 += k_tx * kr1; kk2 += k_tx * kr2; kk3 += k_tx * kr3;
+      kk4 += k_tx * kr4; kk5 += k_tx * kr5; kk6 += k_tx * kr6; kk7 += k_tx * kr7;
+      qk0 += q_tx * kr0; qk1 += q_tx * kr1; qk2 += q_tx * kr2; qk3 += q_tx * kr3;
+      qk4 += q_tx * kr4; qk5 += q_tx * kr5; qk6 += q_tx * kr6; qk7 += q_tx * kr7;
+    }
+    workgroupBarrier();
+  }
+
+  if (tx < C) {
+    let gt = sh_G[tx];
+    let bt = sh_beta[tx];
+    let qk_row = (v_head * 32u + tx) * 32u;
+    if (r0 + 0u <= tx) { let d = exp(gt - sh_G[r0 + 0u]); scratch[QK_off + qk_row + r0 + 0u] = d * qk0; if (r0 + 0u < tx) { sh_M[tx * 32u + r0 + 0u] = bt * d * kk0; } }
+    if (r0 + 1u <= tx) { let d = exp(gt - sh_G[r0 + 1u]); scratch[QK_off + qk_row + r0 + 1u] = d * qk1; if (r0 + 1u < tx) { sh_M[tx * 32u + r0 + 1u] = bt * d * kk1; } }
+    if (r0 + 2u <= tx) { let d = exp(gt - sh_G[r0 + 2u]); scratch[QK_off + qk_row + r0 + 2u] = d * qk2; if (r0 + 2u < tx) { sh_M[tx * 32u + r0 + 2u] = bt * d * kk2; } }
+    if (r0 + 3u <= tx) { let d = exp(gt - sh_G[r0 + 3u]); scratch[QK_off + qk_row + r0 + 3u] = d * qk3; if (r0 + 3u < tx) { sh_M[tx * 32u + r0 + 3u] = bt * d * kk3; } }
+    if (r0 + 4u <= tx) { let d = exp(gt - sh_G[r0 + 4u]); scratch[QK_off + qk_row + r0 + 4u] = d * qk4; if (r0 + 4u < tx) { sh_M[tx * 32u + r0 + 4u] = bt * d * kk4; } }
+    if (r0 + 5u <= tx) { let d = exp(gt - sh_G[r0 + 5u]); scratch[QK_off + qk_row + r0 + 5u] = d * qk5; if (r0 + 5u < tx) { sh_M[tx * 32u + r0 + 5u] = bt * d * kk5; } }
+    if (r0 + 6u <= tx) { let d = exp(gt - sh_G[r0 + 6u]); scratch[QK_off + qk_row + r0 + 6u] = d * qk6; if (r0 + 6u < tx) { sh_M[tx * 32u + r0 + 6u] = bt * d * kk6; } }
+    if (r0 + 7u <= tx) { let d = exp(gt - sh_G[r0 + 7u]); scratch[QK_off + qk_row + r0 + 7u] = d * qk7; if (r0 + 7u < tx) { sh_M[tx * 32u + r0 + 7u] = bt * d * kk7; } }
+  }
+  workgroupBarrier();
+
+  // Step 3: Forward substitution (I + A) T = I in-place in sh_M
+  for (var t: u32 = 1u; t < C; t = t + 1u) {
+    var val: f32 = 0.0;
+    if (j < t) {
+      var acc: f32 = sh_M[t * 32u + j];
+      for (var m: u32 = j + 1u; m < t; m = m + 1u) {
+        acc += sh_M[t * 32u + m] * sh_M[m * 32u + j];
+      }
+      val = -acc;
+    }
+    workgroupBarrier();
+    if (j < t) {
+      sh_M[t * 32u + j] = val;
+    }
+    workgroupBarrier();
+  }
+
+  // Step 4: Compute W, U, K_dec in scratch via coalesced shared-memory tiles (zero inner-loop exp/global loads)
+  for (var k: u32 = 0u; k < 8u; k = k + 1u) {
+    let idx = k * 128u + j;
+    let t = idx >> 5u;
+    let r = idx & 31u;
+    if (t < C && r <= t) {
+      sh_M[idx] = sh_M[idx] * sh_beta[r];
+    }
+  }
+  workgroupBarrier();
+  if (j < C) {
+    sh_beta[j] = exp(sh_G[j]);
+  }
+  workgroupBarrier();
+
+  let t_grp = j >> 5u;
+  let j_sub = j & 31u;
+  for (var j_tile: u32 = 0u; j_tile < 4u; j_tile = j_tile + 1u) {
+    let j_base = j_tile * 32u;
+    for (var k: u32 = 0u; k < 8u; k = k + 1u) {
+      let r = k * 4u + t_grp;
+      if (r < C) {
+        sh_a[r * 32u + j_sub] = scratch[K_dec_off + (v_head * 128u + j_base + j_sub) * 32u + r] * sh_beta[r];
+        sh_b[r * 32u + j_sub] = work[params.qkv_offset + (params.tok_start + r) * 8192u + 4096u + v_head * 128u + j_base + j_sub];
+      }
+    }
+    workgroupBarrier();
+
+    for (var t: u32 = t_grp; t < C; t = t + 4u) {
+      var w_acc: f32 = 0.0;
+      var u_acc: f32 = 0.0;
+      let m_row = t * 32u;
+      for (var r: u32 = 0u; r <= t; r = r + 1u) {
+        let tr_br = sh_M[m_row + r];
+        let s_idx = r * 32u + j_sub;
+        w_acc += tr_br * sh_a[s_idx];
+        u_acc += tr_br * sh_b[s_idx];
+      }
+      scratch[W_off + (v_head * 128u + j_base + j_sub) * 32u + t] = w_acc;
+      scratch[U_off + (v_head * 32u + t) * 128u + j_base + j_sub] = u_acc;
+    }
+    workgroupBarrier();
+  }
+
+  let g_last = sh_G[C - 1u];
+  let k_base_j = K_dec_off + (v_head * 128u + j) * 32u;
+  for (var t: u32 = 0u; t < C; t = t + 1u) {
+    scratch[k_base_j + t] = exp(g_last - sh_G[t]) * scratch[k_base_j + t];
+  }
+}
+"#;
+
+// Chunkwise Parallel Gated DeltaNet Apply & Gated RMSNorm (zero local-array spills)
+// mode 0: Dispatch (32, 8, 1) with @workgroup_size(128) -> 8 i-slices x 16 j-cols, reads & writes dn_state ONCE
+// mode 1: Dispatch (32, M, 1) with @workgroup_size(128) -> Gated RMSNorm over attn_out
+const WGSL_GDN_CHUNK_APPLY: &str = r#"
+enable subgroups;
+
+struct GdnApplyParams {
+  mode: u32,
+  num_tokens: u32,
+  tok_start: u32,
+  state_f32_offset: u32,
+  aux_dn_offset: u32,
+  z_offset: u32,
+  out_offset: u32,
+  _pad0: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: GdnApplyParams;
+@group(0) @binding(1) var<storage, read> aux: array<f32>;
+@group(0) @binding(2) var<storage, read> work: array<f32>;
+@group(0) @binding(3) var<storage, read> scratch: array<f32>;
+@group(0) @binding(4) var<storage, read_write> dn_state: array<f32>;
+@group(0) @binding(5) var<storage, read_write> attn_out: array<f32>;
+
+var<workgroup> sh_a: array<f32, 512>;
+var<workgroup> sh_b: array<f32, 512>;
+var<workgroup> sh_red: array<f32, 512>;
+var<workgroup> sh_delta: array<f32, 512>;
+var<workgroup> sh_raw: array<f32, 512>;
+var<workgroup> sh_qk: array<f32, 1024>;
+var<workgroup> sh_G: array<f32, 32>;
+
+fn dot16_a(base: u32, sv0: vec4<f32>, sv1: vec4<f32>, sv2: vec4<f32>, sv3: vec4<f32>) -> f32 {
+  let v0 = vec4<f32>(sh_a[base + 0u], sh_a[base + 1u], sh_a[base + 2u], sh_a[base + 3u]);
+  let v1 = vec4<f32>(sh_a[base + 4u], sh_a[base + 5u], sh_a[base + 6u], sh_a[base + 7u]);
+  let v2 = vec4<f32>(sh_a[base + 8u], sh_a[base + 9u], sh_a[base + 10u], sh_a[base + 11u]);
+  let v3 = vec4<f32>(sh_a[base + 12u], sh_a[base + 13u], sh_a[base + 14u], sh_a[base + 15u]);
+  return dot(sv0, v0) + dot(sv1, v1) + dot(sv2, v2) + dot(sv3, v3);
+}
+
+fn dot16_b(base: u32, sv0: vec4<f32>, sv1: vec4<f32>, sv2: vec4<f32>, sv3: vec4<f32>) -> f32 {
+  let v0 = vec4<f32>(sh_b[base + 0u], sh_b[base + 1u], sh_b[base + 2u], sh_b[base + 3u]);
+  let v1 = vec4<f32>(sh_b[base + 4u], sh_b[base + 5u], sh_b[base + 6u], sh_b[base + 7u]);
+  let v2 = vec4<f32>(sh_b[base + 8u], sh_b[base + 9u], sh_b[base + 10u], sh_b[base + 11u]);
+  let v3 = vec4<f32>(sh_b[base + 12u], sh_b[base + 13u], sh_b[base + 14u], sh_b[base + 15u]);
+  return dot(sv0, v0) + dot(sv1, v1) + dot(sv2, v2) + dot(sv3, v3);
+}
+
+@compute @workgroup_size(128)
+fn main(
+  @builtin(workgroup_id) wid: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(subgroup_invocation_id) sg_inv: u32,
+  @builtin(subgroup_size) sg_size: u32,
+) {
+  let sg_step = max(sg_size, 1u);
+
+  if (params.mode == 1u) {
+    let v_head = wid.x;
+    let tok = wid.y;
+    let j = lid.x;
+    let out_idx = params.out_offset + tok * 4096u + v_head * 128u + j;
+    let out_val = attn_out[out_idx];
+    let sg_sq = subgroupAdd(out_val * out_val);
+    sh_red[j] = select(0.0, sg_sq, sg_inv == 0u);
+    workgroupBarrier();
+    var sq: f32 = 0.0;
+    for (var s: u32 = 0u; s < 128u; s = s + sg_step) {
+      sq += sh_red[s];
+    }
+    let inv_rms = inverseSqrt(sq / 128.0 + 1e-6);
+    let z_val = work[params.z_offset + tok * 4096u + v_head * 128u + j];
+    let z_silu = z_val / (1.0 + exp(-z_val));
+    let gdn_norm_w = aux[params.aux_dn_offset + 64u + j];
+    attn_out[out_idx] = (out_val * inv_rms) * z_silu * gdn_norm_w;
+    return;
+  }
+
+  let C = params.num_tokens;
+  if (C == 0u) {
+    return;
+  }
+  let v_head = wid.x;
+  let j_tile = wid.y;
+  let tid = lid.x;
+  let j_local = tid & 15u;       // 0..15
+  let j = j_tile * 16u + j_local;
+  let i_slice = tid >> 4u;       // 0..7
+  let i_base = i_slice * 16u;    // 0, 16, ..., 112
+
+  let G_off = 0u;
+  let QK_off = 1024u;
+  let W_off = 33792u;
+  let Q_off = 164864u;
+  let K_dec_off = 295936u;
+  let U_off = 427008u;
+
+  for (var k: u32 = 0u; k < 8u; k = k + 1u) {
+    let idx = k * 128u + tid;
+    sh_qk[idx] = scratch[QK_off + v_head * 1024u + idx];
+  }
+  if (tid < C) {
+    sh_G[tid] = scratch[G_off + v_head * 32u + tid];
+  }
+
+  let s_base = params.state_f32_offset + v_head * 16384u + i_base * 128u + j;
+  var sv0 = vec4<f32>(dn_state[s_base + 0u * 128u], dn_state[s_base + 1u * 128u], dn_state[s_base + 2u * 128u], dn_state[s_base + 3u * 128u]);
+  var sv1 = vec4<f32>(dn_state[s_base + 4u * 128u], dn_state[s_base + 5u * 128u], dn_state[s_base + 6u * 128u], dn_state[s_base + 7u * 128u]);
+  var sv2 = vec4<f32>(dn_state[s_base + 8u * 128u], dn_state[s_base + 9u * 128u], dn_state[s_base + 10u * 128u], dn_state[s_base + 11u * 128u]);
+  var sv3 = vec4<f32>(dn_state[s_base + 12u * 128u], dn_state[s_base + 13u * 128u], dn_state[s_base + 14u * 128u], dn_state[s_base + 15u * 128u]);
+
+  // Process W*S and Q*S in 4-token blocks (zero private array spills)
+  for (var t_blk: u32 = 0u; t_blk < C; t_blk = t_blk + 4u) {
+    for (var tt: u32 = 0u; tt < 4u; tt = tt + 1u) {
+      let t_abs = t_blk + tt;
+      let dst_idx = tt * 128u + tid;
+      if (t_abs < C) {
+        let sc_idx = (v_head * 128u + tid) * 32u + t_abs;
+        sh_a[dst_idx] = scratch[W_off + sc_idx];
+        sh_b[dst_idx] = scratch[Q_off + sc_idx];
+      } else {
+        sh_a[dst_idx] = 0.0;
+        sh_b[dst_idx] = 0.0;
+      }
+    }
+    workgroupBarrier();
+
+    let ws0 = dot16_a(0u * 128u + i_base, sv0, sv1, sv2, sv3);
+    let ws1 = dot16_a(1u * 128u + i_base, sv0, sv1, sv2, sv3);
+    let ws2 = dot16_a(2u * 128u + i_base, sv0, sv1, sv2, sv3);
+    let ws3 = dot16_a(3u * 128u + i_base, sv0, sv1, sv2, sv3);
+    let red_base = (i_slice * 16u + j_local) * 4u;
+    sh_red[red_base + 0u] = ws0;
+    sh_red[red_base + 1u] = ws1;
+    sh_red[red_base + 2u] = ws2;
+    sh_red[red_base + 3u] = ws3;
+    workgroupBarrier();
+
+    if (i_slice == 0u) {
+      for (var tt: u32 = 0u; tt < 4u; tt = tt + 1u) {
+        let t_abs = t_blk + tt;
+        if (t_abs < C) {
+          var w_sum: f32 = 0.0;
+          for (var sl: u32 = 0u; sl < 8u; sl = sl + 1u) {
+            w_sum += sh_red[(sl * 16u + j_local) * 4u + tt];
+          }
+          let u_val = scratch[U_off + (v_head * 32u + t_abs) * 128u + j];
+          sh_delta[t_abs * 16u + j_local] = u_val - w_sum;
+        }
+      }
+    }
+    workgroupBarrier();
+
+    let qs0 = dot16_b(0u * 128u + i_base, sv0, sv1, sv2, sv3);
+    let qs1 = dot16_b(1u * 128u + i_base, sv0, sv1, sv2, sv3);
+    let qs2 = dot16_b(2u * 128u + i_base, sv0, sv1, sv2, sv3);
+    let qs3 = dot16_b(3u * 128u + i_base, sv0, sv1, sv2, sv3);
+    sh_red[red_base + 0u] = qs0;
+    sh_red[red_base + 1u] = qs1;
+    sh_red[red_base + 2u] = qs2;
+    sh_red[red_base + 3u] = qs3;
+    workgroupBarrier();
+
+    if (i_slice == 0u) {
+      for (var tt: u32 = 0u; tt < 4u; tt = tt + 1u) {
+        let t_abs = t_blk + tt;
+        if (t_abs < C) {
+          var q_sum: f32 = 0.0;
+          for (var sl: u32 = 0u; sl < 8u; sl = sl + 1u) {
+            q_sum += sh_red[(sl * 16u + j_local) * 4u + tt];
+          }
+          sh_raw[t_abs * 16u + j_local] = q_sum;
+        }
+      }
+    }
+    workgroupBarrier();
+  }
+
+  if (i_slice == 0u) {
+    for (var t: u32 = 0u; t < C; t = t + 1u) {
+      var causal_acc: f32 = 0.0;
+      let qk_row = t * 32u;
+      for (var r: u32 = 0u; r <= t; r = r + 1u) {
+        causal_acc += sh_qk[qk_row + r] * sh_delta[r * 16u + j_local];
+      }
+      let raw_out = exp(sh_G[t]) * sh_raw[t * 16u + j_local] + causal_acc;
+      attn_out[params.out_offset + (params.tok_start + t) * 4096u + v_head * 128u + j] = raw_out;
+    }
+  }
+
+  let g_last = exp(sh_G[C - 1u]);
+  sv0 = sv0 * g_last;
+  sv1 = sv1 * g_last;
+  sv2 = sv2 * g_last;
+  sv3 = sv3 * g_last;
+
+  for (var t_blk: u32 = 0u; t_blk < C; t_blk = t_blk + 4u) {
+    for (var tt: u32 = 0u; tt < 4u; tt = tt + 1u) {
+      let t_abs = t_blk + tt;
+      let dst_idx = tt * 128u + tid;
+      if (t_abs < C) {
+        sh_a[dst_idx] = scratch[K_dec_off + (v_head * 128u + tid) * 32u + t_abs];
+      } else {
+        sh_a[dst_idx] = 0.0;
+      }
+    }
+    workgroupBarrier();
+
+    for (var tt: u32 = 0u; tt < 4u; tt = tt + 1u) {
+      let t_abs = t_blk + tt;
+      if (t_abs < C) {
+        let d_t = sh_delta[t_abs * 16u + j_local];
+        let kb = tt * 128u + i_base;
+        sv0 += vec4<f32>(sh_a[kb + 0u], sh_a[kb + 1u], sh_a[kb + 2u], sh_a[kb + 3u]) * d_t;
+        sv1 += vec4<f32>(sh_a[kb + 4u], sh_a[kb + 5u], sh_a[kb + 6u], sh_a[kb + 7u]) * d_t;
+        sv2 += vec4<f32>(sh_a[kb + 8u], sh_a[kb + 9u], sh_a[kb + 10u], sh_a[kb + 11u]) * d_t;
+        sv3 += vec4<f32>(sh_a[kb + 12u], sh_a[kb + 13u], sh_a[kb + 14u], sh_a[kb + 15u]) * d_t;
+      }
+    }
+    workgroupBarrier();
+  }
+
+  dn_state[s_base + 0u * 128u] = sv0.x; dn_state[s_base + 1u * 128u] = sv0.y; dn_state[s_base + 2u * 128u] = sv0.z; dn_state[s_base + 3u * 128u] = sv0.w;
+  dn_state[s_base + 4u * 128u] = sv1.x; dn_state[s_base + 5u * 128u] = sv1.y; dn_state[s_base + 6u * 128u] = sv1.z; dn_state[s_base + 7u * 128u] = sv1.w;
+  dn_state[s_base + 8u * 128u] = sv2.x; dn_state[s_base + 9u * 128u] = sv2.y; dn_state[s_base + 10u * 128u] = sv2.z; dn_state[s_base + 11u * 128u] = sv2.w;
+  dn_state[s_base + 12u * 128u] = sv3.x; dn_state[s_base + 13u * 128u] = sv3.y; dn_state[s_base + 14u * 128u] = sv3.z; dn_state[s_base + 15u * 128u] = sv3.w;
 }
 "#;
 
