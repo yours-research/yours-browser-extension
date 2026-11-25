@@ -1,33 +1,38 @@
 <img src="assets/icon.svg" width="64" height="64" alt="">
 
-# TinyGPT Extension (v0.1 POC)
+# TinyGPT Extension
 
-Chromium Manifest V3 extension running **Qwen3.5-4B** (`onnx-community/Qwen3.5-4B-ONNX-OPT`) entirely inside the browser via **WebGPU**, **OPFS**, and **`@assistant-ui/react`**.
+A **100% local, zero-network-permission** Chromium Manifest V3 extension running **Qwen3.5-4B** (`q4f16`, INT8 KV cache, up to **128K** context) inside the browser via a custom **Rust WASM + Native WGSL WebGPU compute engine** hosted in a **Dedicated Web Worker**.
 
 ## Architecture
 
-1. **Background Service Worker** ([src/background/service-worker.ts](src/background/service-worker.ts)) — Spawns the persistent Offscreen Document on demand (`ENSURE_OFFSCREEN`) and opens the Side Panel on toolbar icon click.
-2. **Offscreen Document** ([src/offscreen/main.ts](src/offscreen/main.ts)) — Hosts the WebGPU inference engine ([src/offscreen/inferenceEngine.ts](src/offscreen/inferenceEngine.ts)), elevated `maxBufferSize` / `maxStorageBufferBindingSize` wrapper ([src/offscreen/webgpuLimits.ts](src/offscreen/webgpuLimits.ts)), streaming OPFS weight cache ([src/offscreen/opfsCache.ts](src/offscreen/opfsCache.ts)), chunked prefill loop, and hybrid Gated DeltaNet + KV cache management.
-3. **Side Panel UI** ([src/sidepanel/App.tsx](src/sidepanel/App.tsx)) — Minimal React + `@assistant-ui/react` (`useLocalRuntime` + cumulative `ChatModelAdapter`) connected over a long-lived `chrome.runtime.connect` port, with live Telemetry Bar (`tok/s`, `TTFT`, `Active Context Tokens`, `Est. VRAM / KV Usage`, `Model Load State`) and Lab drawer for Phase 0–2 benchmarks.
+1. **Background Service Worker** ([src/background/service-worker.ts](src/background/service-worker.ts)) — Manages the persistent MV3 Offscreen Document (`ENSURE_OFFSCREEN`) and opens the Side Panel from the browser toolbar action.
+2. **Offscreen Host & Dedicated Engine Worker** ([src/offscreen/main.ts](src/offscreen/main.ts), [src/offscreen/engineWorker.ts](src/offscreen/engineWorker.ts), [src/offscreen/inferenceEngine.ts](src/offscreen/inferenceEngine.ts)) — Streams pre-repacked `<= 128 MiB` model weight shards directly from extension storage into WebGPU VRAM, runs inference in a dedicated Web Worker, manages warm prefix reuse and hybrid CPU snapshots, and applies frame-paced GPU submission (`balanced` / `smooth-ui` / `max-speed` via [src/offscreen/gpuPacing.ts](src/offscreen/gpuPacing.ts)).
+3. **Custom Rust WASM + Native WGSL Engine** ([crates/tinygpt-wgsl-engine/src/lib.rs](crates/tinygpt-wgsl-engine/src/lib.rs), [src/offscreen/wgslRealEngine.ts](src/offscreen/wgslRealEngine.ts)) — Purpose-built WGSL compute shaders with `shader-f16` and WebGPU `subgroups` covering the hybrid Qwen3.5-4B graph (24 Gated DeltaNet linear-attention layers + 8 GQA full-attention layers, INT8/FP16 KV cache, Split-K FlashPrefill, Q4 MatMul/GEMV, and on-GPU vocab argmax).
+4. **Offline Bundled Model Weights** ([scripts/bundle-model.mjs](scripts/bundle-model.mjs)) — Repacks Qwen3.5-4B (`onnx-community/Qwen3.5-4B-ONNX-OPT`) into `model-bundle/qwen35-4b/` (`2.47 GiB` across `<= 128 MiB` binary shards) and syncs them into `dist/models/qwen35-4b/` so the extension runs completely offline with zero `host_permissions`.
+5. **Side Panel UI** ([src/sidepanel/App.tsx](src/sidepanel/App.tsx)) — React + `@assistant-ui/react` chat interface with live telemetry (`tok/s`, `TTFT`, `Active Context Tokens`, `Est. VRAM`, GPU pacing selector) and an interactive Lab drawer.
 
-## Build & Verify
+## Quickstart & Commands
 
 ```bash
 npm install
+npm run bundle:model   # Export/repack offline model shards into model-bundle/ & dist/models/
 npm run typecheck
 npm test
 npm run build
 ```
 
+### Benchmark Suites (Playwright + Chromium WebGPU)
+
+- `npm run e2e:track1` — Legacy ONNX Runtime WebGPU tuning sweep (`benchmarks/runs/01`–`08`)
+- `npm run e2e:track2:real` — Real-weight Native WGSL 128K + 32K NIAH sweep (`benchmarks/runs/14`–`16`)
+- `npm run e2e:track3` — Offline bundled Worker vs Offscreen Main smoothness & 144Hz FPS sweep (`benchmarks/runs/17`–`20`)
+
+Full cross-track metrics and hardware notes live in [benchmarks/REPORT.md](benchmarks/REPORT.md).
+
 ## Load Unpacked in Chrome / Chromium
 
-1. Run `npm run build` to generate `dist/`.
+1. Run `npm run bundle:model` (if not already populated) and `npm run build` to produce `dist/`.
 2. Open `chrome://extensions` and enable **Developer mode**.
 3. Click **Load unpacked** and select `dist/`.
 4. Click the **TinyGPT** extension icon to open the Side Panel.
-
-## POC Verification Checklist
-
-- **Phase 0 Spike**: Open **Lab → Phase 0 Spike** and click **Probe WebGPU Limits** (`shader-f16`, `subgroups`, elevated `maxBufferSize`) and **Run 2.5 GiB OPFS Spike**, then restart the browser and click **Verify After Restart**.
-- **Phase 1 Baseline**: Click **Load Model** to stream `onnx-community/Qwen3.5-4B-ONNX-OPT` (`q4f16`, text-only `embed_tokens` + `decoder_model_merged`) into OPFS and WebGPU; verify reload from OPFS on next browser restart and test streaming chat + Stop cancellation.
-- **Phase 2 Context & Speed**: Open **Lab → Bench & NIAH** to run the **1K / 8K / 32K / 64K Sweep** (with chunked prefill) and **32K Needle-in-a-Haystack** test, and review the theoretical memory-bandwidth utilization Decision Gate metric.
