@@ -86,13 +86,80 @@ export function getGpuPacingPolicy(mode: GpuPacingMode): GpuPacingPolicy {
   return { ...policy };
 }
 
+/**
+ * Calibrates a pacing policy for the active monitor refresh rate (`displayHz`) and
+ * observed GPU decode step duration (`measuredStepMs`), preserving smooth compositor
+ * frames on 60/120/144Hz displays and preventing Windows WDDM 2s TDR hangs on slow iGPUs.
+ */
+export function calibratePacingForHardware(
+  mode: GpuPacingMode,
+  displayHz: number,
+  measuredStepMs: number,
+): GpuPacingPolicy {
+  const base = getGpuPacingPolicy(mode);
+  if (base.mode === 'max-speed') {
+    return base;
+  }
+
+  const safeHz =
+    Number.isFinite(displayHz) && displayHz > 0 ? Math.max(30, Math.min(240, displayHz)) : 60;
+  const frameMs = 1000 / safeHz;
+  const safeStepMs = Number.isFinite(measuredStepMs) && measuredStepMs > 0 ? measuredStepMs : 0;
+
+  const ratio = base.mode === 'balanced' ? 0.85 : 0.5;
+  let decodeBurstBudgetMs = Math.min(
+    base.decodeBurstBudgetMs,
+    Math.max(2, Math.round(frameMs * ratio)),
+  );
+  let decodeSlowStepThresholdMs = Math.min(
+    base.decodeSlowStepThresholdMs,
+    Math.max(4, Math.round(frameMs * 0.85)),
+  );
+
+  let decodeSplitsShort: 1 | 2 | 4 = base.decodeSplitsShort;
+  let decodeSplitsLong: 1 | 2 | 4 = base.decodeSplitsLong;
+  let prefillChunkShort = base.prefillChunkShort;
+  let prefillChunkLong = base.prefillChunkLong;
+
+  if (safeStepMs >= 100) {
+    // Very slow iGPU / Tier 3 fallback: split decode aggressively and shrink prefill chunks
+    // to stay well below Windows WDDM 2-second TDR timeouts.
+    decodeSplitsShort = base.mode === 'smooth-ui' ? 4 : 2;
+    decodeSplitsLong = 4;
+    prefillChunkShort = 32;
+    prefillChunkLong = 16;
+    decodeBurstBudgetMs = Math.min(decodeBurstBudgetMs, Math.max(2, Math.round(frameMs * 0.5)));
+  } else if (safeStepMs >= Math.max(18, frameMs * 1.5)) {
+    decodeSplitsShort = safeStepMs >= 40 ? (base.mode === 'smooth-ui' ? 4 : 2) : base.decodeSplitsShort;
+    decodeSplitsLong = 4;
+    prefillChunkShort = base.mode === 'smooth-ui' ? 32 : base.prefillChunkShort;
+    prefillChunkLong = base.mode === 'smooth-ui' ? 16 : 32;
+    decodeBurstBudgetMs = Math.min(decodeBurstBudgetMs, Math.max(2, Math.round(frameMs * 0.6)));
+  }
+
+  if (safeStepMs > 0 && safeStepMs < decodeSlowStepThresholdMs) {
+    decodeSlowStepThresholdMs = Math.max(4, Math.min(decodeSlowStepThresholdMs, Math.round(frameMs * 0.85)));
+  }
+
+  return {
+    ...base,
+    prefillChunkShort,
+    prefillChunkLong,
+    decodeSplitsShort,
+    decodeSplitsLong,
+    decodeSlowStepThresholdMs,
+    decodeBurstBudgetMs,
+  };
+}
+
 /** Selects the prefill chunk token limit (clamped to `[1, 64]`) for the active pacing mode. */
 export function selectPrefillChunkSize(
   mode: GpuPacingMode,
   currentSeqPos: number,
   requestedChunkSize?: number,
+  policyOverride?: GpuPacingPolicy,
 ): number {
-  const policy = getGpuPacingPolicy(mode);
+  const policy = policyOverride ?? getGpuPacingPolicy(mode);
   if (policy.mode === 'max-speed') {
     return Math.max(1, Math.min(64, requestedChunkSize || 64));
   }
@@ -111,8 +178,9 @@ export function selectDecodeSliceCount(
   mode: GpuPacingMode,
   currentSeqPos: number,
   lastStepGpuMs: number,
+  policyOverride?: GpuPacingPolicy,
 ): 1 | 2 | 4 {
-  const policy = getGpuPacingPolicy(mode);
+  const policy = policyOverride ?? getGpuPacingPolicy(mode);
   if (policy.mode === 'max-speed') {
     return 1;
   }
@@ -129,8 +197,9 @@ export function selectDecodeSliceCount(
 export function computeDecodePostStepBreatherMs(
   mode: GpuPacingMode,
   stepGpuMs: number,
+  policyOverride?: GpuPacingPolicy,
 ): number {
-  const policy = getGpuPacingPolicy(mode);
+  const policy = policyOverride ?? getGpuPacingPolicy(mode);
   if (policy.mode === 'max-speed' || policy.decodePostStepMaxMs <= 0) {
     return 0;
   }
@@ -149,8 +218,9 @@ export function computeDecodeBurstBreatherMs(
   mode: GpuPacingMode,
   stepGpuMs: number,
   cumulativeBurstMs: number,
+  policyOverride?: GpuPacingPolicy,
 ): { breatherMs: number; nextBurstMs: number } {
-  const policy = getGpuPacingPolicy(mode);
+  const policy = policyOverride ?? getGpuPacingPolicy(mode);
   if (policy.mode === 'max-speed' || policy.decodePostStepMaxMs <= 0) {
     return { breatherMs: 0, nextBurstMs: 0 };
   }
@@ -161,7 +231,7 @@ export function computeDecodeBurstBreatherMs(
     return { breatherMs: 0, nextBurstMs: totalBurstMs };
   }
   return {
-    breatherMs: computeDecodePostStepBreatherMs(mode, totalBurstMs),
+    breatherMs: computeDecodePostStepBreatherMs(mode, totalBurstMs, policy),
     nextBurstMs: 0,
   };
 }
@@ -170,8 +240,9 @@ export function computeDecodeBurstBreatherMs(
 export function computePrefillSliceBreatherMs(
   mode: GpuPacingMode,
   cumulativeBurstMs: number,
+  policyOverride?: GpuPacingPolicy,
 ): { breatherMs: number; nextBurstMs: number } {
-  const policy = getGpuPacingPolicy(mode);
+  const policy = policyOverride ?? getGpuPacingPolicy(mode);
   if (cumulativeBurstMs >= policy.prefillBurstBudgetMs && policy.prefillBreatherMs > 0) {
     return { breatherMs: policy.prefillBreatherMs, nextBurstMs: 0 };
   }

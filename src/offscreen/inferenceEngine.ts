@@ -15,10 +15,12 @@ import {
   type WebGpuProbeInfo,
   type YieldMode,
 } from '../shared/protocol.ts';
+import { buildBaseSystemMessage } from '../shared/systemPrompt.ts';
 import { buildNeedleInHaystackPrompt, buildSyntheticTokenIds, verifyNeedleAnswer } from './benchmarks.ts';
 import { resolveExtensionAssetUrl } from './gpuPacing.ts';
 import { clearWgslWeightCache } from './onnxWeightLoader.ts';
 import { OpfsModelCache } from './opfsCache.ts';
+import { BASE_SYSTEM_SLOT_ID, PrefixCacheManager } from './prefixCacheManager.ts';
 import { computeBandwidthStats, isMessagePrefix, type SamplingOptions } from './sampling.ts';
 import { SuffixSpeculator } from './suffixSpeculator.ts';
 import { installWebGpuLimitPatch, probeWebGpu } from './webgpuLimits.ts';
@@ -99,6 +101,10 @@ export class InferenceEngine {
   private loadingPromise: Promise<void> | null = null;
   private taskQueue: Promise<void> = Promise.resolve();
   private envConfigured = false;
+  private prefixCache: PrefixCacheManager | null = null;
+  private displayHz = 60;
+  private bgAbortController: AbortController | null = null;
+  private bgPrefillSeq = 0;
 
   constructor(
     callbacks: EngineCallbacks,
@@ -190,6 +196,11 @@ export class InferenceEngine {
         ? Math.min(131072, Math.round(patch.wgslMaxContext))
         : this.config.wgslMaxContext;
     const contextCapChanged = nextMaxContext !== this.config.wgslMaxContext;
+    const nextForceTier =
+      patch.forceComputeTier !== undefined
+        ? patch.forceComputeTier
+        : (this.config.forceComputeTier ?? null);
+    const tierChanged = nextForceTier !== (this.config.forceComputeTier ?? null);
 
     this.config = {
       ...this.config,
@@ -197,13 +208,14 @@ export class InferenceEngine {
       backend: 'wgsl',
       wgslKvMode: 'int8',
       wgslMaxContext: nextMaxContext,
+      forceComputeTier: nextForceTier,
       modelId: DEFAULT_ENGINE_CONFIG.modelId,
       dtype: 'q4f16',
     };
     this.callbacks.onConfig(this.config);
 
-    if (contextCapChanged && this.wgslEngine) {
-      this.log('info', 'offscreen', 'WGSL context capacity changed; unloading active session.');
+    if ((contextCapChanged || tierChanged) && this.wgslEngine) {
+      this.log('info', 'offscreen', 'WGSL engine geometry/tier config changed; unloading active session.');
       await this.unloadModel();
     } else {
       this.updateTelemetry({
@@ -331,6 +343,15 @@ export class InferenceEngine {
       });
       const tokenizerMs = performance.now() - tokStartMs;
 
+      const rawDevMem =
+        typeof navigator !== 'undefined' && 'deviceMemory' in navigator
+          ? Number((navigator as unknown as { deviceMemory?: number }).deviceMemory)
+          : undefined;
+      const deviceMemoryGb =
+        typeof rawDevMem === 'number' && Number.isFinite(rawDevMem) && rawDevMem > 0
+          ? rawDevMem
+          : undefined;
+
       const wgslEngine = new WgslQwen35Engine();
       const stats = await wgslEngine.load(null, {
         assetBaseUrl: this.assetBaseUrl,
@@ -338,6 +359,8 @@ export class InferenceEngine {
         kvMode: 'int8',
         maxContext: this.config.wgslMaxContext,
         pacingMode: this.config.gpuPacingMode,
+        forceComputeTier: this.config.forceComputeTier ?? undefined,
+        deviceMemoryGb,
         onProgress: (phase, pct) => {
           this.updateTelemetry({
             status: pct >= 90 ? 'compiling' : 'downloading',
@@ -346,25 +369,30 @@ export class InferenceEngine {
           });
         },
       });
+      wgslEngine.setDisplayHz(this.displayHz);
 
       this.tokenizer = tokenizer;
       this.wgslEngine = wgslEngine;
       this.eosTokenIds = this.collectEosTokenIds(tokenizer);
       this.eosTokenIds.add(248044);
       this.eosTokenIds.add(248046);
+      this.prefixCache = new PrefixCacheManager(wgslEngine, { maxTabSlots: 3 });
+
+      await this.prewarmBaseSystemPrompt();
 
       const coldLoadMs = performance.now() - startMs;
       const memStats = wgslEngine.getMemoryStats();
+      const baseInfo = this.prefixCache.getBasePromptInfo();
       this.log(
         'info',
         'offscreen',
-        `WGSL Qwen3.5-4B ready in ${(coldLoadMs / 1000).toFixed(2)}s (source=${stats.loadSource}, host=${this.executionHost}, stream=${stats.opfsReadMs.toFixed(0)}ms, compile+verify=${stats.pipelineCompileMs.toFixed(0)}ms, kv=int8, dp4a=${stats.usingDp4a}, maxSeq=${stats.maxSeqCapacity}, maxBuffer=${(stats.maxBufferSize / (1024 * 1024)).toFixed(0)} MiB).`,
+        `WGSL Qwen3.5-4B ready in ${(coldLoadMs / 1000).toFixed(2)}s (tier=${stats.computeTier}, source=${stats.loadSource}, host=${this.executionHost}, stream=${stats.opfsReadMs.toFixed(0)}ms, compile+verify=${stats.pipelineCompileMs.toFixed(0)}ms, kv=int8 [${stats.allocatedKvCapacity}/${stats.maxSafeKvCapacity}], dp4a=${stats.usingDp4a}, baseSlot=${baseInfo.tokens}t, hz=${this.displayHz}).`,
       );
 
       this.updateTelemetry({
         status: 'ready',
         loadProgressPct: 100,
-        loadPhaseLabel: 'Ready (Bundled WGSL)',
+        loadPhaseLabel: `Ready (${stats.computeTier})`,
         coldLoadMs,
         loadedFromCache: true,
         loadSource: stats.loadSource,
@@ -376,8 +404,17 @@ export class InferenceEngine {
           totalMs: coldLoadMs,
         },
         estVramMb: memStats.estVramMb,
-        kvCacheMb: 0,
+        kvCacheMb: memStats.kvCacheMb,
         deltaNetStateMb: memStats.deltaNetStateMb,
+        activeContextTokens: wgslEngine.activeSeqPos,
+        computeTier: stats.computeTier,
+        allocatedKvCapacity: stats.allocatedKvCapacity,
+        maxKvCapacity: stats.maxSafeKvCapacity,
+        basePromptCached: baseInfo.cached,
+        basePromptTokens: baseInfo.tokens,
+        displayHz: this.displayHz,
+        backgroundPrefillState: 'idle',
+        activePrefixSlot: baseInfo.cached ? BASE_SYSTEM_SLOT_ID : null,
       });
 
       void this.refreshOpfsStatus().catch(() => {});
@@ -400,7 +437,10 @@ export class InferenceEngine {
   }
 
   async unloadModel(): Promise<void> {
-    await this.resetContext();
+    this.abortBackgroundPrefill();
+    await this.resetContext(false);
+    this.prefixCache?.clearAll();
+    this.prefixCache = null;
     this.wgslSnapshot = null;
     this.wgslSnapshotMeta = null;
     if (this.wgslEngine) {
@@ -423,10 +463,45 @@ export class InferenceEngine {
       hasCpuSnapshot: false,
       cpuSnapshotTokens: null,
       prefixReused: null,
+      computeTier: null,
+      allocatedKvCapacity: 0,
+      maxKvCapacity: 0,
+      basePromptCached: false,
+      basePromptTokens: 0,
+      lastSlotRestoreMs: null,
+      backgroundPrefillState: 'idle',
+      activePrefixSlot: null,
     });
   }
 
-  async resetContext(): Promise<void> {
+  async resetContext(restoreBasePrompt = false): Promise<void> {
+    this.abortBackgroundPrefill();
+    if (restoreBasePrompt && this.prefixCache?.hasBasePrompt() && this.wgslEngine) {
+      const restored = await this.prefixCache.resetToBasePrompt();
+      if (restored) {
+        this.cachedMessages = restored.entry.messages.map((m) => ({ ...m }));
+        this.cachedTokenCount = restored.seqPos;
+        this.cachedTokenIds = [...restored.entry.tokenIds];
+        this.cachedThinkingMode = this.config.enableThinking;
+        const wgslMem = this.wgslEngine.getMemoryStats();
+        this.updateTelemetry({
+          activeContextTokens: restored.seqPos,
+          kvCacheMb: wgslMem.kvCacheMb,
+          deltaNetStateMb: wgslMem.deltaNetStateMb,
+          estVramMb: wgslMem.estVramMb,
+          allocatedKvCapacity: this.wgslEngine.getAllocatedKvCapacity(),
+          maxKvCapacity: this.wgslEngine.getMaxSafeKvCapacity(),
+          prefixReused: true,
+          lastSlotRestoreMs: restored.restoreMs,
+          activePrefixSlot: BASE_SYSTEM_SLOT_ID,
+          backgroundPrefillState: 'idle',
+          prefillChunkProgress: null,
+          speculativeStats: null,
+        });
+        return;
+      }
+    }
+
     if (this.wgslEngine) {
       await this.wgslEngine.resetState();
     }
@@ -439,10 +514,252 @@ export class InferenceEngine {
       kvCacheMb: 0,
       deltaNetStateMb: wgslMem ? wgslMem.deltaNetStateMb : 0,
       estVramMb: wgslMem ? wgslMem.estVramMb : 0,
+      allocatedKvCapacity: this.wgslEngine ? this.wgslEngine.getAllocatedKvCapacity() : 0,
+      maxKvCapacity: this.wgslEngine ? this.wgslEngine.getMaxSafeKvCapacity() : 0,
       prefixReused: null,
+      lastSlotRestoreMs: null,
+      activePrefixSlot: null,
+      backgroundPrefillState: 'idle',
       prefillChunkProgress: null,
       speculativeStats: null,
     });
+  }
+
+  setDisplayHz(hz: number): void {
+    const safeHz = Number.isFinite(hz) && hz >= 30 && hz <= 360 ? Math.round(hz) : 60;
+    this.displayHz = safeHz;
+    this.wgslEngine?.setDisplayHz(safeHz);
+    this.updateTelemetry({ displayHz: safeHz });
+  }
+
+  abortBackgroundPrefill(): void {
+    this.bgPrefillSeq += 1;
+    if (this.bgAbortController) {
+      this.bgAbortController.abort();
+      this.bgAbortController = null;
+    }
+    if (this.telemetry.backgroundPrefillState === 'prefilling') {
+      this.updateTelemetry({ backgroundPrefillState: 'idle' });
+    }
+  }
+
+  private normalizeMessagesForChatTemplate(messages: readonly ChatMessage[]): ChatMessage[] {
+    return messages.map((msg, idx) =>
+      idx > 0 && msg.role === 'system'
+        ? { role: 'user', content: msg.content }
+        : { role: msg.role, content: msg.content },
+    );
+  }
+
+  private formatChatMessages(
+    messages: readonly ChatMessage[],
+    options: { addGenerationPrompt: boolean },
+  ): string {
+    const normalized = this.normalizeMessagesForChatTemplate(messages);
+    return this.tokenizer!.apply_chat_template(normalized, {
+      tokenize: false,
+      add_generation_prompt: options.addGenerationPrompt,
+      enable_thinking: this.config.enableThinking,
+    } as Parameters<PreTrainedTokenizer['apply_chat_template']>[1]) as unknown as string;
+  }
+
+  private encodePrefixMessages(messages: readonly ChatMessage[], isDraft: boolean): number[] {
+    if (!this.tokenizer || messages.length === 0) {
+      return [];
+    }
+    if (isDraft) {
+      const hasUserMessage = messages.some((m) => m.role === 'user');
+      const normalized = this.normalizeMessagesForChatTemplate(messages);
+      if (hasUserMessage) {
+        let formatted = this.formatChatMessages(normalized, { addGenerationPrompt: false });
+        if (formatted.endsWith('<|im_end|>\n')) {
+          formatted = formatted.slice(0, -'<|im_end|>\n'.length);
+        } else if (formatted.endsWith('<|im_end|>')) {
+          formatted = formatted.slice(0, -'<|im_end|>'.length);
+        }
+        return this.tokenizer.encode(formatted, { add_special_tokens: false });
+      }
+    }
+
+    const marker = '__TINYGPT_PREFIX_MARKER__';
+    const withMarker = this.formatChatMessages(
+      [...messages, { role: 'user', content: marker }],
+      { addGenerationPrompt: false },
+    );
+    const markerIdx = withMarker.lastIndexOf(`<|im_start|>user\n${marker}`);
+    const prefixText = markerIdx >= 0 ? withMarker.slice(0, markerIdx) : withMarker;
+    return this.tokenizer.encode(prefixText, { add_special_tokens: false });
+  }
+
+  private async prewarmBaseSystemPrompt(): Promise<void> {
+    if (!this.wgslEngine || !this.tokenizer || !this.prefixCache) {
+      return;
+    }
+    try {
+      const baseMsg = buildBaseSystemMessage();
+      const baseTokenIds = this.encodePrefixMessages([baseMsg], false);
+      if (baseTokenIds.length === 0 || baseTokenIds.length >= this.wgslEngine.maxContextTokens) {
+        return;
+      }
+      await this.wgslEngine.resetState();
+      await this.wgslEngine.prefill(baseTokenIds, {
+        chunkSize: 64,
+        sampling: { temperature: 0, topK: 1, topP: 1 },
+        pacingMode: this.config.gpuPacingMode,
+        yieldFn: async () => yieldFast('message-channel'),
+      });
+      await this.prefixCache.saveBasePromptSlot(baseTokenIds, [baseMsg]);
+      this.cachedMessages = [baseMsg];
+      this.cachedTokenIds = [...baseTokenIds];
+      this.cachedTokenCount = this.wgslEngine.activeSeqPos;
+      this.cachedThinkingMode = this.config.enableThinking;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log('warn', 'offscreen', `Base prompt prewarm skipped: ${msg}`);
+    }
+  }
+
+  enqueueBackgroundPrefill(
+    slotKey: string,
+    messages: ChatMessage[],
+    options?: { isDraft?: boolean; url?: string; contentHash?: string },
+  ): void {
+    this.abortBackgroundPrefill();
+    const mySeq = this.bgPrefillSeq;
+    this.taskQueue = this.taskQueue
+      .then(() => this.runBackgroundPrefill(mySeq, slotKey, messages, options))
+      .catch(() => {
+        if (this.telemetry.backgroundPrefillState === 'prefilling') {
+          this.updateTelemetry({ backgroundPrefillState: 'idle' });
+        }
+      });
+  }
+
+  private async runBackgroundPrefill(
+    seq: number,
+    slotKey: string,
+    messages: ChatMessage[],
+    options?: { isDraft?: boolean; url?: string; contentHash?: string },
+  ): Promise<void> {
+    if (
+      seq !== this.bgPrefillSeq ||
+      !this.isEngineReady() ||
+      !this.wgslEngine ||
+      !this.tokenizer ||
+      !this.prefixCache ||
+      this.activeRequestId !== null ||
+      this.telemetry.status !== 'ready'
+    ) {
+      return;
+    }
+
+    const targetTokenIds = this.encodePrefixMessages(messages, Boolean(options?.isDraft));
+    if (targetTokenIds.length === 0 || targetTokenIds.length >= this.wgslEngine.getMaxSafeKvCapacity() - 64) {
+      return;
+    }
+
+    const match = this.prefixCache.findBestMatch(targetTokenIds, this.cachedTokenIds);
+    if (match.matchedTokens === targetTokenIds.length) {
+      if (match.source === 'live') {
+        await this.prefixCache.saveTabSlot(slotKey, targetTokenIds, messages, {
+          url: options?.url,
+          contentHash: options?.contentHash,
+        });
+      }
+      this.updateTelemetry({
+        backgroundPrefillState: 'warm',
+        activePrefixSlot: match.slotId ?? slotKey,
+      });
+      return;
+    }
+
+    const controller = new AbortController();
+    this.bgAbortController = controller;
+    this.updateTelemetry({ backgroundPrefillState: 'prefilling' });
+
+    try {
+      if (match.source === 'slot' && match.slotId) {
+        const restored = await this.prefixCache.restoreSlot(match.slotId);
+        this.cachedTokenIds = [...restored.entry.tokenIds];
+        this.cachedMessages = restored.entry.messages.map((m) => ({ ...m }));
+        this.cachedTokenCount = restored.seqPos;
+      } else if (match.source === 'none') {
+        await this.wgslEngine.resetState();
+        this.cachedTokenIds = [];
+        this.cachedMessages = [];
+        this.cachedTokenCount = 0;
+      }
+
+      if (seq !== this.bgPrefillSeq || controller.signal.aborted) {
+        throw new Error('__BG_ABORTED__');
+      }
+
+      const deltaTokens = targetTokenIds.slice(match.matchedTokens);
+      if (deltaTokens.length > 0) {
+        await this.wgslEngine.prefill(deltaTokens, {
+          chunkSize: Math.min(32, this.config.chunkSize || 32),
+          sampling: { temperature: 0, topK: 1, topP: 1 },
+          pacingMode: 'smooth-ui',
+          abortSignal: controller.signal,
+          yieldFn: async () => {
+            if (seq !== this.bgPrefillSeq || controller.signal.aborted) {
+              controller.abort();
+              throw new Error('__BG_ABORTED__');
+            }
+            await yieldFast('message-channel');
+          },
+          onChunk: () => {
+            if (seq !== this.bgPrefillSeq || controller.signal.aborted) {
+              controller.abort();
+              throw new Error('__BG_ABORTED__');
+            }
+            this.cachedTokenCount = this.wgslEngine!.activeSeqPos;
+          },
+        });
+      }
+
+      if (seq !== this.bgPrefillSeq || controller.signal.aborted) {
+        throw new Error('__BG_ABORTED__');
+      }
+
+      await this.prefixCache.saveTabSlot(slotKey, targetTokenIds, messages, {
+        url: options?.url,
+        contentHash: options?.contentHash,
+      });
+      this.cachedTokenIds = [...targetTokenIds];
+      this.cachedMessages = messages.map((m) => ({ ...m }));
+      this.cachedTokenCount = this.wgslEngine.activeSeqPos;
+      this.cachedThinkingMode = this.config.enableThinking;
+      this.refreshCacheTelemetry();
+      this.updateTelemetry({
+        backgroundPrefillState: 'warm',
+        activePrefixSlot: slotKey,
+        prefillChunkProgress: null,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === '__BG_ABORTED__' || msg === 'Generation aborted' || controller.signal.aborted) {
+        this.cachedTokenIds = [];
+        this.cachedMessages = [];
+        this.cachedTokenCount = 0;
+        if (this.prefixCache.hasBasePrompt()) {
+          await this.prefixCache.resetToBasePrompt().catch(() => {});
+        } else {
+          await this.wgslEngine.resetState().catch(() => {});
+        }
+        this.updateTelemetry({
+          backgroundPrefillState: 'idle',
+          prefillChunkProgress: null,
+        });
+        return;
+      }
+      this.log('warn', 'offscreen', `Background speculative prefill stopped: ${msg}`);
+      this.updateTelemetry({ backgroundPrefillState: 'idle', prefillChunkProgress: null });
+    } finally {
+      if (this.bgAbortController === controller) {
+        this.bgAbortController = null;
+      }
+    }
   }
 
   async snapshotContext(): Promise<void> {
@@ -506,9 +823,11 @@ export class InferenceEngine {
     requestId: string,
     messages: ChatMessage[],
     overrideConfig?: Partial<EngineConfig>,
+    groundingText?: string,
   ): void {
+    this.abortBackgroundPrefill();
     this.taskQueue = this.taskQueue
-      .then(() => this.runGenerate(requestId, messages, overrideConfig))
+      .then(() => this.runGenerate(requestId, messages, overrideConfig, groundingText))
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         this.callbacks.onGenerationError(requestId, msg);
@@ -516,6 +835,7 @@ export class InferenceEngine {
   }
 
   enqueueBenchmarkSuite(contextLengths: number[], decodeTokens: number, chunkSize?: number): void {
+    this.abortBackgroundPrefill();
     this.taskQueue = this.taskQueue
       .then(() => this.runBenchmarkSuite(contextLengths, decodeTokens, chunkSize))
       .catch((err) => {
@@ -525,6 +845,7 @@ export class InferenceEngine {
   }
 
   enqueueNeedleInHaystack(targetTokens: number, depthRatio: number, chunkSize?: number): void {
+    this.abortBackgroundPrefill();
     this.taskQueue = this.taskQueue
       .then(() => this.runNeedleInHaystack(targetTokens, depthRatio, chunkSize))
       .catch((err) => {
@@ -576,6 +897,8 @@ export class InferenceEngine {
       kvCacheMb: stats.kvCacheMb,
       deltaNetStateMb: stats.deltaNetStateMb,
       estVramMb: stats.estVramMb,
+      allocatedKvCapacity: this.wgslEngine.getAllocatedKvCapacity(),
+      maxKvCapacity: this.wgslEngine.getMaxSafeKvCapacity(),
       maxContextReached: Math.max(this.telemetry.maxContextReached, totalContext),
     });
   }
@@ -664,6 +987,7 @@ export class InferenceEngine {
     requestId: string,
     messages: ChatMessage[],
     overrideConfig?: Partial<EngineConfig>,
+    groundingText?: string,
   ): Promise<void> {
     if (this.abortedRequests.has(requestId)) {
       this.abortedRequests.delete(requestId);
@@ -699,46 +1023,80 @@ export class InferenceEngine {
         ttftMs: null,
         prefillChunkProgress: null,
         speculativeStats: null,
+        backgroundPrefillState: 'idle',
       });
 
       let promptTokenIds: number[] | null = null;
       let reusedPrefix = false;
+      let restoredSlotId: string | null = null;
+      let lastSlotRestoreMs: number | null = null;
       const hasActiveState = this.wgslEngine !== null && this.wgslEngine.activeSeqPos > 0;
+
+      const normMessages = this.normalizeMessagesForChatTemplate(messages);
+      const normCached = this.normalizeMessagesForChatTemplate(this.cachedMessages);
 
       if (
         !this.config.enableThinking &&
         !this.cachedThinkingMode &&
         hasActiveState &&
-        isMessagePrefix(this.cachedMessages, messages)
+        normCached.length > 0 &&
+        this.cachedTokenIds.length === this.wgslEngine!.activeSeqPos &&
+        isMessagePrefix(normCached, normMessages)
       ) {
-        const suffixMessages = messages.slice(this.cachedMessages.length);
+        const suffixMessages = normMessages.slice(normCached.length);
         const incrementalText = this.buildIncrementalChatMlPrompt(suffixMessages);
         if (incrementalText !== null) {
           promptTokenIds = this.tokenizer.encode(incrementalText, { add_special_tokens: false });
           reusedPrefix = true;
+          restoredSlotId = 'live';
         }
       }
 
       if (promptTokenIds === null) {
-        await this.resetContext();
-        const templateOptions: Record<string, unknown> = {
-          tokenize: false,
-          add_generation_prompt: true,
-          enable_thinking: this.config.enableThinking,
-        };
-        const formattedPrompt = this.tokenizer.apply_chat_template(
-          messages,
-          templateOptions as Parameters<PreTrainedTokenizer['apply_chat_template']>[1],
-        ) as unknown as string;
-        promptTokenIds = this.tokenizer.encode(formattedPrompt, { add_special_tokens: false });
-        reusedPrefix = false;
+        const formattedPrompt = this.formatChatMessages(normMessages, {
+          addGenerationPrompt: true,
+        });
+        const fullTokenIds = this.tokenizer.encode(formattedPrompt, {
+          add_special_tokens: false,
+        });
+
+        const match = this.prefixCache
+          ? this.prefixCache.findBestMatch(fullTokenIds, this.cachedTokenIds)
+          : { source: 'none' as const, slotId: null, matchedTokens: 0 };
+
+        if (match.source === 'live' && match.matchedTokens < fullTokenIds.length) {
+          promptTokenIds = fullTokenIds.slice(match.matchedTokens);
+          reusedPrefix = true;
+          restoredSlotId = 'live';
+        } else if (
+          match.source === 'slot' &&
+          match.slotId &&
+          match.matchedTokens < fullTokenIds.length
+        ) {
+          const restored = await this.prefixCache!.restoreSlot(match.slotId);
+          this.cachedTokenIds = [...restored.entry.tokenIds];
+          this.cachedMessages = restored.entry.messages.map((m) => ({ ...m }));
+          this.cachedTokenCount = restored.seqPos;
+          promptTokenIds = fullTokenIds.slice(match.matchedTokens);
+          reusedPrefix = true;
+          restoredSlotId = match.slotId;
+          lastSlotRestoreMs = restored.restoreMs;
+        } else {
+          await this.resetContext(false);
+          promptTokenIds = fullTokenIds;
+          reusedPrefix = false;
+        }
       }
 
-      this.updateTelemetry({ prefixReused: reusedPrefix });
+      this.updateTelemetry({
+        prefixReused: reusedPrefix,
+        activePrefixSlot: restoredSlotId,
+        ...(lastSlotRestoreMs !== null ? { lastSlotRestoreMs } : {}),
+      });
       this.log(
         'info',
         'offscreen',
-        `Prefilling ${promptTokenIds.length} tokens (backend=wgsl, pacing=${this.config.gpuPacingMode}, host=${this.executionHost}, prefixReused=${reusedPrefix}, totalContext=${this.cachedTokenCount + promptTokenIds.length}, chunkSize=${this.config.chunkSize}).`,
+        `Prefilling ${promptTokenIds.length} tokens (backend=wgsl, tier=${this.wgslEngine?.getComputeTier() ?? 'unknown'}, pacing=${this.config.gpuPacingMode}, host=${this.executionHost}, prefixReused=${reusedPrefix}${restoredSlotId ? ` [${restoredSlotId}]` : ''}, totalContext=${this.cachedTokenCount + promptTokenIds.length}, chunkSize=${this.config.chunkSize}).`,
       );
 
       const sampleOpts: SamplingOptions = {
@@ -763,7 +1121,11 @@ export class InferenceEngine {
       const sessionTokenIds = reusedPrefix
         ? [...this.cachedTokenIds, ...promptTokenIds]
         : [...promptTokenIds];
-      const speculator = new SuffixSpeculator(sessionTokenIds);
+      const groundingTokens =
+        groundingText && groundingText.trim().length > 0
+          ? this.tokenizer.encode(groundingText, { add_special_tokens: false })
+          : [];
+      const speculator = new SuffixSpeculator([...groundingTokens, ...sessionTokenIds]);
       let specDrafted = 0;
       let specAccepted = 0;
       let specSteps = 0;

@@ -9,6 +9,7 @@ import type {
   OpfsStatusInfo,
   TelemetryState,
   WebGpuProbeInfo,
+  WgslComputeTier,
 } from '../../shared/protocol.ts';
 
 interface DiagnosticsDrawerProps {
@@ -113,11 +114,34 @@ export function DiagnosticsDrawer({
               Execution Host:{' '}
               {telemetry.executionHost === 'worker'
                 ? 'Dedicated Web Worker'
-                : 'Offscreen Main Thread'}
+                : 'Offscreen Main Thread'}{' '}
+              · Tier: {telemetry.computeTier ?? 'auto'} · Display: {telemetry.displayHz}Hz
+            </div>
+            <div className="info-row">
+              Dynamic KV Cap: {telemetry.allocatedKvCapacity.toLocaleString()} /{' '}
+              {telemetry.maxKvCapacity.toLocaleString()} tok · Base Slot:{' '}
+              {telemetry.basePromptCached ? `${telemetry.basePromptTokens}t cached` : 'unwarmed'}
             </div>
           </div>
 
           <div className="form-grid">
+            <label className="field">
+              <span>Compute Tier (Cross-GPU)</span>
+              <select
+                value={config.forceComputeTier ?? ''}
+                onChange={(e) =>
+                  onUpdateConfig({
+                    forceComputeTier: (e.target.value || null) as WgslComputeTier | null,
+                  })
+                }
+              >
+                <option value="">Auto (T1 → T2 → T3 fallback)</option>
+                <option value="tier1-f16-subgroups">Tier 1 — f16 + subgroups</option>
+                <option value="tier2-f16-shared">Tier 2 — f16 + workgroup shared</option>
+                <option value="tier3-f32-universal">Tier 3 — Universal f32</option>
+              </select>
+            </label>
+
             <label className="field">
               <span>GPU Pacing Mode</span>
               <select

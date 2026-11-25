@@ -1,6 +1,6 @@
 # TinyGPT MV3 Extension — Qwen3.5-4B Comprehensive Benchmark Report
 
-Generated: `2026-11-25T06:58:40.255Z`
+Generated: `2026-11-25T17:16:09.238Z`
 
 ## 1. Environment, Phase 0 Storage & WebGPU Limits
 
@@ -122,3 +122,11 @@ Generated: `2026-11-25T06:58:40.255Z`
 - **Zero-Weight Suffix Speculative Decoding (`23-track5-wgsl-max-speed-128k`):** Exact greedy bit-identical parity **`true`** (`239/239` chars exact match), accepting **`74/78`** drafted tokens (**`94.87%`** over `20` steps) and lifting generation speed from `91.77` -> **`114.83 tok/s`** (**1.251x**).
 - **Track 5 Production Default (`24-track5-wgsl-worker-balanced-smoothness`, `worker / balanced` + Speculative):** Improved 8K decode `52.69` -> **`60.41 tok/s`** (**+14.6%**), 32K decode `37.54` -> **`41.20 tok/s`** (**+9.8%**), and Chat Turn 1 -> **`78.29 tok/s`** (`TTFT 162.4 ms`, speculative 4/12), while keeping **`140.3 FPS`** sweep / **`142.7 FPS`** chat with **`0.00%` jank (>33ms)**, Snapshot/Restore `165t -> 165t`, **`99.3 ms`** abort latency, and **32K NIAH PASS** (`302.66 / 40.37 tok/s`).
 - **Strict Offline Zero-Network Verification:** Across all `2` Track 5 runs, `0` external `http(s)://` requests and `0` console/offscreen errors were recorded.
+
+## 9. Track 6 — Cross-GPU 3-Tier Shaders, Tiered KV, Slot-0 / Tab Cache & Tier-1 Tools
+
+- **Auto-Load & Hardware Calibration (`25-track6-crossgpu-ux-tools`):** Auto-preloaded on Side Panel open in **`8.82s`**, auto-detected **`144Hz`** display pacing, initialized Tier 1 (`tier1-f16-subgroups`) with lean startup KV (**`33,280`** of `131,584` tokens), and pinned permanent Slot 0 Base System Prompt (`225` tokens, reset restore in **`2.70 ms`**).
+- **Speculative Tab Prefill & Compositor Smoothness:** Cold `9760 ms` -> Warm GPU Slot Restore **`127 ms`** (**`76.97x` faster**, slot restore **`3.00 ms`**) with immediate foreground preemption and **`140.89 FPS`** (`0.00%` jank).
+- **Dynamic Tiered KV Growth & 34K NIAH:** Live GPU KV reallocation from `33,280` -> **`66,048`** tokens passed 34K NIAH (`VELVET-ORBIT-7492`, `43.2 tok/s`).
+- **Cross-GPU 3-Tier Shader Parity:** Tier 1 (`f16+subgroups`, `71.9 tok/s` balanced), Tier 2 (`f16 shared`, **`95.2 tok/s`**), and Tier 3 (`universal f32`, **`90.1 tok/s`**) all passed WebGPU validation and produced identical output (`"4"`).
+- **Option A Privacy & Offline Tools:** `js_calc` (`82.1371`), `list_open_tabs` (`2` tabs), and fail-closed `web_search` (`needsPermission=true`) verified with **`0` external network requests** and **`0` errors**.

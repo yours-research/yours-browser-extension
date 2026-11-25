@@ -269,9 +269,14 @@ export async function probeWebGpu(
     };
 
     let grantedLimits = lastGrantedLimits;
-    const probeDevice = await adapter.requestDevice({
-      requiredLimits: computeElevatedLimits(adapter.limits),
-    });
+    let probeDevice: WebGpuDeviceLike;
+    try {
+      probeDevice = await adapter.requestDevice({
+        requiredLimits: computeElevatedLimits(adapter.limits),
+      });
+    } catch {
+      probeDevice = await adapter.requestDevice();
+    }
     grantedLimits = {
       maxBufferSize: probeDevice.limits.maxBufferSize ?? 0,
       maxStorageBufferBindingSize: probeDevice.limits.maxStorageBufferBindingSize ?? 0,

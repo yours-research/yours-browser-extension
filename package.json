@@ -19,7 +19,8 @@
     "bundle:model": "node scripts/bundle-model.mjs",
     "e2e:track3": "node scripts/run-track3-smoothness.mjs",
     "e2e:track4": "node scripts/run-track4-speed.mjs",
-    "e2e:track5": "node scripts/run-track5-speed.mjs"
+    "e2e:track5": "node scripts/run-track5-speed.mjs",
+    "e2e:track6": "node scripts/run-track6-ux-crossgpu.mjs"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.15.38",

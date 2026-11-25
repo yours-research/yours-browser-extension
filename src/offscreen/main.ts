@@ -387,7 +387,7 @@ function dispatchToLocalHost(genId: number, msg: ClientToEngineMessage): void {
       void engine.unloadModel();
       break;
     case 'RESET_CONTEXT':
-      void engine.resetContext();
+      void engine.resetContext(Boolean(msg.restoreBasePrompt));
       break;
     case 'SNAPSHOT_CONTEXT':
       void engine.snapshotContext();
@@ -395,8 +395,21 @@ function dispatchToLocalHost(genId: number, msg: ClientToEngineMessage): void {
     case 'RESTORE_CONTEXT':
       void engine.restoreContext();
       break;
+    case 'SET_DISPLAY_HZ':
+      engine.setDisplayHz(msg.hz);
+      break;
+    case 'PREFILL_BACKGROUND':
+      engine.enqueueBackgroundPrefill(msg.slotKey, msg.messages, {
+        isDraft: msg.isDraft,
+        url: msg.url,
+        contentHash: msg.contentHash,
+      });
+      break;
+    case 'ABORT_BACKGROUND_PREFILL':
+      engine.abortBackgroundPrefill();
+      break;
     case 'GENERATE':
-      engine.enqueueGenerate(msg.requestId, msg.messages, msg.config);
+      engine.enqueueGenerate(msg.requestId, msg.messages, msg.config, msg.groundingText);
       break;
     case 'ABORT':
       engine.abort(msg.requestId);

@@ -110,7 +110,7 @@ function handleClientMessage(msg: ClientToEngineMessage): void {
       enqueueLifecycle(() => activeEngine.unloadModel());
       break;
     case 'RESET_CONTEXT':
-      enqueueLifecycle(() => activeEngine.resetContext());
+      enqueueLifecycle(() => activeEngine.resetContext(Boolean(msg.restoreBasePrompt)));
       break;
     case 'SNAPSHOT_CONTEXT':
       void activeEngine.snapshotContext();
@@ -118,8 +118,21 @@ function handleClientMessage(msg: ClientToEngineMessage): void {
     case 'RESTORE_CONTEXT':
       void activeEngine.restoreContext();
       break;
+    case 'SET_DISPLAY_HZ':
+      activeEngine.setDisplayHz(msg.hz);
+      break;
+    case 'PREFILL_BACKGROUND':
+      activeEngine.enqueueBackgroundPrefill(msg.slotKey, msg.messages, {
+        isDraft: msg.isDraft,
+        url: msg.url,
+        contentHash: msg.contentHash,
+      });
+      break;
+    case 'ABORT_BACKGROUND_PREFILL':
+      activeEngine.abortBackgroundPrefill();
+      break;
     case 'GENERATE':
-      activeEngine.enqueueGenerate(msg.requestId, msg.messages, msg.config);
+      activeEngine.enqueueGenerate(msg.requestId, msg.messages, msg.config, msg.groundingText);
       break;
     case 'ABORT':
       activeEngine.abort(msg.requestId);

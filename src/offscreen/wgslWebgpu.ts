@@ -1,6 +1,8 @@
 import { resolveExtensionAssetUrl, sleepMs } from './gpuPacing.ts';
 import { computeElevatedLimits } from './webgpuLimits.ts';
 
+export type WgslComputeTier = 'tier1-f16-subgroups' | 'tier2-f16-shared' | 'tier3-f32-universal';
+
 export interface GpuBufferLike {
   size: number;
   mapAsync(mode: number, offset?: number, size?: number): Promise<void>;
@@ -150,6 +152,7 @@ export async function acquireWgslDevice(): Promise<{
   hasSubgroups: boolean;
   hasDp4a: boolean;
   maxBufferSize: number;
+  maxStorageBufferBindingSize: number;
 }> {
   const nav = navigator as unknown as {
     gpu?: {
@@ -166,21 +169,52 @@ export async function acquireWgslDevice(): Promise<{
     throw new Error('No WebGPU adapter returned.');
   }
   const features = new Set(Array.from(adapter.features));
-  const requiredFeatures: string[] = [];
-  if (features.has('shader-f16')) requiredFeatures.push('shader-f16');
-  if (features.has('subgroups')) requiredFeatures.push('subgroups');
+  const wantF16 = features.has('shader-f16');
+  const wantSubgroups = features.has('subgroups');
+  const requiredLimits = computeElevatedLimits(adapter.limits);
 
-  const device = await adapter.requestDevice({
-    requiredFeatures,
-    requiredLimits: computeElevatedLimits(adapter.limits),
-  });
+  const featureCandidates: string[][] = [];
+  if (wantF16 && wantSubgroups) {
+    featureCandidates.push(['shader-f16', 'subgroups']);
+  }
+  if (wantF16) {
+    featureCandidates.push(['shader-f16']);
+  }
+  featureCandidates.push([]);
+
+  let device: GpuDeviceLike | null = null;
+  let lastError: unknown = null;
+  for (const reqFeatures of featureCandidates) {
+    try {
+      device = await adapter.requestDevice({
+        requiredFeatures: reqFeatures,
+        requiredLimits,
+      });
+      break;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (!device) {
+    try {
+      device = await adapter.requestDevice();
+    } catch (err) {
+      throw lastError ?? err;
+    }
+  }
+
+  const grantedFeatures = new Set(Array.from(device.features ?? []));
+  const maxBufferSize = device.limits.maxBufferSize ?? 0;
+  const maxStorageBufferBindingSize =
+    device.limits.maxStorageBufferBindingSize ?? maxBufferSize;
 
   return {
     device,
-    hasShaderF16: features.has('shader-f16'),
-    hasSubgroups: features.has('subgroups'),
+    hasShaderF16: grantedFeatures.has('shader-f16'),
+    hasSubgroups: grantedFeatures.has('subgroups'),
     hasDp4a,
-    maxBufferSize: device.limits.maxBufferSize ?? 0,
+    maxBufferSize,
+    maxStorageBufferBindingSize,
   };
 }
 
@@ -239,38 +273,75 @@ export async function streamFileToGpuBuffer(
 
 const DEFAULT_URL_STREAM_STAGING_BYTES = 16 * 1024 * 1024;
 
-async function flushStagingChunk(
+export interface GpuBufferWriteSegment {
+  buffer: GpuBufferLike;
+  dstByteOffset: number;
+  byteLength: number;
+}
+
+function writeToGpuSegments(
   device: GpuDeviceLike,
-  gpuBuf: GpuBufferLike,
-  dstOffset: number,
+  segments: GpuBufferWriteSegment[],
+  segIndex: number,
+  segPos: number,
+  staging: Uint8Array<ArrayBuffer>,
+  byteCount: number,
+): { segIndex: number; segPos: number } {
+  let srcOff = 0;
+  let idx = segIndex;
+  let pos = segPos;
+  while (srcOff < byteCount) {
+    const seg = segments[idx];
+    if (!seg) {
+      throw new Error('Stream exceeded target GPU segment capacity.');
+    }
+    const avail = seg.byteLength - pos;
+    const take = Math.min(avail, byteCount - srcOff);
+    if (take > 0) {
+      device.queue.writeBuffer(seg.buffer, seg.dstByteOffset + pos, staging, srcOff, take);
+      srcOff += take;
+      pos += take;
+    }
+    if (pos >= seg.byteLength) {
+      idx++;
+      pos = 0;
+    }
+  }
+  return { segIndex: idx, segPos: pos };
+}
+
+async function flushStagingToSegments(
+  device: GpuDeviceLike,
+  segments: GpuBufferWriteSegment[],
+  state: { segIndex: number; segPos: number; totalWritten: number },
   staging: Uint8Array<ArrayBuffer>,
   byteCount: number,
   yieldMs: number,
   onProgress?: (loadedBytes: number) => void,
-): Promise<number> {
-  device.queue.writeBuffer(gpuBuf, dstOffset, staging, 0, byteCount);
-  const nextOffset = dstOffset + byteCount;
-  onProgress?.(nextOffset);
+): Promise<void> {
+  const next = writeToGpuSegments(device, segments, state.segIndex, state.segPos, staging, byteCount);
+  state.segIndex = next.segIndex;
+  state.segPos = next.segPos;
+  state.totalWritten += byteCount;
+  onProgress?.(state.totalWritten);
   if (yieldMs > 0) {
     await sleepMs(yieldMs);
   }
-  return nextOffset;
 }
 
-async function streamReaderToGpuBuffer(
+async function streamReaderToGpuSegments(
   device: GpuDeviceLike,
   url: string,
   body: ReadableStream<Uint8Array>,
-  gpuBuf: GpuBufferLike,
+  segments: GpuBufferWriteSegment[],
   staging: Uint8Array<ArrayBuffer>,
-  dstByteOffset: number,
   yieldMs: number,
   onProgress?: (loadedBytes: number) => void,
 ): Promise<number> {
   const stagingBytes = staging.byteLength;
   const reader = body.getReader();
   let stagingPos = 0;
-  let dstOffset = dstByteOffset;
+  const state = { segIndex: 0, segPos: 0, totalWritten: 0 };
 
   try {
     while (true) {
@@ -289,14 +360,14 @@ async function streamReaderToGpuBuffer(
           chunkOffset += copyLen;
 
           if (stagingPos === stagingBytes) {
-            dstOffset = await flushStagingChunk(
+            await flushStagingToSegments(
               device,
-              gpuBuf,
-              dstOffset,
+              segments,
+              state,
               staging,
               stagingBytes,
               yieldMs,
-              onProgress ? (writtenAbs) => onProgress(writtenAbs - dstByteOffset) : undefined,
+              onProgress,
             );
             stagingPos = 0;
           }
@@ -316,33 +387,32 @@ async function streamReaderToGpuBuffer(
         `Trailing streamed bytes (${stagingPos}) for ${url} are not 4-byte aligned.`,
       );
     }
-    dstOffset = await flushStagingChunk(
+    await flushStagingToSegments(
       device,
-      gpuBuf,
-      dstOffset,
+      segments,
+      state,
       staging,
       stagingPos,
       0,
-      onProgress ? (writtenAbs) => onProgress(writtenAbs - dstByteOffset) : undefined,
+      onProgress,
     );
   }
-  return dstOffset - dstByteOffset;
+  return state.totalWritten;
 }
 
-async function streamArrayBufferToGpuBuffer(
+async function streamArrayBufferToGpuSegments(
   device: GpuDeviceLike,
   url: string,
   arrayBuffer: ArrayBuffer,
-  gpuBuf: GpuBufferLike,
+  segments: GpuBufferWriteSegment[],
   staging: Uint8Array<ArrayBuffer>,
-  dstByteOffset: number,
   yieldMs: number,
   onProgress?: (loadedBytes: number) => void,
 ): Promise<number> {
   const stagingBytes = staging.byteLength;
   const bytes = new Uint8Array(arrayBuffer);
   let srcOffset = 0;
-  let dstOffset = dstByteOffset;
+  const state = { segIndex: 0, segPos: 0, totalWritten: 0 };
 
   while (srcOffset < bytes.byteLength) {
     const copyLen = Math.min(stagingBytes, bytes.byteLength - srcOffset);
@@ -353,17 +423,94 @@ async function streamArrayBufferToGpuBuffer(
     }
     staging.set(bytes.subarray(srcOffset, srcOffset + copyLen), 0);
     srcOffset += copyLen;
-    dstOffset = await flushStagingChunk(
+    await flushStagingToSegments(
       device,
-      gpuBuf,
-      dstOffset,
+      segments,
+      state,
       staging,
       copyLen,
       copyLen === stagingBytes ? yieldMs : 0,
-      onProgress ? (writtenAbs) => onProgress(writtenAbs - dstByteOffset) : undefined,
+      onProgress,
     );
   }
-  return dstOffset - dstByteOffset;
+  return state.totalWritten;
+}
+
+/**
+ * Streams a fetched URL across one or more ordered GPU buffer segments via a fixed-size
+ * reusable staging `Uint8Array`, allowing on-disk shards to span dynamic GPU slab boundaries.
+ */
+export async function streamUrlToGpuSegments(
+  device: GpuDeviceLike,
+  url: string,
+  segments: GpuBufferWriteSegment[],
+  expectedBytes: number,
+  options?: {
+    stagingBytes?: number;
+    yieldMs?: number;
+    onProgress?: (loadedBytes: number) => void;
+  },
+): Promise<void> {
+  const stagingBytes = options?.stagingBytes ?? DEFAULT_URL_STREAM_STAGING_BYTES;
+  const yieldMs = options?.yieldMs ?? 0;
+  const onProgress = options?.onProgress;
+
+  for (const seg of segments) {
+    if (!Number.isInteger(seg.dstByteOffset) || seg.dstByteOffset < 0 || seg.dstByteOffset % 4 !== 0) {
+      throw new Error(
+        `Invalid dstByteOffset (${seg.dstByteOffset}) for ${url}: must be a non-negative multiple of 4.`,
+      );
+    }
+    if (!Number.isInteger(seg.byteLength) || seg.byteLength < 0 || seg.byteLength % 4 !== 0) {
+      throw new Error(
+        `Invalid segment byteLength (${seg.byteLength}) for ${url}: is not 4-byte aligned.`,
+      );
+    }
+  }
+  if (!Number.isInteger(expectedBytes) || expectedBytes < 0) {
+    throw new Error(`Invalid expectedBytes (${expectedBytes}) for ${url}.`);
+  }
+  const segTotal = segments.reduce((sum, s) => sum + s.byteLength, 0);
+  if (segTotal !== expectedBytes) {
+    throw new Error(
+      `Segment byte sum (${segTotal}) does not match expectedBytes (${expectedBytes}) for ${url}.`,
+    );
+  }
+  if (!Number.isInteger(stagingBytes) || stagingBytes < 4 || stagingBytes % 4 !== 0) {
+    throw new Error(`Invalid stagingBytes (${stagingBytes}): must be a positive multiple of 4.`);
+  }
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch ${url}: ${res.status} ${res.statusText}`);
+  }
+
+  const staging = new Uint8Array(stagingBytes);
+  const bytesWritten = res.body
+    ? await streamReaderToGpuSegments(
+        device,
+        url,
+        res.body,
+        segments,
+        staging,
+        yieldMs,
+        onProgress,
+      )
+    : await streamArrayBufferToGpuSegments(
+        device,
+        url,
+        await res.arrayBuffer(),
+        segments,
+        staging,
+        yieldMs,
+        onProgress,
+      );
+
+  if (bytesWritten !== expectedBytes) {
+    throw new Error(
+      `Streamed byte count mismatch for ${url}: expected ${expectedBytes} bytes, got ${bytesWritten} bytes.`,
+    );
+  }
 }
 
 /**
@@ -383,53 +530,13 @@ export async function streamUrlToGpuBuffer(
   },
 ): Promise<void> {
   const dstByteOffset = options?.dstByteOffset ?? 0;
-  const stagingBytes = options?.stagingBytes ?? DEFAULT_URL_STREAM_STAGING_BYTES;
-  const yieldMs = options?.yieldMs ?? 0;
-  const onProgress = options?.onProgress;
-
-  if (!Number.isInteger(dstByteOffset) || dstByteOffset < 0 || dstByteOffset % 4 !== 0) {
-    throw new Error(`Invalid dstByteOffset (${dstByteOffset}) for ${url}: must be a non-negative multiple of 4.`);
-  }
-  if (!Number.isInteger(expectedBytes) || expectedBytes < 0) {
-    throw new Error(`Invalid expectedBytes (${expectedBytes}) for ${url}.`);
-  }
-  if (!Number.isInteger(stagingBytes) || stagingBytes < 4 || stagingBytes % 4 !== 0) {
-    throw new Error(`Invalid stagingBytes (${stagingBytes}): must be a positive multiple of 4.`);
-  }
-
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch ${url}: ${res.status} ${res.statusText}`);
-  }
-
-  const staging = new Uint8Array(stagingBytes);
-  const bytesWritten = res.body
-    ? await streamReaderToGpuBuffer(
-        device,
-        url,
-        res.body,
-        gpuBuf,
-        staging,
-        dstByteOffset,
-        yieldMs,
-        onProgress,
-      )
-    : await streamArrayBufferToGpuBuffer(
-        device,
-        url,
-        await res.arrayBuffer(),
-        gpuBuf,
-        staging,
-        dstByteOffset,
-        yieldMs,
-        onProgress,
-      );
-
-  if (bytesWritten !== expectedBytes) {
-    throw new Error(
-      `Streamed byte count mismatch for ${url}: expected ${expectedBytes} bytes, got ${bytesWritten} bytes.`,
-    );
-  }
+  return streamUrlToGpuSegments(
+    device,
+    url,
+    [{ buffer: gpuBuf, dstByteOffset, byteLength: expectedBytes }],
+    expectedBytes,
+    options,
+  );
 }
 
 export async function readGpuF32Slice(

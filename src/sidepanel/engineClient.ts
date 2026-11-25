@@ -16,6 +16,7 @@ import {
   type WgslBenchResult,
   type WgslOpfsLoadResult,
 } from '../shared/protocol.ts';
+import type { ExtractedPageContent, ToolExecutionResult } from '../tools/types.ts';
 
 export interface EngineClientSnapshot {
   connected: boolean;
@@ -253,6 +254,7 @@ export class OffscreenEngineClient {
     messages: ChatMessage[],
     callbacks: StreamCallbacks,
     config?: Partial<EngineConfig>,
+    groundingText?: string,
   ): Promise<void> {
     this.activeStreams.set(requestId, callbacks);
     try {
@@ -262,10 +264,109 @@ export class OffscreenEngineClient {
         requestId,
         messages,
         config,
+        ...(groundingText ? { groundingText } : {}),
       });
     } catch (err) {
       this.activeStreams.delete(requestId);
       callbacks.onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  setDisplayHz(hz: number): void {
+    void this.send({ type: 'SET_DISPLAY_HZ', hz }).catch(() => {});
+  }
+
+  prefillBackground(
+    slotKey: string,
+    messages: ChatMessage[],
+    meta?: { isDraft?: boolean; url?: string; contentHash?: string },
+  ): void {
+    if (!this.port) {
+      return;
+    }
+    this.port.postMessage({
+      type: 'PREFILL_BACKGROUND',
+      slotKey,
+      messages,
+      isDraft: meta?.isDraft,
+      url: meta?.url,
+      contentHash: meta?.contentHash,
+    });
+  }
+
+  abortBackgroundPrefill(): void {
+    if (!this.port) {
+      return;
+    }
+    this.port.postMessage({ type: 'ABORT_BACKGROUND_PREFILL' });
+  }
+
+  resetContext(restoreBasePrompt = false): void {
+    void this.send({ type: 'RESET_CONTEXT', restoreBasePrompt }).catch(() => {});
+  }
+
+  async execTool(call: {
+    name: string;
+    arguments?: Record<string, unknown>;
+  }): Promise<ToolExecutionResult> {
+    if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
+      return {
+        ok: false,
+        toolName: call.name as ToolExecutionResult['toolName'],
+        error: 'Chrome extension runtime messaging is unavailable.',
+      };
+    }
+    return (await chrome.runtime.sendMessage({
+      type: 'EXEC_TOOL',
+      call,
+    })) as ToolExecutionResult;
+  }
+
+  async checkResearchPermission(): Promise<boolean> {
+    if (typeof chrome !== 'undefined' && chrome.permissions?.contains) {
+      try {
+        return await chrome.permissions.contains({ origins: ['https://*/*'] });
+      } catch {
+        // Fallback to service worker
+      }
+    }
+    if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+      const res = (await chrome.runtime.sendMessage({ type: 'CHECK_RESEARCH_PERMISSION' })) as
+        | { ok: boolean; granted?: boolean }
+        | undefined;
+      return Boolean(res?.granted);
+    }
+    return false;
+  }
+
+  async requestResearchPermission(): Promise<boolean> {
+    if (typeof chrome !== 'undefined' && chrome.permissions?.request) {
+      try {
+        return await chrome.permissions.request({ origins: ['https://*/*'] });
+      } catch {
+        return false;
+      }
+    }
+    if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+      const res = (await chrome.runtime.sendMessage({ type: 'REQUEST_RESEARCH_PERMISSION' })) as
+        | { ok: boolean; granted?: boolean }
+        | undefined;
+      return Boolean(res?.granted);
+    }
+    return false;
+  }
+
+  async extractActiveTabPreview(): Promise<ExtractedPageContent | null> {
+    if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
+      return null;
+    }
+    try {
+      const res = (await chrome.runtime.sendMessage({ type: 'EXTRACT_ACTIVE_TAB_PREVIEW' })) as
+        | { ok: boolean; page?: ExtractedPageContent }
+        | undefined;
+      return res?.ok && res.page ? res.page : null;
+    } catch {
+      return null;
     }
   }
 

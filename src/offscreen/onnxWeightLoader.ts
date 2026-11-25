@@ -1,12 +1,18 @@
+import {
+  getDeltaNetConvDim,
+  getFullAttnLayerSet,
+  QWEN35_4B_DEFAULT_ARCH,
+  type ModelArchConfig,
+} from './modelConfig.ts';
 import type { OpfsModelCache } from './opfsCache.ts';
 
 export const WGSL_REAL_CACHE_DIR = 'tinygpt-wgsl-qwen35-4b-v1';
 
-export const QWEN35_HIDDEN = 2560;
-export const QWEN35_INTERMEDIATE = 9216;
-export const QWEN35_NUM_LAYERS = 32;
-export const QWEN35_VOCAB_SIZE = 248320;
-export const QWEN35_FULL_ATTN_LAYERS = new Set([3, 7, 11, 15, 19, 23, 27, 31]);
+export const QWEN35_HIDDEN = QWEN35_4B_DEFAULT_ARCH.hiddenSize;
+export const QWEN35_INTERMEDIATE = QWEN35_4B_DEFAULT_ARCH.intermediateSize;
+export const QWEN35_NUM_LAYERS = QWEN35_4B_DEFAULT_ARCH.numLayers;
+export const QWEN35_VOCAB_SIZE = QWEN35_4B_DEFAULT_ARCH.vocabSize;
+export const QWEN35_FULL_ATTN_LAYERS = new Set(QWEN35_4B_DEFAULT_ARCH.fullAttnLayers);
 
 export interface OnnxTensorMeta {
   name: string;
@@ -60,6 +66,7 @@ export interface WgslSlabManifest {
   version: number;
   modelId: string;
   complete: boolean;
+  arch?: Partial<ModelArchConfig>;
   slab0Bytes: number;
   slab1Bytes: number;
   slab2Bytes: number;
@@ -84,25 +91,29 @@ export interface WgslWeightSlabFiles {
   manifest: WgslSlabManifest;
 }
 
-export function computeAuxLayout(): AuxLayout {
+export function computeAuxLayout(arch: ModelArchConfig = QWEN35_4B_DEFAULT_ARCH): AuxLayout {
   let off = 0;
   const invFreqOff = off;
-  off += 32;
+  off += arch.ropeDim / 2;
   const finalNormOff = off;
-  off += QWEN35_HIDDEN;
+  off += arch.hiddenSize;
+
+  const fullAttnSet = getFullAttnLayerSet(arch);
+  const dnConvDim = getDeltaNetConvDim(arch);
+  const dnAuxSize = arch.dnValHeads * 2 + arch.dnHeadDim;
 
   const layers: LayerAuxLayout[] = [];
-  for (let l = 0; l < QWEN35_NUM_LAYERS; l++) {
+  for (let l = 0; l < arch.numLayers; l++) {
     const inputNormOff = off;
-    off += QWEN35_HIDDEN;
+    off += arch.hiddenSize;
     const postNormOff = off;
-    off += QWEN35_HIDDEN;
-    const isFullAttn = QWEN35_FULL_ATTN_LAYERS.has(l);
+    off += arch.hiddenSize;
+    const isFullAttn = fullAttnSet.has(l);
     if (isFullAttn) {
       const qNormOff = off;
-      off += 256;
+      off += arch.attnHeadDim;
       const kNormOff = off;
-      off += 256;
+      off += arch.attnHeadDim;
       layers.push({
         inputNormOff,
         postNormOff,
@@ -114,9 +125,9 @@ export function computeAuxLayout(): AuxLayout {
       });
     } else {
       const dnAuxOff = off;
-      off += 32 + 32 + 128; // 192 f32s
+      off += dnAuxSize; // [A_neg(dnValHeads), dt_bias(dnValHeads), gdn_norm(dnHeadDim)]
       const convWOff = off;
-      off += 8192 * 4;
+      off += dnConvDim * arch.dnConvKernel;
       layers.push({
         inputNormOff,
         postNormOff,
@@ -359,7 +370,11 @@ export async function ensureWgslWeightSlabs(
     const dir = await root.getDirectoryHandle(WGSL_REAL_CACHE_DIR, { create: false });
     const manifestFile = await (await dir.getFileHandle('manifest.json')).getFile();
     const manifest = JSON.parse(await manifestFile.text()) as WgslSlabManifest;
-    if (manifest.version === 1 && manifest.complete && manifest.modelId === options.modelId) {
+    if (
+      (manifest.version === 1 || manifest.version === 2) &&
+      manifest.complete &&
+      manifest.modelId === options.modelId
+    ) {
       const [slab0, slab1, slab2, aux] = await Promise.all([
         (await dir.getFileHandle('slab0.bin')).getFile(),
         (await dir.getFileHandle('slab1.bin')).getFile(),

@@ -57,6 +57,7 @@ export interface ChatMessage {
 }
 
 export type EngineBackend = 'ort' | 'wgsl';
+export type WgslComputeTier = 'tier1-f16-subgroups' | 'tier2-f16-shared' | 'tier3-f32-universal';
 export type WasmVariant = 'asyncify' | 'jspi';
 export type YieldMode = 'timeout' | 'message-channel' | 'none';
 export type GraphOptimizationLevel = 'all' | 'extended' | 'basic' | 'disabled';
@@ -119,6 +120,8 @@ export interface EngineConfig {
   executionHost: ExecutionHost;
   /** Enables zero-weight suffix speculative decoding for greedy generation */
   enableSpeculative: boolean;
+  /** Optional compute tier override ('tier1-f16-subgroups' | 'tier2-f16-shared' | 'tier3-f32-universal') */
+  forceComputeTier?: WgslComputeTier | null;
 }
 
 export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
@@ -145,6 +148,7 @@ export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
   gpuPacingMode: 'balanced',
   executionHost: 'worker',
   enableSpeculative: true,
+  forceComputeTier: null,
 };
 
 export interface LoadBreakdown {
@@ -194,6 +198,15 @@ export interface TelemetryState {
     steps: number;
     acceptanceRatePct: number;
   } | null;
+  computeTier: WgslComputeTier | null;
+  allocatedKvCapacity: number;
+  maxKvCapacity: number;
+  basePromptCached: boolean;
+  basePromptTokens: number;
+  lastSlotRestoreMs: number | null;
+  displayHz: number;
+  backgroundPrefillState: 'idle' | 'prefilling' | 'warm';
+  activePrefixSlot: string | null;
 }
 
 export const INITIAL_TELEMETRY_STATE: TelemetryState = {
@@ -222,6 +235,15 @@ export const INITIAL_TELEMETRY_STATE: TelemetryState = {
   deviceLostReason: null,
   maxContextReached: 0,
   speculativeStats: null,
+  computeTier: null,
+  allocatedKvCapacity: 0,
+  maxKvCapacity: 0,
+  basePromptCached: false,
+  basePromptTokens: 0,
+  lastSlotRestoreMs: null,
+  displayHz: 60,
+  backgroundPrefillState: 'idle',
+  activePrefixSlot: null,
 };
 
 export interface WebGpuProbeInfo {
@@ -420,14 +442,25 @@ export type ClientToEngineMessage =
   | { type: 'CLEAR_MODEL_CACHE' }
   | { type: 'LOAD_MODEL'; config?: Partial<EngineConfig> }
   | { type: 'UNLOAD_MODEL' }
-  | { type: 'RESET_CONTEXT' }
+  | { type: 'RESET_CONTEXT'; restoreBasePrompt?: boolean }
   | { type: 'SNAPSHOT_CONTEXT' }
   | { type: 'RESTORE_CONTEXT' }
+  | { type: 'SET_DISPLAY_HZ'; hz: number }
+  | {
+      type: 'PREFILL_BACKGROUND';
+      slotKey: string;
+      messages: ChatMessage[];
+      isDraft?: boolean;
+      url?: string;
+      contentHash?: string;
+    }
+  | { type: 'ABORT_BACKGROUND_PREFILL' }
   | {
       type: 'GENERATE';
       requestId: string;
       messages: ChatMessage[];
       config?: Partial<EngineConfig>;
+      groundingText?: string;
     }
   | { type: 'ABORT'; requestId: string }
   | {

@@ -43,6 +43,7 @@ function main() {
   const track3Runs = runs.filter((r) => r.track === 'track3-smoothness');
   const track4Runs = runs.filter((r) => r.track === 'track4-speed');
   const track5Runs = runs.filter((r) => r.track === 'track5-speed');
+  const track6Run = runs.find((r) => r.track === 'track6-crossgpu-ux-tools') ?? null;
 
   const baseLoadMs = baselineRun?.coldLoad?.opfsReloadMs ?? null;
   const base1kDecode = findPoint(baselineRun?.sweep?.points, 1024)?.decodeTokPerSec ?? null;
@@ -385,6 +386,7 @@ function main() {
     track3Rows,
     track4Rows,
     track5Rows,
+    track6Run,
   };
 
   fs.writeFileSync(SUMMARY_JSON, JSON.stringify(summary, null, 2));
@@ -721,6 +723,27 @@ function main() {
     const totalT5NetReqs = track5Rows.reduce((sum, r) => sum + r.externalNetworkRequestCount, 0);
     lines.push(
       `- **Strict Offline Zero-Network Verification:** Across all \`${track5Rows.length}\` Track 5 runs, \`${totalT5NetReqs}\` external \`http(s)://\` requests and \`0\` console/offscreen errors were recorded.`,
+    );
+  }
+
+  if (track6Run) {
+    lines.push('');
+    lines.push('## 9. Track 6 — Cross-GPU 3-Tier Shaders, Tiered KV, Slot-0 / Tab Cache & Tier-1 Tools');
+    lines.push('');
+    lines.push(
+      `- **Auto-Load & Hardware Calibration (\`${track6Run.runId}\`):** Auto-preloaded on Side Panel open in **\`${fmtSec(track6Run.autoLoad?.coldLoadMs)}\`**, auto-detected **\`${track6Run.autoLoad?.displayHz}Hz\`** display pacing, initialized Tier 1 (\`${track6Run.autoLoad?.computeTier}\`) with lean startup KV (**\`${track6Run.autoLoad?.initialKvCapacity?.toLocaleString()}\`** of \`${track6Run.autoLoad?.maxKvCapacity?.toLocaleString()}\` tokens), and pinned permanent Slot 0 Base System Prompt (\`${track6Run.autoLoad?.basePromptTokens}\` tokens, reset restore in **\`${fmtNum(track6Run.autoLoad?.slot0RestoreMs, 2)} ms\`**).`,
+    );
+    lines.push(
+      `- **Speculative Tab Prefill & Compositor Smoothness:** Cold \`${fmtNum(track6Run.backgroundTabPrefill?.coldTtftMs, 0)} ms\` -> Warm GPU Slot Restore **\`${fmtNum(track6Run.backgroundTabPrefill?.warmTtftMs, 0)} ms\`** (**\`${track6Run.backgroundTabPrefill?.speedupRatio}x\` faster**, slot restore **\`${fmtNum(track6Run.backgroundTabPrefill?.slotRestoreMs, 2)} ms\`**) with immediate foreground preemption and **\`${fmtNum(track6Run.smoothness?.avgFps, 2)} FPS\`** (\`${fmtNum(track6Run.smoothness?.jankPctOver33ms, 2)}%\` jank).`,
+    );
+    lines.push(
+      `- **Dynamic Tiered KV Growth & 34K NIAH:** Live GPU KV reallocation from \`${track6Run.dynamicKvNiah32k?.initialKvCapacity?.toLocaleString()}\` -> **\`${track6Run.dynamicKvNiah32k?.grownKvCapacity?.toLocaleString()}\`** tokens passed 34K NIAH (\`${track6Run.dynamicKvNiah32k?.responseText}\`, \`${fmtNum(track6Run.dynamicKvNiah32k?.decodeTokPerSec, 1)} tok/s\`).`,
+    );
+    lines.push(
+      `- **Cross-GPU 3-Tier Shader Parity:** Tier 1 (\`f16+subgroups\`, \`${fmtNum(track6Run.crossGpuTiers?.tier1?.decodeTokPerSec, 1)} tok/s\` balanced), Tier 2 (\`f16 shared\`, **\`${fmtNum(track6Run.crossGpuTiers?.tier2?.decodeTokPerSec, 1)} tok/s\`**), and Tier 3 (\`universal f32\`, **\`${fmtNum(track6Run.crossGpuTiers?.tier3?.decodeTokPerSec, 1)} tok/s\`**) all passed WebGPU validation and produced identical output (\`"${track6Run.crossGpuTiers?.tier3?.answer}"\`).`,
+    );
+    lines.push(
+      `- **Option A Privacy & Offline Tools:** \`js_calc\` (\`${fmtNum(track6Run.tools?.jsCalcResult, 4)}\`), \`list_open_tabs\` (\`${track6Run.tools?.openTabsCount}\` tabs), and fail-closed \`web_search\` (\`needsPermission=${track6Run.tools?.searchNeedsPermission}\`) verified with **\`${track6Run.externalNetworkRequestCount}\` external network requests** and **\`${track6Run.consoleErrorCount + (track6Run.offscreenErrors?.length ?? 0)}\` errors**.`,
     );
   }
 

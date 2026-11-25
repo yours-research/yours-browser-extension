@@ -57,6 +57,15 @@ export function TelemetryBar({
         ? 'OPFS'
         : 'Net';
 
+  const tierBadgeLabel =
+    telemetry.computeTier === 'tier1-f16-subgroups'
+      ? 'T1 f16+sg'
+      : telemetry.computeTier === 'tier2-f16-shared'
+        ? 'T2 f16'
+        : telemetry.computeTier === 'tier3-f32-universal'
+          ? 'T3 f32'
+          : null;
+
   return (
     <header className="telemetry-bar">
       <div className="telemetry-row-top">
@@ -64,6 +73,22 @@ export function TelemetryBar({
           <span className={connected ? 'dot dot-online' : 'dot dot-offline'} />
           <strong>TinyGPT</strong>
           <span className={statusBadgeClass(telemetry.status)}>{statusText}</span>
+          {tierBadgeLabel && (
+            <span className="meta-chip" title={`Active WebGPU compute tier (${telemetry.displayHz}Hz)`}>
+              {tierBadgeLabel} · {telemetry.displayHz}Hz
+            </span>
+          )}
+          {telemetry.basePromptCached && (
+            <span className="meta-chip" title={`Permanent Slot 0 cached (${telemetry.basePromptTokens}t)`}>
+              Slot0
+              {telemetry.lastSlotRestoreMs !== null ? ` ${telemetry.lastSlotRestoreMs.toFixed(1)}ms` : ''}
+            </span>
+          )}
+          {telemetry.backgroundPrefillState !== 'idle' && (
+            <span className="meta-chip" title="Background speculative prefix prefill state">
+              BG:{telemetry.backgroundPrefillState}
+            </span>
+          )}
           {telemetry.coldLoadMs !== null && (
             <span className="meta-chip" title="Cold load time into WebGPU">
               {loadSourceLabel} {(telemetry.coldLoadMs / 1000).toFixed(2)}s

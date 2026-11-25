@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  calibratePacingForHardware,
   computeDecodeBurstBreatherMs,
   computeDecodePostStepBreatherMs,
   computeDecodeSliceBounds,
@@ -360,6 +361,38 @@ describe('gpuPacing', () => {
         '/wasm/tinygpt_wgsl_engine.wasm',
       );
     });
+  });
+
+  it('calibrates pacing policy dynamically for 60/120/144Hz monitors and slow iGPUs', () => {
+    // max-speed stays unthrottled regardless of Hz or step time
+    expect(calibratePacingForHardware('max-speed', 144, 150)).toEqual(getGpuPacingPolicy('max-speed'));
+
+    // 60Hz fast dGPU matches balanced baseline
+    const bal60 = calibratePacingForHardware('balanced', 60, 4);
+    expect(bal60.decodeBurstBudgetMs).toBe(14);
+    expect(bal60.decodeSplitsShort).toBe(1);
+    expect(bal60.prefillChunkShort).toBe(64);
+
+    // 120Hz and 144Hz tighten burst budget to fit frame cadence
+    const bal120 = calibratePacingForHardware('balanced', 120, 4);
+    expect(bal120.decodeBurstBudgetMs).toBeLessThanOrEqual(8);
+    const bal144 = calibratePacingForHardware('balanced', 144, 4);
+    expect(bal144.decodeBurstBudgetMs).toBeLessThanOrEqual(7);
+    const smooth144 = calibratePacingForHardware('smooth-ui', 144, 4);
+    expect(smooth144.decodeBurstBudgetMs).toBeLessThanOrEqual(4);
+
+    // Slow iGPU (>= 100ms per decode step) increases decode splits and shrinks prefill chunks for TDR safety
+    const slowBalanced = calibratePacingForHardware('balanced', 60, 120);
+    expect(slowBalanced.decodeSplitsShort).toBe(2);
+    expect(slowBalanced.decodeSplitsLong).toBe(4);
+    expect(slowBalanced.prefillChunkShort).toBe(32);
+    expect(slowBalanced.prefillChunkLong).toBe(16);
+
+    const slowSmooth = calibratePacingForHardware('smooth-ui', 60, 120);
+    expect(slowSmooth.decodeSplitsShort).toBe(4);
+    expect(slowSmooth.decodeSplitsLong).toBe(4);
+    expect(slowSmooth.prefillChunkShort).toBe(32);
+    expect(slowSmooth.prefillChunkLong).toBe(16);
   });
 
   it('sleepMs resolves immediately for non-positive durations and waits for positive ms', async () => {
