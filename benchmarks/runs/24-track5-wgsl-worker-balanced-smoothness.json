@@ -1,0 +1,204 @@
+{
+  "runId": "24-track5-wgsl-worker-balanced-smoothness",
+  "track": "track5-speed",
+  "recordedAt": "2026-11-25T06:55:52.299Z",
+  "label": "Track 5 WGSL Speedups (Dedicated Worker, Balanced Default + Speculative + Extended Suite)",
+  "config": {
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "dtype": "q4f16",
+    "chunkSize": 64,
+    "maxNewTokens": 128,
+    "temperature": 0,
+    "topP": 0.95,
+    "topK": 20,
+    "enableThinking": false,
+    "gpuBandwidthGBs": 936,
+    "wasmVariant": "asyncify",
+    "yieldMode": "none",
+    "fastDecodePath": true,
+    "fastOpfsLoad": true,
+    "graphOptimizationLevel": "all",
+    "validationMode": "basic",
+    "storageBufferCacheMode": "default",
+    "enableMatmulFp32Accumulation": null,
+    "backend": "wgsl",
+    "wgslKvMode": "int8",
+    "wgslMaxContext": 131072,
+    "gpuPacingMode": "balanced",
+    "executionHost": "worker",
+    "enableSpeculative": true
+  },
+  "idleSmoothness": {
+    "avgFps": 132.75,
+    "p50FrameMs": 6.9,
+    "p95FrameMs": 7.1,
+    "p99FrameMs": 7.1,
+    "maxFrameMs": 216,
+    "jankPctOver33ms": 0.5,
+    "freezePctOver100ms": 0.25,
+    "avgInputLatencyMs": 3.03,
+    "frameCount": 398
+  },
+  "coldLoad": {
+    "coldLoadMs": 7240.10000000149,
+    "loadSource": "bundled",
+    "executionHost": "worker",
+    "loadBreakdown": {
+      "opfsReadMs": 6015.39999999851,
+      "tokenizerMs": 575.9000000022352,
+      "modelLoadMs": 333.69999999925494,
+      "totalMs": 7240.10000000149
+    },
+    "estVramMb": 2560.1680908203125
+  },
+  "loadSmoothness": {
+    "avgFps": 139.29,
+    "p50FrameMs": 6.9,
+    "p95FrameMs": 7.3,
+    "p99FrameMs": 8.5,
+    "maxFrameMs": 132,
+    "jankPctOver33ms": 0.19,
+    "freezePctOver100ms": 0.1,
+    "avgInputLatencyMs": 3.89,
+    "frameCount": 1036
+  },
+  "sweep": {
+    "startedAt": "2026-11-25T06:51:25.775Z",
+    "finishedAt": "2026-11-25T06:53:58.929Z",
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "dtype": "q4f16",
+    "gpuBandwidthGBs": 936,
+    "points": [
+      {
+        "targetTokens": 8192,
+        "actualPromptTokens": 8192,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 25213.699999999255,
+        "ttftMs": 25214.10000000149,
+        "prefillTokPerSec": 324.90273145156175,
+        "decodeTokPerSec": 60.41155370973194,
+        "kvCacheMb": 130.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 2690.6759033203125,
+        "achievedBandwidthGBs": 148.07426909240152,
+        "bandwidthUtilizationPct": 15.819900544059992,
+        "breakdown": {
+          "avgForwardMs": 12.878125000046566,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 3.39374999969732
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 32768,
+        "actualPromptTokens": 32768,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 126613.90000000224,
+        "ttftMs": 126613.90000000224,
+        "prefillTokPerSec": 258.8025485353458,
+        "decodeTokPerSec": 41.19994850010389,
+        "kvCacheMb": 520.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 3080.6759033203125,
+        "achievedBandwidthGBs": 100.98485945437106,
+        "bandwidthUtilizationPct": 10.788980710937079,
+        "breakdown": {
+          "avgForwardMs": 16.424999999580905,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 7.5437499998370185
+        },
+        "status": "ok"
+      }
+    ],
+    "maxSafeTokens": 32800,
+    "oomTokenCount": null,
+    "recommendation": "Below 40% theoretical bandwidth (15.8% of 936 GB/s): Phase 2 Decision Gate triggers custom Rust/WASM + WGSL engine."
+  },
+  "sweepSmoothness": {
+    "avgFps": 140.25,
+    "p50FrameMs": 6.9,
+    "p95FrameMs": 7.3,
+    "p99FrameMs": 17.6,
+    "maxFrameMs": 34.6,
+    "jankPctOver33ms": 0,
+    "freezePctOver100ms": 0,
+    "avgInputLatencyMs": 3.94,
+    "frameCount": 21502
+  },
+  "chatTurn1": {
+    "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+    "responseText": "* **Enhanced Privacy**: Data never leaves the user's device, ensuring complete confidentiality for sensitive inputs and outputs.\n* **Reduced Latency**: Local execution eliminates network round-trips, enabling near-instantaneous response times.\n* **Lower Costs**: Running models on-device removes the need for expensive cloud API subscriptions or server infrastructure.\n* **Improved Reliability**: The application remains functional even when the internet connection is unavailable or unstable.",
+    "responseLength": 493,
+    "ttftMs": 162.40000000223517,
+    "prefillTokPerSec": 227.58620689655174,
+    "decodeTokPerSec": 78.28766552824743,
+    "activeContextTokens": 127,
+    "prefixReused": false,
+    "estVramMb": 2562.1834716796875,
+    "speculativeStats": {
+      "drafted": 12,
+      "accepted": 4,
+      "steps": 3,
+      "acceptanceRatePct": 33.33333333333333
+    }
+  },
+  "chatSmoothness": {
+    "avgFps": 142.72,
+    "p50FrameMs": 6.9,
+    "p95FrameMs": 8.1,
+    "p99FrameMs": 11,
+    "maxFrameMs": 28.4,
+    "jankPctOver33ms": 0,
+    "freezePctOver100ms": 0,
+    "avgInputLatencyMs": 4.19,
+    "frameCount": 315
+  },
+  "turn2": {
+    "prompt": "Summarize bullet 1 in one short sentence.",
+    "responseText": "Running locally ensures all data stays private on the user's device.",
+    "responseLength": 68,
+    "ttftMs": 131.19999999925494,
+    "prefillTokPerSec": 191.71779140775672,
+    "decodeTokPerSec": 74.58405048734613,
+    "activeContextTokens": 165,
+    "prefixReused": true,
+    "estVramMb": 2562.7864990234375,
+    "speculativeStats": {
+      "drafted": 4,
+      "accepted": 1,
+      "steps": 1,
+      "acceptanceRatePct": 25
+    }
+  },
+  "snapshotRestore": {
+    "snapshottedTokens": 165,
+    "restoredTokens": 165,
+    "passed": true
+  },
+  "abortMetrics": {
+    "stoppedCleanly": true,
+    "abortLatencyMs": 99.34,
+    "preservedPartialChars": 39,
+    "partialPreview": "# The Architecture of Parallelism: A De"
+  },
+  "niah": {
+    "targetTokens": 32768,
+    "actualTokens": 32768,
+    "needleDepthPct": 0.5,
+    "passkey": "VELVET-ORBIT-7492",
+    "responseText": "VELVET-ORBIT-7492",
+    "passed": true,
+    "ttftMs": 108267.89999999851,
+    "prefillTokPerSec": 302.6572098603655,
+    "decodeTokPerSec": 40.366972477064216
+  },
+  "externalNetworkRequestCount": 0,
+  "externalNetworkRequests": [],
+  "consoleErrorCount": 0,
+  "offscreenErrors": [],
+  "status": "ok"
+}

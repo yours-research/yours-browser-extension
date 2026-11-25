@@ -16,6 +16,7 @@ export interface GpuPacingPolicy {
   decodeLongThreshold: number;
   decodeSlowStepThresholdMs: number;
   decodeSliceBreatherMs: number;
+  decodeBurstBudgetMs: number;
   decodePostStepRatio: number;
   decodePostStepMinMs: number;
   decodePostStepMaxMs: number;
@@ -35,6 +36,7 @@ const GPU_PACING_POLICIES: Record<GpuPacingMode, GpuPacingPolicy> = {
     decodeLongThreshold: 16384,
     decodeSlowStepThresholdMs: Number.POSITIVE_INFINITY,
     decodeSliceBreatherMs: 0,
+    decodeBurstBudgetMs: Number.POSITIVE_INFINITY,
     decodePostStepRatio: 0,
     decodePostStepMinMs: 0,
     decodePostStepMaxMs: 0,
@@ -49,9 +51,10 @@ const GPU_PACING_POLICIES: Record<GpuPacingMode, GpuPacingPolicy> = {
     prefillBreatherMs: 4,
     decodeSplitsShort: 1,
     decodeSplitsLong: 2,
-    decodeLongThreshold: 16384,
-    decodeSlowStepThresholdMs: 11,
+    decodeLongThreshold: 32768,
+    decodeSlowStepThresholdMs: 14,
     decodeSliceBreatherMs: 2,
+    decodeBurstBudgetMs: 14,
     decodePostStepRatio: 0.22,
     decodePostStepMinMs: 2,
     decodePostStepMaxMs: 6,
@@ -69,6 +72,7 @@ const GPU_PACING_POLICIES: Record<GpuPacingMode, GpuPacingPolicy> = {
     decodeLongThreshold: 8192,
     decodeSlowStepThresholdMs: 8,
     decodeSliceBreatherMs: 3,
+    decodeBurstBudgetMs: 8,
     decodePostStepRatio: 0.45,
     decodePostStepMinMs: 4,
     decodePostStepMaxMs: 12,
@@ -135,6 +139,31 @@ export function computeDecodePostStepBreatherMs(
     policy.decodePostStepMaxMs,
     Math.max(policy.decodePostStepMinMs, Math.round(safeStepMs * policy.decodePostStepRatio)),
   );
+}
+
+/**
+ * Accumulates decode GPU step time into a burst budget and triggers a compositor breather
+ * only once `cumulativeBurstMs + stepGpuMs >= decodeBurstBudgetMs`.
+ */
+export function computeDecodeBurstBreatherMs(
+  mode: GpuPacingMode,
+  stepGpuMs: number,
+  cumulativeBurstMs: number,
+): { breatherMs: number; nextBurstMs: number } {
+  const policy = getGpuPacingPolicy(mode);
+  if (policy.mode === 'max-speed' || policy.decodePostStepMaxMs <= 0) {
+    return { breatherMs: 0, nextBurstMs: 0 };
+  }
+  const safeStepMs = Number.isFinite(stepGpuMs) && stepGpuMs > 0 ? stepGpuMs : 0;
+  const safeCumMs = Number.isFinite(cumulativeBurstMs) && cumulativeBurstMs > 0 ? cumulativeBurstMs : 0;
+  const totalBurstMs = safeCumMs + safeStepMs;
+  if (totalBurstMs < policy.decodeBurstBudgetMs) {
+    return { breatherMs: 0, nextBurstMs: totalBurstMs };
+  }
+  return {
+    breatherMs: computeDecodePostStepBreatherMs(mode, totalBurstMs),
+    nextBurstMs: 0,
+  };
 }
 
 /** Computes whether an accumulated prefill GPU burst should pause for a UI breather and reset its counter. */

@@ -107,7 +107,7 @@ export function DiagnosticsDrawer({
           <div className="info-card">
             <div className="info-title">Model: Qwen3.5-4B (q4f16, Bundled Offline)</div>
             <div className="info-row">
-              Engine: Native Rust/WGSL · INT8 KV (128K Context)
+              Engine: Native Rust/WGSL Track 5 · INT8 KV + Suffix Speculation
             </div>
             <div className="info-row">
               Execution Host:{' '}
@@ -176,6 +176,15 @@ export function DiagnosticsDrawer({
             <span>Enable Qwen3.5 &lt;think&gt; mode (disables warm multi-turn prefix reuse)</span>
           </label>
 
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={config.enableSpeculative}
+              onChange={(e) => onUpdateConfig({ enableSpeculative: e.target.checked })}
+            />
+            <span>Enable Zero-Weight Suffix Speculation (greedy)</span>
+          </label>
+
           <div className="btn-row">
             <button
               type="button"
@@ -203,6 +212,12 @@ export function DiagnosticsDrawer({
             <span>KV Attn: {telemetry.kvCacheMb.toFixed(1)} MiB</span>
             <span>DeltaNet Recurrent: {telemetry.deltaNetStateMb.toFixed(1)} MiB</span>
             <span>Max Reached: {telemetry.maxContextReached.toLocaleString()} tok</span>
+            {telemetry.speculativeStats && (
+              <span>
+                Speculative: {telemetry.speculativeStats.accepted}/{telemetry.speculativeStats.drafted}{' '}
+                ({telemetry.speculativeStats.acceptanceRatePct.toFixed(1)}%)
+              </span>
+            )}
           </div>
 
           <div className="log-box">

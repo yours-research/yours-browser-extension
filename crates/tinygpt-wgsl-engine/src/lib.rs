@@ -121,6 +121,10 @@ pub extern "C" fn full_attn_layer_kv_bytes(max_seq: u32, int8_kv: u32) -> u64 {
 /// 18 = gqa_int8_prefill
 /// 19 = gdn_chunk_prep
 /// 20 = gdn_chunk_apply
+/// 21 = q4_gate_up_swiglu
+/// 22 = q4_gemv_wide_k
+/// 23 = gqa_int8_split_dp4a
+/// 24 = q4_gemv_batch
 #[no_mangle]
 pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
     match shader_id {
@@ -145,6 +149,10 @@ pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
         18 => set_shader_bytes(WGSL_GQA_INT8_PREFILL.as_bytes()),
         19 => set_shader_bytes(WGSL_GDN_CHUNK_PREP.as_bytes()),
         20 => set_shader_bytes(WGSL_GDN_CHUNK_APPLY.as_bytes()),
+        21 => set_shader_bytes(WGSL_Q4_GATE_UP_SWIGLU.as_bytes()),
+        22 => set_shader_bytes(WGSL_Q4_GEMV_WIDE_K.as_bytes()),
+        23 => set_shader_bytes(WGSL_GQA_INT8_SPLIT_DP4A.as_bytes()),
+        24 => set_shader_bytes(WGSL_Q4_GEMV_BATCH.as_bytes()),
         _ => 0,
     }
 }
@@ -268,8 +276,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-// Uses 1 workgroup of 128 threads (8 x 16-lane groups) per 16 output rows.
-// Stages 512 f16 activations per K-tile in workgroup memory and reduces 16 lanes via subgroupShuffleXor.
+// Coalesced-X Factored Q4 GEMV v3: 1 workgroup of 128 threads (8 x 16-lane groups) per 16 output rows.
+// Stages up to 2560 f16 activations coalesced into x_sh (1 barrier total for K<=2560, 0 K-loop barriers).
 const WGSL_Q4_SUBGROUPS_F16: &str = r#"
 enable f16;
 enable subgroups;
@@ -290,30 +298,29 @@ struct GemvParams {
 @group(0) @binding(2) var<storage, read> x: array<f32>;
 @group(0) @binding(3) var<storage, read_write> y: array<f32>;
 
-var<workgroup> x_sh: array<vec4<f16>, 128>;
+var<workgroup> x_sh: array<vec4<f16>, 640>;
 var<workgroup> red_sh: array<vec2<f32>, 128>;
 
-fn dot_q4_word(p: u32, s4: vec4<f16>, z4: vec4<f16>, xa: vec4<f16>, xb: vec4<f16>) -> f16 {
+fn factored_q4_word(p: u32, xa: vec4<f16>, xb: vec4<f16>) -> f32 {
   let q0 = vec4<f16>(f16(p & 0xFu), f16((p >> 4u) & 0xFu), f16((p >> 8u) & 0xFu), f16((p >> 12u) & 0xFu));
   let q1 = vec4<f16>(f16((p >> 16u) & 0xFu), f16((p >> 20u) & 0xFu), f16((p >> 24u) & 0xFu), f16((p >> 28u) & 0xFu));
-  return dot(fma(q0, s4, z4), xa) + dot(fma(q1, s4, z4), xb);
+  return f32(dot(q0, xa)) + f32(dot(q1, xb));
 }
 
-fn dot_q4_block(
+fn factored_q4_block(
   w0: u32, w1: u32, w2: u32, w3: u32, meta_word: u32,
   x0a: vec4<f16>, x0b: vec4<f16>,
   x1a: vec4<f16>, x1b: vec4<f16>,
   x2a: vec4<f16>, x2b: vec4<f16>,
   x3a: vec4<f16>, x3b: vec4<f16>,
+  sum_x: f32,
 ) -> f32 {
-  let blk_meta = bitcast<vec2<f16>>(meta_word);
-  let s4 = vec4<f16>(blk_meta.x);
-  let z4 = vec4<f16>(blk_meta.y);
-  let s = dot_q4_word(w0, s4, z4, x0a, x0b)
-    + dot_q4_word(w1, s4, z4, x1a, x1b)
-    + dot_q4_word(w2, s4, z4, x2a, x2b)
-    + dot_q4_word(w3, s4, z4, x3a, x3b);
-  return f32(s);
+  let blk_meta = unpack2x16float(meta_word);
+  let sum_qx = factored_q4_word(w0, x0a, x0b)
+    + factored_q4_word(w1, x1a, x1b)
+    + factored_q4_word(w2, x2a, x2b)
+    + factored_q4_word(w3, x3a, x3b);
+  return blk_meta.x * sum_qx + blk_meta.y * sum_x;
 }
 
 @compute @workgroup_size(128)
@@ -340,40 +347,40 @@ fn main(
 
   var acc0: f32 = 0.0;
   var acc1: f32 = 0.0;
+  let ones = vec4<f16>(1.0h);
 
-  for (var b_tile: u32 = 0u; b_tile < blocks; b_tile = b_tile + 16u) {
-    let k_rel = (b_tile << 5u) + (tid << 2u);
-    let k_base = params.in_offset + k_rel;
-    if (k_rel + 3u < params.cols) {
-      x_sh[tid] = vec4<f16>(f16(x[k_base]), f16(x[k_base + 1u]), f16(x[k_base + 2u]), f16(x[k_base + 3u]));
-    } else {
-      let e0 = select(0.0h, f16(x[k_base + 0u]), k_rel + 0u < params.cols);
-      let e1 = select(0.0h, f16(x[k_base + 1u]), k_rel + 1u < params.cols);
-      let e2 = select(0.0h, f16(x[k_base + 2u]), k_rel + 2u < params.cols);
-      let e3 = select(0.0h, f16(x[k_base + 3u]), k_rel + 3u < params.cols);
-      x_sh[tid] = vec4<f16>(e0, e1, e2, e3);
+  for (var k_tile: u32 = 0u; k_tile < blocks; k_tile = k_tile + 80u) {
+    let tile_blocks = min(80u, blocks - k_tile);
+    let load_vec4s = tile_blocks << 3u;
+    let x_tile_base = params.in_offset + (k_tile << 5u);
+    for (var i: u32 = tid; i < load_vec4s; i = i + 128u) {
+      let kb = x_tile_base + (i << 2u);
+      x_sh[i] = vec4<f16>(f16(x[kb]), f16(x[kb + 1u]), f16(x[kb + 2u]), f16(x[kb + 3u]));
     }
     workgroupBarrier();
 
-    let b = b_tile + lane;
-    if (b < blocks) {
-      let xb = lane << 3u;
-      let x0a = x_sh[xb + 0u];
-      let x0b = x_sh[xb + 1u];
-      let x1a = x_sh[xb + 2u];
-      let x1b = x_sh[xb + 3u];
-      let x2a = x_sh[xb + 4u];
-      let x2b = x_sh[xb + 5u];
-      let x3a = x_sh[xb + 6u];
-      let x3b = x_sh[xb + 7u];
+    for (var b_rel: u32 = lane; b_rel < tile_blocks; b_rel = b_rel + 16u) {
+      let xb = b_rel << 3u;
+      let x0a = x_sh[xb + 0u]; let x0b = x_sh[xb + 1u];
+      let x1a = x_sh[xb + 2u]; let x1b = x_sh[xb + 3u];
+      let x2a = x_sh[xb + 4u]; let x2b = x_sh[xb + 5u];
+      let x3a = x_sh[xb + 6u]; let x3b = x_sh[xb + 7u];
 
-      let b5 = b * 5u;
+      let sum_x = f32(dot(ones, x0a)) + f32(dot(ones, x0b))
+        + f32(dot(ones, x1a)) + f32(dot(ones, x1b))
+        + f32(dot(ones, x2a)) + f32(dot(ones, x2b))
+        + f32(dot(ones, x3a)) + f32(dot(ones, x3b));
+
+      let b5 = (k_tile + b_rel) * 5u;
       let i0 = o0 + b5;
       let i1 = o1 + b5;
-      acc0 += dot_q4_block(weights[i0], weights[i0 + 1u], weights[i0 + 2u], weights[i0 + 3u], weights[i0 + 4u], x0a, x0b, x1a, x1b, x2a, x2b, x3a, x3b);
-      acc1 += dot_q4_block(weights[i1], weights[i1 + 1u], weights[i1 + 2u], weights[i1 + 3u], weights[i1 + 4u], x0a, x0b, x1a, x1b, x2a, x2b, x3a, x3b);
+      acc0 += factored_q4_block(weights[i0], weights[i0 + 1u], weights[i0 + 2u], weights[i0 + 3u], weights[i0 + 4u], x0a, x0b, x1a, x1b, x2a, x2b, x3a, x3b, sum_x);
+      acc1 += factored_q4_block(weights[i1], weights[i1 + 1u], weights[i1 + 2u], weights[i1 + 3u], weights[i1 + 4u], x0a, x0b, x1a, x1b, x2a, x2b, x3a, x3b, sum_x);
     }
-    workgroupBarrier();
+
+    if (k_tile + 80u < blocks) {
+      workgroupBarrier();
+    }
   }
 
   var sum2 = vec2<f32>(acc0, acc1);
@@ -622,8 +629,8 @@ fn main(
 }
 "#;
 
-// Static INT8 Quantized KV Cache Split-K FlashDecoding GQA (16 Q heads, 4 KV heads, head_dim = 256)
-// 64 u32s per token-head + 1 packed scale u32 = 65 u32s
+// 4-Q-Head GQA-Grouped INT8 KV Split-K FlashDecoding (16 Q heads, 4 KV heads, head_dim = 256)
+// Dispatches (4, num_splits, 1) -> 1 workgroup per (kv_head, split), 4x KV bandwidth reuse!
 const WGSL_GQA_INT8_SPLIT: &str = r#"
 enable subgroups;
 
@@ -644,9 +651,9 @@ struct GqaSplitParams {
 @group(0) @binding(3) var<storage, read_write> split_out: array<f32>;
 @group(0) @binding(4) var<storage, read> pos_buf: array<u32>;
 
-var<workgroup> red_buf: array<f32, 128>;
+var<workgroup> red_buf: array<vec4<f32>, 128>;
 var<workgroup> cur_kv_max: array<vec2<f32>, 64>;
-var<workgroup> cur_dot_buf: array<f32, 64>;
+var<workgroup> cur_dot_buf: array<vec4<f32>, 64>;
 
 fn pack4_i8(v: vec4<f32>) -> u32 {
   let b0 = u32(i32(clamp(round(v.x), -127.0, 127.0))) & 0xFFu;
@@ -673,9 +680,9 @@ fn main(
   @builtin(subgroup_invocation_id) sg_inv: u32,
   @builtin(subgroup_size) sg_size: u32,
 ) {
-  let q_head = wid.x;
+  let kv_head = wid.x; // 0..3
+  let qh0 = kv_head * 4u;
   let split_id = wid.y;
-  let kv_head = q_head >> 2u;
   let tid = lid.x; // 0..63 -> 1 packed u32 (4 int8 dims) per thread
   let d = tid * 4u;
   let seq_pos = select(params.seq_pos, pos_buf[1], params.seq_pos == 0xFFFFFFFFu);
@@ -686,14 +693,24 @@ fn main(
   let v_head_base = params.layer_kv_u32_offset + kv_plane_u32s + kv_head * head_u32_stride;
 
   let q_stride = select(params.q_head_stride, 256u, params.q_head_stride == 0u);
-  let q_base = params.q_offset + q_head * q_stride + d;
-  let q_vec = vec4<f32>(act[q_base], act[q_base + 1u], act[q_base + 2u], act[q_base + 3u]);
+  let qb0 = params.q_offset + (qh0 + 0u) * q_stride + d;
+  let qb1 = params.q_offset + (qh0 + 1u) * q_stride + d;
+  let qb2 = params.q_offset + (qh0 + 2u) * q_stride + d;
+  let qb3 = params.q_offset + (qh0 + 3u) * q_stride + d;
+  let q0 = vec4<f32>(act[qb0], act[qb0 + 1u], act[qb0 + 2u], act[qb0 + 3u]);
+  let q1 = vec4<f32>(act[qb1], act[qb1 + 1u], act[qb1 + 2u], act[qb1 + 3u]);
+  let q2 = vec4<f32>(act[qb2], act[qb2 + 1u], act[qb2 + 2u], act[qb2 + 3u]);
+  let q3 = vec4<f32>(act[qb3], act[qb3 + 1u], act[qb3 + 2u], act[qb3 + 3u]);
+
   let inv_sqrt_d: f32 = 0.0625;
   let sg_step = max(sg_size, 1u);
 
-  var m_max: f32 = -1e30;
-  var l_sum: f32 = 0.0;
-  var acc_v = vec4<f32>(0.0);
+  var m4 = vec4<f32>(-1e30);
+  var l4 = vec4<f32>(0.0);
+  var acc0 = vec4<f32>(0.0);
+  var acc1 = vec4<f32>(0.0);
+  var acc2 = vec4<f32>(0.0);
+  var acc3 = vec4<f32>(0.0);
 
   let chunk = (seq_pos + params.num_splits - 1u) / params.num_splits;
   let t_start = min(split_id * chunk, seq_pos);
@@ -704,26 +721,30 @@ fn main(
     let scales = unpack2x16float(kv_cache[k_src + 64u]);
     let ki = unpack4_i8(kv_cache[k_src + tid]) * scales.x;
 
+    let p4 = vec4<f32>(dot(q0, ki), dot(q1, ki), dot(q2, ki), dot(q3, ki));
     let slot = ((t - t_start) & 1u) * 64u;
-    let sg_dot = subgroupAdd(dot(q_vec, ki));
-    red_buf[slot + tid] = select(0.0, sg_dot, sg_inv == 0u);
+    let sg_dot = subgroupAdd(p4);
+    red_buf[slot + tid] = select(vec4<f32>(0.0), sg_dot, sg_inv == 0u);
     workgroupBarrier();
 
-    var full_dot: f32 = 0.0;
+    var full_dot = vec4<f32>(0.0);
     for (var s: u32 = 0u; s < 64u; s = s + sg_step) {
       full_dot += red_buf[slot + s];
     }
 
     let score = full_dot * inv_sqrt_d;
-    let m_new = max(m_max, score);
-    let alpha = exp(m_max - m_new);
+    let m_new = max(m4, score);
+    let alpha = exp(m4 - m_new);
     let beta = exp(score - m_new);
-    l_sum = l_sum * alpha + beta;
+    l4 = l4 * alpha + beta;
 
     let v_src = v_head_base + t * 65u;
     let vi = unpack4_i8(kv_cache[v_src + tid]) * scales.y;
-    acc_v = acc_v * alpha + vi * beta;
-    m_max = m_new;
+    acc0 = acc0 * alpha.x + vi * beta.x;
+    acc1 = acc1 * alpha.y + vi * beta.y;
+    acc2 = acc2 * alpha.z + vi * beta.z;
+    acc3 = acc3 * alpha.w + vi * beta.w;
+    m4 = m_new;
   }
 
   if (split_id == 0u) {
@@ -749,42 +770,53 @@ fn main(
     let qk = pack4_i8(kv4 / scales.x);
     let qv = pack4_i8(vv4 / scales.y);
 
-    if ((q_head & 3u) == 0u) {
-      let k_dst = k_head_base + seq_pos * 65u;
-      let v_dst = v_head_base + seq_pos * 65u;
-      kv_cache[k_dst + tid] = qk;
-      kv_cache[v_dst + tid] = qv;
-      if (tid == 0u) {
-        kv_cache[k_dst + 64u] = packed_scales;
-      }
+    let k_dst = k_head_base + seq_pos * 65u;
+    let v_dst = v_head_base + seq_pos * 65u;
+    kv_cache[k_dst + tid] = qk;
+    kv_cache[v_dst + tid] = qv;
+    if (tid == 0u) {
+      kv_cache[k_dst + 64u] = packed_scales;
     }
 
-    let cur_sg = subgroupAdd(dot(q_vec, unpack4_i8(qk) * scales.x));
-    cur_dot_buf[tid] = select(0.0, cur_sg, sg_inv == 0u);
+    let k_deq = unpack4_i8(qk) * scales.x;
+    let cur_p4 = vec4<f32>(dot(q0, k_deq), dot(q1, k_deq), dot(q2, k_deq), dot(q3, k_deq));
+    let cur_sg = subgroupAdd(cur_p4);
+    cur_dot_buf[tid] = select(vec4<f32>(0.0), cur_sg, sg_inv == 0u);
     workgroupBarrier();
 
-    var cur_dot: f32 = 0.0;
+    var cur_dot = vec4<f32>(0.0);
     for (var s: u32 = 0u; s < 64u; s = s + sg_step) {
       cur_dot += cur_dot_buf[s];
     }
 
     let score = cur_dot * inv_sqrt_d;
-    let m_new = max(m_max, score);
-    let alpha = exp(m_max - m_new);
+    let m_new = max(m4, score);
+    let alpha = exp(m4 - m_new);
     let beta = exp(score - m_new);
-    l_sum = l_sum * alpha + beta;
-    acc_v = acc_v * alpha + (unpack4_i8(qv) * scales.y) * beta;
-    m_max = m_new;
+    l4 = l4 * alpha + beta;
+    let v_deq = unpack4_i8(qv) * scales.y;
+    acc0 = acc0 * alpha.x + v_deq * beta.x;
+    acc1 = acc1 * alpha.y + v_deq * beta.y;
+    acc2 = acc2 * alpha.z + v_deq * beta.z;
+    acc3 = acc3 * alpha.w + v_deq * beta.w;
+    m4 = m_new;
   }
 
-  let out_base = (q_head * params.num_splits + split_id) * 260u;
-  split_out[out_base + d] = acc_v.x;
-  split_out[out_base + d + 1u] = acc_v.y;
-  split_out[out_base + d + 2u] = acc_v.z;
-  split_out[out_base + d + 3u] = acc_v.w;
+  let ob0 = ((qh0 + 0u) * params.num_splits + split_id) * 260u;
+  let ob1 = ((qh0 + 1u) * params.num_splits + split_id) * 260u;
+  let ob2 = ((qh0 + 2u) * params.num_splits + split_id) * 260u;
+  let ob3 = ((qh0 + 3u) * params.num_splits + split_id) * 260u;
+
+  split_out[ob0 + d] = acc0.x; split_out[ob0 + d + 1u] = acc0.y; split_out[ob0 + d + 2u] = acc0.z; split_out[ob0 + d + 3u] = acc0.w;
+  split_out[ob1 + d] = acc1.x; split_out[ob1 + d + 1u] = acc1.y; split_out[ob1 + d + 2u] = acc1.z; split_out[ob1 + d + 3u] = acc1.w;
+  split_out[ob2 + d] = acc2.x; split_out[ob2 + d + 1u] = acc2.y; split_out[ob2 + d + 2u] = acc2.z; split_out[ob2 + d + 3u] = acc2.w;
+  split_out[ob3 + d] = acc3.x; split_out[ob3 + d + 1u] = acc3.y; split_out[ob3 + d + 2u] = acc3.z; split_out[ob3 + d + 3u] = acc3.w;
+
   if (tid == 0u) {
-    split_out[out_base + 256u] = m_max;
-    split_out[out_base + 257u] = l_sum;
+    split_out[ob0 + 256u] = m4.x; split_out[ob0 + 257u] = l4.x;
+    split_out[ob1 + 256u] = m4.y; split_out[ob1 + 257u] = l4.y;
+    split_out[ob2 + 256u] = m4.z; split_out[ob2 + 257u] = l4.z;
+    split_out[ob3 + 256u] = m4.w; split_out[ob3 + 257u] = l4.w;
   }
 }
 "#;
@@ -1047,8 +1079,10 @@ fn main(
 }
 "#;
 
-// Batched RMSNorm [num_tokens, len] reading gamma from aux[gamma_offset..]
+// Batched Subgroup-Accelerated RMSNorm [num_tokens, len] reading gamma from aux[gamma_offset..]
 const WGSL_RMSNORM_BATCH: &str = r#"
+enable subgroups;
+
 struct BatchNormParams {
   num_tokens: u32,
   len: u32,
@@ -1071,6 +1105,8 @@ var<workgroup> sq_buf: array<f32, 256>;
 fn main(
   @builtin(workgroup_id) wid: vec3<u32>,
   @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(subgroup_invocation_id) sg_inv: u32,
+  @builtin(subgroup_size) sg_size: u32,
 ) {
   let tok = wid.x;
   let tid = lid.x;
@@ -1082,15 +1118,15 @@ fn main(
     let v = src[base_in + i];
     sq += v * v;
   }
-  sq_buf[tid] = sq;
+  let sg_sq = subgroupAdd(sq);
+  sq_buf[tid] = select(0.0, sg_sq, sg_inv == 0u);
   workgroupBarrier();
-  for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
-    if (tid < s) {
-      sq_buf[tid] += sq_buf[tid + s];
-    }
-    workgroupBarrier();
+  let sg_step = max(sg_size, 1u);
+  var total_sq: f32 = 0.0;
+  for (var s: u32 = 0u; s < 256u; s = s + sg_step) {
+    total_sq += sq_buf[s];
   }
-  let inv_rms = inverseSqrt(sq_buf[0] / f32(params.len) + params.eps);
+  let inv_rms = inverseSqrt(total_sq / f32(params.len) + params.eps);
   for (var i: u32 = tid; i < params.len; i = i + 256u) {
     dst[base_out + i] = src[base_in + i] * inv_rms * aux[params.gamma_offset + i];
   }
@@ -2412,6 +2448,681 @@ fn main(
   dn_state[s_base + 4u * 128u] = sv1.x; dn_state[s_base + 5u * 128u] = sv1.y; dn_state[s_base + 6u * 128u] = sv1.z; dn_state[s_base + 7u * 128u] = sv1.w;
   dn_state[s_base + 8u * 128u] = sv2.x; dn_state[s_base + 9u * 128u] = sv2.y; dn_state[s_base + 10u * 128u] = sv2.z; dn_state[s_base + 11u * 128u] = sv2.w;
   dn_state[s_base + 12u * 128u] = sv3.x; dn_state[s_base + 13u * 128u] = sv3.y; dn_state[s_base + 14u * 128u] = sv3.z; dn_state[s_base + 15u * 128u] = sv3.w;
+}
+"#;
+
+// Shader 21: Fused Q4 Gate + Up + SwiGLU (8 rows/WG, 16 lanes/row, coalesced x_sh staging)
+// Passes wGate in w_u32_offset and wUp in _pad0, writing silu(gate) * up directly to attnOutBuf.
+const WGSL_Q4_GATE_UP_SWIGLU: &str = r#"
+enable f16;
+enable subgroups;
+
+struct GateUpParams {
+  rows: u32,
+  cols: u32,
+  w_u32_offset: u32,
+  in_offset: u32,
+  out_offset: u32,
+  add_residual: u32,
+  _pad0: u32,
+  _pad1: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: GateUpParams;
+@group(0) @binding(1) var<storage, read> weights: array<u32>;
+@group(0) @binding(2) var<storage, read> x: array<f32>;
+@group(0) @binding(3) var<storage, read_write> y: array<f32>;
+
+var<workgroup> x_sh: array<vec4<f16>, 640>;
+var<workgroup> red_sh: array<vec2<f32>, 128>;
+
+fn factored_q4_word(p: u32, xa: vec4<f16>, xb: vec4<f16>) -> f32 {
+  let q0 = vec4<f16>(f16(p & 0xFu), f16((p >> 4u) & 0xFu), f16((p >> 8u) & 0xFu), f16((p >> 12u) & 0xFu));
+  let q1 = vec4<f16>(f16((p >> 16u) & 0xFu), f16((p >> 20u) & 0xFu), f16((p >> 24u) & 0xFu), f16((p >> 28u) & 0xFu));
+  return f32(dot(q0, xa)) + f32(dot(q1, xb));
+}
+
+fn factored_q4_block(
+  w0: u32, w1: u32, w2: u32, w3: u32, meta_word: u32,
+  x0a: vec4<f16>, x0b: vec4<f16>,
+  x1a: vec4<f16>, x1b: vec4<f16>,
+  x2a: vec4<f16>, x2b: vec4<f16>,
+  x3a: vec4<f16>, x3b: vec4<f16>,
+  sum_x: f32,
+) -> f32 {
+  let blk_meta = unpack2x16float(meta_word);
+  let sum_qx = factored_q4_word(w0, x0a, x0b)
+    + factored_q4_word(w1, x1a, x1b)
+    + factored_q4_word(w2, x2a, x2b)
+    + factored_q4_word(w3, x3a, x3b);
+  return blk_meta.x * sum_qx + blk_meta.y * sum_x;
+}
+
+@compute @workgroup_size(128)
+fn main(
+  @builtin(workgroup_id) wid: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(subgroup_size) sg_size: u32,
+) {
+  if (params.rows == 0u) {
+    return;
+  }
+  let tid = lid.x;
+  let grp = tid >> 4u;  // 0..7
+  let lane = tid & 15u; // 0..15
+  let r_raw = wid.x * 8u + grp;
+  let r = min(r_raw, params.rows - 1u);
+
+  let blocks = params.cols >> 5u;
+  let row_stride = blocks * 5u;
+  let og = params.w_u32_offset + r * row_stride;
+  let ou = params._pad0 + r * row_stride;
+
+  var acc_g: f32 = 0.0;
+  var acc_u: f32 = 0.0;
+  let ones = vec4<f16>(1.0h);
+
+  for (var k_tile: u32 = 0u; k_tile < blocks; k_tile = k_tile + 80u) {
+    let tile_blocks = min(80u, blocks - k_tile);
+    let load_vec4s = tile_blocks << 3u;
+    let x_tile_base = params.in_offset + (k_tile << 5u);
+    for (var i: u32 = tid; i < load_vec4s; i = i + 128u) {
+      let kb = x_tile_base + (i << 2u);
+      x_sh[i] = vec4<f16>(f16(x[kb]), f16(x[kb + 1u]), f16(x[kb + 2u]), f16(x[kb + 3u]));
+    }
+    workgroupBarrier();
+
+    for (var b_rel: u32 = lane; b_rel < tile_blocks; b_rel = b_rel + 16u) {
+      let xb = b_rel << 3u;
+      let x0a = x_sh[xb + 0u]; let x0b = x_sh[xb + 1u];
+      let x1a = x_sh[xb + 2u]; let x1b = x_sh[xb + 3u];
+      let x2a = x_sh[xb + 4u]; let x2b = x_sh[xb + 5u];
+      let x3a = x_sh[xb + 6u]; let x3b = x_sh[xb + 7u];
+
+      let sum_x = f32(dot(ones, x0a)) + f32(dot(ones, x0b))
+        + f32(dot(ones, x1a)) + f32(dot(ones, x1b))
+        + f32(dot(ones, x2a)) + f32(dot(ones, x2b))
+        + f32(dot(ones, x3a)) + f32(dot(ones, x3b));
+
+      let b5 = (k_tile + b_rel) * 5u;
+      let ig = og + b5;
+      let iu = ou + b5;
+      acc_g += factored_q4_block(weights[ig], weights[ig + 1u], weights[ig + 2u], weights[ig + 3u], weights[ig + 4u], x0a, x0b, x1a, x1b, x2a, x2b, x3a, x3b, sum_x);
+      acc_u += factored_q4_block(weights[iu], weights[iu + 1u], weights[iu + 2u], weights[iu + 3u], weights[iu + 4u], x0a, x0b, x1a, x1b, x2a, x2b, x3a, x3b, sum_x);
+    }
+
+    if (k_tile + 80u < blocks) {
+      workgroupBarrier();
+    }
+  }
+
+  var sum2 = vec2<f32>(acc_g, acc_u);
+  if (sg_size >= 16u) {
+    sum2 += subgroupShuffleXor(sum2, 8u);
+    sum2 += subgroupShuffleXor(sum2, 4u);
+    sum2 += subgroupShuffleXor(sum2, 2u);
+    sum2 += subgroupShuffleXor(sum2, 1u);
+  } else {
+    red_sh[tid] = sum2;
+    workgroupBarrier();
+    if (lane == 0u) {
+      var s_acc = vec2<f32>(0.0);
+      let g_base = grp * 16u;
+      for (var l: u32 = 0u; l < 16u; l = l + 1u) {
+        s_acc += red_sh[g_base + l];
+      }
+      sum2 = s_acc;
+    }
+  }
+
+  if (lane == 0u && r_raw < params.rows) {
+    let g = sum2.x;
+    let u = sum2.y;
+    let out_val = (g / (1.0 + exp(-g))) * u;
+    let out_i = params.out_offset + r_raw;
+    y[out_i] = select(out_val, y[out_i] + out_val, params.add_residual != 0u);
+  }
+}
+"#;
+
+// Shader 22: Wide-K 32-Lane Factored Q4 GEMV (4 rows/WG, 32 lanes/row, ping-pong coalesced x_sh)
+// Ideal for K=4096 (128 blocks = 32*4) and K=9216 (288 blocks = 32*9): 640 WGs on rows=2560!
+const WGSL_Q4_GEMV_WIDE_K: &str = r#"
+enable f16;
+enable subgroups;
+
+struct GemvParams {
+  rows: u32,
+  cols: u32,
+  w_u32_offset: u32,
+  in_offset: u32,
+  out_offset: u32,
+  add_residual: u32,
+  _pad0: u32,
+  _pad1: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: GemvParams;
+@group(0) @binding(1) var<storage, read> weights: array<u32>;
+@group(0) @binding(2) var<storage, read> x: array<f32>;
+@group(0) @binding(3) var<storage, read_write> y: array<f32>;
+
+var<workgroup> x_sh: array<vec4<f16>, 512>;
+var<workgroup> red_sh: array<f32, 128>;
+
+fn factored_q4_word(p: u32, xa: vec4<f16>, xb: vec4<f16>) -> f32 {
+  let q0 = vec4<f16>(f16(p & 0xFu), f16((p >> 4u) & 0xFu), f16((p >> 8u) & 0xFu), f16((p >> 12u) & 0xFu));
+  let q1 = vec4<f16>(f16((p >> 16u) & 0xFu), f16((p >> 20u) & 0xFu), f16((p >> 24u) & 0xFu), f16((p >> 28u) & 0xFu));
+  return f32(dot(q0, xa)) + f32(dot(q1, xb));
+}
+
+@compute @workgroup_size(128)
+fn main(
+  @builtin(workgroup_id) wid: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(subgroup_size) sg_size: u32,
+) {
+  if (params.rows == 0u) {
+    return;
+  }
+  let tid = lid.x;
+  let row_in_wg = tid >> 5u; // 0..3
+  let lane = tid & 31u;      // 0..31
+  let r_raw = wid.x * 4u + row_in_wg;
+  let r_safe = min(r_raw, params.rows - 1u);
+
+  let blocks = params.cols >> 5u;
+  let row_base = params.w_u32_offset + r_safe * blocks * 5u;
+
+  var acc: f32 = 0.0;
+  let ones = vec4<f16>(1.0h);
+  var buf_idx: u32 = 0u;
+
+  for (var k_tile: u32 = 0u; k_tile < blocks; k_tile = k_tile + 32u) {
+    let tile_blocks = min(32u, blocks - k_tile);
+    let load_vec4s = tile_blocks << 3u;
+    let base_sh = buf_idx * 256u;
+    let x_tile_base = params.in_offset + (k_tile << 5u);
+    for (var i: u32 = tid; i < load_vec4s; i = i + 128u) {
+      let kb = x_tile_base + (i << 2u);
+      x_sh[base_sh + i] = vec4<f16>(f16(x[kb]), f16(x[kb + 1u]), f16(x[kb + 2u]), f16(x[kb + 3u]));
+    }
+    workgroupBarrier();
+
+    if (lane < tile_blocks) {
+      let xb = base_sh + (lane << 3u);
+      let x0a = x_sh[xb + 0u]; let x0b = x_sh[xb + 1u];
+      let x1a = x_sh[xb + 2u]; let x1b = x_sh[xb + 3u];
+      let x2a = x_sh[xb + 4u]; let x2b = x_sh[xb + 5u];
+      let x3a = x_sh[xb + 6u]; let x3b = x_sh[xb + 7u];
+
+      let sum_x = f32(dot(ones, x0a)) + f32(dot(ones, x0b))
+        + f32(dot(ones, x1a)) + f32(dot(ones, x1b))
+        + f32(dot(ones, x2a)) + f32(dot(ones, x2b))
+        + f32(dot(ones, x3a)) + f32(dot(ones, x3b));
+
+      let bi = row_base + (k_tile + lane) * 5u;
+      let blk_meta = unpack2x16float(weights[bi + 4u]);
+      let sum_qx = factored_q4_word(weights[bi], x0a, x0b)
+        + factored_q4_word(weights[bi + 1u], x1a, x1b)
+        + factored_q4_word(weights[bi + 2u], x2a, x2b)
+        + factored_q4_word(weights[bi + 3u], x3a, x3b);
+      acc += blk_meta.x * sum_qx + blk_meta.y * sum_x;
+    }
+
+    buf_idx = buf_idx ^ 1u;
+  }
+
+  if (sg_size == 32u) {
+    acc = subgroupAdd(acc);
+  } else if (sg_size > 32u) {
+    acc += subgroupShuffleXor(acc, 16u);
+    acc += subgroupShuffleXor(acc, 8u);
+    acc += subgroupShuffleXor(acc, 4u);
+    acc += subgroupShuffleXor(acc, 2u);
+    acc += subgroupShuffleXor(acc, 1u);
+  } else {
+    red_sh[tid] = acc;
+    workgroupBarrier();
+    if (lane == 0u) {
+      var s_acc: f32 = 0.0;
+      let base = row_in_wg * 32u;
+      for (var l: u32 = 0u; l < 32u; l = l + 1u) {
+        s_acc += red_sh[base + l];
+      }
+      acc = s_acc;
+    }
+  }
+
+  if (lane == 0u && r_raw < params.rows) {
+    let out_i = params.out_offset + r_raw;
+    y[out_i] = select(acc, y[out_i] + acc, params.add_residual != 0u);
+  }
+}
+"#;
+
+// Shader 23: DP4a 4-Q-Head GQA-Grouped INT8 KV Decode (requires packed_4x8_integer_dot_product)
+const WGSL_GQA_INT8_SPLIT_DP4A: &str = r#"
+requires packed_4x8_integer_dot_product;
+enable subgroups;
+
+struct GqaSplitParams {
+  layer_kv_u32_offset: u32,
+  max_seq: u32,
+  seq_pos: u32,
+  q_offset: u32,
+  k_offset: u32,
+  v_offset: u32,
+  num_splits: u32,
+  q_head_stride: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: GqaSplitParams;
+@group(0) @binding(1) var<storage, read> act: array<f32>;
+@group(0) @binding(2) var<storage, read_write> kv_cache: array<u32>;
+@group(0) @binding(3) var<storage, read_write> split_out: array<f32>;
+@group(0) @binding(4) var<storage, read> pos_buf: array<u32>;
+
+var<workgroup> q_max_buf: array<vec4<f32>, 64>;
+var<workgroup> red_buf: array<vec4<f32>, 128>;
+var<workgroup> cur_kv_max: array<vec2<f32>, 64>;
+var<workgroup> cur_dot_buf: array<vec4<f32>, 64>;
+
+fn pack4_i8(v: vec4<f32>) -> u32 {
+  let b0 = u32(i32(clamp(round(v.x), -127.0, 127.0))) & 0xFFu;
+  let b1 = u32(i32(clamp(round(v.y), -127.0, 127.0))) & 0xFFu;
+  let b2 = u32(i32(clamp(round(v.z), -127.0, 127.0))) & 0xFFu;
+  let b3 = u32(i32(clamp(round(v.w), -127.0, 127.0))) & 0xFFu;
+  return b0 | (b1 << 8u) | (b2 << 16u) | (b3 << 24u);
+}
+
+fn unpack4_i8(word: u32) -> vec4<f32> {
+  let sw = bitcast<i32>(word);
+  return vec4<f32>(
+    f32(extractBits(sw, 0u, 8u)),
+    f32(extractBits(sw, 8u, 8u)),
+    f32(extractBits(sw, 16u, 8u)),
+    f32(extractBits(sw, 24u, 8u)),
+  );
+}
+
+@compute @workgroup_size(64)
+fn main(
+  @builtin(workgroup_id) wid: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(subgroup_invocation_id) sg_inv: u32,
+  @builtin(subgroup_size) sg_size: u32,
+) {
+  let kv_head = wid.x; // 0..3
+  let qh0 = kv_head * 4u;
+  let split_id = wid.y;
+  let tid = lid.x;
+  let d = tid * 4u;
+  let seq_pos = select(params.seq_pos, pos_buf[1], params.seq_pos == 0xFFFFFFFFu);
+
+  let head_u32_stride = params.max_seq * 65u;
+  let kv_plane_u32s = 4u * head_u32_stride;
+  let k_head_base = params.layer_kv_u32_offset + kv_head * head_u32_stride;
+  let v_head_base = params.layer_kv_u32_offset + kv_plane_u32s + kv_head * head_u32_stride;
+
+  let q_stride = select(params.q_head_stride, 256u, params.q_head_stride == 0u);
+  let qb0 = params.q_offset + (qh0 + 0u) * q_stride + d;
+  let qb1 = params.q_offset + (qh0 + 1u) * q_stride + d;
+  let qb2 = params.q_offset + (qh0 + 2u) * q_stride + d;
+  let qb3 = params.q_offset + (qh0 + 3u) * q_stride + d;
+  let q0 = vec4<f32>(act[qb0], act[qb0 + 1u], act[qb0 + 2u], act[qb0 + 3u]);
+  let q1 = vec4<f32>(act[qb1], act[qb1 + 1u], act[qb1 + 2u], act[qb1 + 3u]);
+  let q2 = vec4<f32>(act[qb2], act[qb2 + 1u], act[qb2 + 2u], act[qb2 + 3u]);
+  let q3 = vec4<f32>(act[qb3], act[qb3 + 1u], act[qb3 + 2u], act[qb3 + 3u]);
+
+  let inv_sqrt_d: f32 = 0.0625;
+  let sg_step = max(sg_size, 1u);
+
+  // Quantize all 4 Q heads once into packed i8
+  let qm0 = subgroupMax(max(max(abs(q0.x), abs(q0.y)), max(abs(q0.z), abs(q0.w))));
+  let qm1 = subgroupMax(max(max(abs(q1.x), abs(q1.y)), max(abs(q1.z), abs(q1.w))));
+  let qm2 = subgroupMax(max(max(abs(q2.x), abs(q2.y)), max(abs(q2.z), abs(q2.w))));
+  let qm3 = subgroupMax(max(max(abs(q3.x), abs(q3.y)), max(abs(q3.z), abs(q3.w))));
+  q_max_buf[tid] = select(vec4<f32>(0.0), vec4<f32>(qm0, qm1, qm2, qm3), sg_inv == 0u);
+  workgroupBarrier();
+  var qm_all = vec4<f32>(0.0);
+  for (var s: u32 = 0u; s < 64u; s = s + sg_step) {
+    qm_all = max(qm_all, q_max_buf[s]);
+  }
+  let q_scales = max(qm_all / 127.0, vec4<f32>(1e-6));
+  let q0_i8 = pack4_i8(q0 / q_scales.x);
+  let q1_i8 = pack4_i8(q1 / q_scales.y);
+  let q2_i8 = pack4_i8(q2 / q_scales.z);
+  let q3_i8 = pack4_i8(q3 / q_scales.w);
+
+  var m4 = vec4<f32>(-1e30);
+  var l4 = vec4<f32>(0.0);
+  var acc0 = vec4<f32>(0.0);
+  var acc1 = vec4<f32>(0.0);
+  var acc2 = vec4<f32>(0.0);
+  var acc3 = vec4<f32>(0.0);
+
+  let chunk = (seq_pos + params.num_splits - 1u) / params.num_splits;
+  let t_start = min(split_id * chunk, seq_pos);
+  let t_end = min(t_start + chunk, seq_pos);
+
+  for (var t: u32 = t_start; t < t_end; t = t + 1u) {
+    let k_src = k_head_base + t * 65u;
+    let scales = unpack2x16float(kv_cache[k_src + 64u]);
+    let k_word = kv_cache[k_src + tid];
+
+    let p4 = vec4<f32>(
+      f32(dot4I8Packed(q0_i8, k_word)),
+      f32(dot4I8Packed(q1_i8, k_word)),
+      f32(dot4I8Packed(q2_i8, k_word)),
+      f32(dot4I8Packed(q3_i8, k_word)),
+    );
+    let slot = ((t - t_start) & 1u) * 64u;
+    let sg_dot = subgroupAdd(p4);
+    red_buf[slot + tid] = select(vec4<f32>(0.0), sg_dot, sg_inv == 0u);
+    workgroupBarrier();
+
+    var full_dot = vec4<f32>(0.0);
+    for (var s: u32 = 0u; s < 64u; s = s + sg_step) {
+      full_dot += red_buf[slot + s];
+    }
+
+    let score = full_dot * (q_scales * scales.x * inv_sqrt_d);
+    let m_new = max(m4, score);
+    let alpha = exp(m4 - m_new);
+    let beta = exp(score - m_new);
+    l4 = l4 * alpha + beta;
+
+    let v_src = v_head_base + t * 65u;
+    let vi = unpack4_i8(kv_cache[v_src + tid]) * scales.y;
+    acc0 = acc0 * alpha.x + vi * beta.x;
+    acc1 = acc1 * alpha.y + vi * beta.y;
+    acc2 = acc2 * alpha.z + vi * beta.z;
+    acc3 = acc3 * alpha.w + vi * beta.w;
+    m4 = m_new;
+  }
+
+  if (split_id == 0u) {
+    let k_in = params.k_offset + kv_head * 256u + d;
+    let v_in = params.v_offset + kv_head * 256u + d;
+    let kv4 = vec4<f32>(act[k_in], act[k_in + 1u], act[k_in + 2u], act[k_in + 3u]);
+    let vv4 = vec4<f32>(act[v_in], act[v_in + 1u], act[v_in + 2u], act[v_in + 3u]);
+
+    let kmax = subgroupMax(max(max(abs(kv4.x), abs(kv4.y)), max(abs(kv4.z), abs(kv4.w))));
+    let vmax = subgroupMax(max(max(abs(vv4.x), abs(vv4.y)), max(abs(vv4.z), abs(vv4.w))));
+    cur_kv_max[tid] = select(vec2<f32>(0.0), vec2<f32>(kmax, vmax), sg_inv == 0u);
+    workgroupBarrier();
+
+    var km: f32 = 0.0;
+    var vm: f32 = 0.0;
+    for (var s: u32 = 0u; s < 64u; s = s + sg_step) {
+      let p = cur_kv_max[s];
+      km = max(km, p.x);
+      vm = max(vm, p.y);
+    }
+    let packed_scales = pack2x16float(vec2<f32>(max(km / 127.0, 1e-6), max(vm / 127.0, 1e-6)));
+    let scales = unpack2x16float(packed_scales);
+    let qk = pack4_i8(kv4 / scales.x);
+    let qv = pack4_i8(vv4 / scales.y);
+
+    let k_dst = k_head_base + seq_pos * 65u;
+    let v_dst = v_head_base + seq_pos * 65u;
+    kv_cache[k_dst + tid] = qk;
+    kv_cache[v_dst + tid] = qv;
+    if (tid == 0u) {
+      kv_cache[k_dst + 64u] = packed_scales;
+    }
+
+    let cur_p4 = vec4<f32>(
+      f32(dot4I8Packed(q0_i8, qk)),
+      f32(dot4I8Packed(q1_i8, qk)),
+      f32(dot4I8Packed(q2_i8, qk)),
+      f32(dot4I8Packed(q3_i8, qk)),
+    );
+    let cur_sg = subgroupAdd(cur_p4);
+    cur_dot_buf[tid] = select(vec4<f32>(0.0), cur_sg, sg_inv == 0u);
+    workgroupBarrier();
+
+    var cur_dot = vec4<f32>(0.0);
+    for (var s: u32 = 0u; s < 64u; s = s + sg_step) {
+      cur_dot += cur_dot_buf[s];
+    }
+
+    let score = cur_dot * (q_scales * scales.x * inv_sqrt_d);
+    let m_new = max(m4, score);
+    let alpha = exp(m4 - m_new);
+    let beta = exp(score - m_new);
+    l4 = l4 * alpha + beta;
+    let v_deq = unpack4_i8(qv) * scales.y;
+    acc0 = acc0 * alpha.x + v_deq * beta.x;
+    acc1 = acc1 * alpha.y + v_deq * beta.y;
+    acc2 = acc2 * alpha.z + v_deq * beta.z;
+    acc3 = acc3 * alpha.w + v_deq * beta.w;
+    m4 = m_new;
+  }
+
+  let ob0 = ((qh0 + 0u) * params.num_splits + split_id) * 260u;
+  let ob1 = ((qh0 + 1u) * params.num_splits + split_id) * 260u;
+  let ob2 = ((qh0 + 2u) * params.num_splits + split_id) * 260u;
+  let ob3 = ((qh0 + 3u) * params.num_splits + split_id) * 260u;
+
+  split_out[ob0 + d] = acc0.x; split_out[ob0 + d + 1u] = acc0.y; split_out[ob0 + d + 2u] = acc0.z; split_out[ob0 + d + 3u] = acc0.w;
+  split_out[ob1 + d] = acc1.x; split_out[ob1 + d + 1u] = acc1.y; split_out[ob1 + d + 2u] = acc1.z; split_out[ob1 + d + 3u] = acc1.w;
+  split_out[ob2 + d] = acc2.x; split_out[ob2 + d + 1u] = acc2.y; split_out[ob2 + d + 2u] = acc2.z; split_out[ob2 + d + 3u] = acc2.w;
+  split_out[ob3 + d] = acc3.x; split_out[ob3 + d + 1u] = acc3.y; split_out[ob3 + d + 2u] = acc3.z; split_out[ob3 + d + 3u] = acc3.w;
+
+  if (tid == 0u) {
+    split_out[ob0 + 256u] = m4.x; split_out[ob0 + 257u] = l4.x;
+    split_out[ob1 + 256u] = m4.y; split_out[ob1 + 257u] = l4.y;
+    split_out[ob2 + 256u] = m4.z; split_out[ob2 + 257u] = l4.z;
+    split_out[ob3 + 256u] = m4.w; split_out[ob3 + 257u] = l4.w;
+  }
+}
+"#;
+
+// Shader 24: Batched Q4 GEMV for Speculative Verification (M <= 8 tokens, 16 rows/WG, coalesced x_sh)
+// 16 rows/WG (8 x 16-lane groups, 2 rows/group), outputs [M, rows] at out_offset + t * rows + row.
+const WGSL_Q4_GEMV_BATCH: &str = r#"
+enable f16;
+enable subgroups;
+
+struct GemvBatchParams {
+  rows: u32,
+  cols: u32,
+  w_u32_offset: u32,
+  in_offset: u32,
+  out_offset: u32,
+  add_residual: u32,
+  num_tokens: u32,
+  _pad1: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: GemvBatchParams;
+@group(0) @binding(1) var<storage, read> weights: array<u32>;
+@group(0) @binding(2) var<storage, read> x: array<f32>;
+@group(0) @binding(3) var<storage, read_write> y: array<f32>;
+
+var<workgroup> x_sh: array<vec4<f16>, 1024>;
+var<workgroup> red_sh_a: array<vec4<f32>, 128>;
+var<workgroup> red_sh_b: array<vec4<f32>, 128>;
+var<workgroup> red_sh_c: array<vec4<f32>, 128>;
+var<workgroup> red_sh_d: array<vec4<f32>, 128>;
+
+fn unpack_lo(p: u32) -> vec4<f16> {
+  return vec4<f16>(f16(p & 0xFu), f16((p >> 4u) & 0xFu), f16((p >> 8u) & 0xFu), f16((p >> 12u) & 0xFu));
+}
+
+fn unpack_hi(p: u32) -> vec4<f16> {
+  return vec4<f16>(f16((p >> 16u) & 0xFu), f16((p >> 20u) & 0xFu), f16((p >> 24u) & 0xFu), f16((p >> 28u) & 0xFu));
+}
+
+fn dot_tok_sh(
+  sh_base: u32,
+  scale: f32,
+  zero: f32,
+  q0a: vec4<f16>, q0b: vec4<f16>,
+  q1a: vec4<f16>, q1b: vec4<f16>,
+  q2a: vec4<f16>, q2b: vec4<f16>,
+  q3a: vec4<f16>, q3b: vec4<f16>,
+) -> f32 {
+  let x0a = x_sh[sh_base + 0u]; let x0b = x_sh[sh_base + 1u];
+  let x1a = x_sh[sh_base + 2u]; let x1b = x_sh[sh_base + 3u];
+  let x2a = x_sh[sh_base + 4u]; let x2b = x_sh[sh_base + 5u];
+  let x3a = x_sh[sh_base + 6u]; let x3b = x_sh[sh_base + 7u];
+
+  let ones = vec4<f16>(1.0h);
+  let sum_qx = f32(dot(q0a, x0a)) + f32(dot(q0b, x0b))
+    + f32(dot(q1a, x1a)) + f32(dot(q1b, x1b))
+    + f32(dot(q2a, x2a)) + f32(dot(q2b, x2b))
+    + f32(dot(q3a, x3a)) + f32(dot(q3b, x3b));
+  let sum_x = f32(dot(ones, x0a)) + f32(dot(ones, x0b))
+    + f32(dot(ones, x1a)) + f32(dot(ones, x1b))
+    + f32(dot(ones, x2a)) + f32(dot(ones, x2b))
+    + f32(dot(ones, x3a)) + f32(dot(ones, x3b));
+  return scale * sum_qx + zero * sum_x;
+}
+
+@compute @workgroup_size(128)
+fn main(
+  @builtin(workgroup_id) wid: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(subgroup_size) sg_size: u32,
+) {
+  let M = min(params.num_tokens, 8u);
+  if (params.rows == 0u || M == 0u) {
+    return;
+  }
+  let tid = lid.x;
+  let grp = tid >> 4u;  // 0..7
+  let lane = tid & 15u; // 0..15
+  let rA = wid.x * 16u + grp * 2u;
+  let rB = rA + 1u;
+  let r0 = min(rA, params.rows - 1u);
+  let r1 = min(rB, params.rows - 1u);
+
+  let blocks = params.cols >> 5u;
+  let row_stride = blocks * 5u;
+  let base0 = params.w_u32_offset + r0 * row_stride;
+  let base1 = params.w_u32_offset + r1 * row_stride;
+
+  var accA0 = vec4<f32>(0.0);
+  var accB0 = vec4<f32>(0.0);
+  var accA1 = vec4<f32>(0.0);
+  var accB1 = vec4<f32>(0.0);
+
+  for (var b_tile: u32 = 0u; b_tile < blocks; b_tile = b_tile + 16u) {
+    let tile_blocks = min(16u, blocks - b_tile);
+    let load_vec4s = tile_blocks << 3u;
+    let tile_k_off = params.in_offset + (b_tile << 5u);
+    if (tid < load_vec4s) {
+      for (var t: u32 = 0u; t < M; t = t + 1u) {
+        let kb = tile_k_off + t * params.cols + (tid << 2u);
+        x_sh[t * 128u + tid] = vec4<f16>(f16(x[kb]), f16(x[kb + 1u]), f16(x[kb + 2u]), f16(x[kb + 3u]));
+      }
+    }
+    workgroupBarrier();
+
+    if (lane < tile_blocks) {
+      let b5 = (b_tile + lane) * 5u;
+      let xb = lane << 3u;
+
+      let i0 = base0 + b5;
+      let w00 = weights[i0 + 0u]; let w01 = weights[i0 + 1u];
+      let w02 = weights[i0 + 2u]; let w03 = weights[i0 + 3u];
+      let m0 = unpack2x16float(weights[i0 + 4u]);
+      let q00a = unpack_lo(w00); let q00b = unpack_hi(w00);
+      let q01a = unpack_lo(w01); let q01b = unpack_hi(w01);
+      let q02a = unpack_lo(w02); let q02b = unpack_hi(w02);
+      let q03a = unpack_lo(w03); let q03b = unpack_hi(w03);
+
+      accA0.x += dot_tok_sh(0u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b);
+      if (M > 1u) { accA0.y += dot_tok_sh(1u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
+      if (M > 2u) { accA0.z += dot_tok_sh(2u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
+      if (M > 3u) { accA0.w += dot_tok_sh(3u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
+      if (M > 4u) { accB0.x += dot_tok_sh(4u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
+      if (M > 5u) { accB0.y += dot_tok_sh(5u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
+      if (M > 6u) { accB0.z += dot_tok_sh(6u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
+      if (M > 7u) { accB0.w += dot_tok_sh(7u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
+
+      let i1 = base1 + b5;
+      let w10 = weights[i1 + 0u]; let w11 = weights[i1 + 1u];
+      let w12 = weights[i1 + 2u]; let w13 = weights[i1 + 3u];
+      let m1 = unpack2x16float(weights[i1 + 4u]);
+      let q10a = unpack_lo(w10); let q10b = unpack_hi(w10);
+      let q11a = unpack_lo(w11); let q11b = unpack_hi(w11);
+      let q12a = unpack_lo(w12); let q12b = unpack_hi(w12);
+      let q13a = unpack_lo(w13); let q13b = unpack_hi(w13);
+
+      accA1.x += dot_tok_sh(0u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b);
+      if (M > 1u) { accA1.y += dot_tok_sh(1u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
+      if (M > 2u) { accA1.z += dot_tok_sh(2u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
+      if (M > 3u) { accA1.w += dot_tok_sh(3u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
+      if (M > 4u) { accB1.x += dot_tok_sh(4u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
+      if (M > 5u) { accB1.y += dot_tok_sh(5u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
+      if (M > 6u) { accB1.z += dot_tok_sh(6u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
+      if (M > 7u) { accB1.w += dot_tok_sh(7u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
+    }
+
+    if (b_tile + 16u < blocks) {
+      workgroupBarrier();
+    }
+  }
+
+  if (sg_size >= 16u) {
+    accA0 += subgroupShuffleXor(accA0, 8u); accA0 += subgroupShuffleXor(accA0, 4u);
+    accA0 += subgroupShuffleXor(accA0, 2u); accA0 += subgroupShuffleXor(accA0, 1u);
+    accA1 += subgroupShuffleXor(accA1, 8u); accA1 += subgroupShuffleXor(accA1, 4u);
+    accA1 += subgroupShuffleXor(accA1, 2u); accA1 += subgroupShuffleXor(accA1, 1u);
+    if (M > 4u) {
+      accB0 += subgroupShuffleXor(accB0, 8u); accB0 += subgroupShuffleXor(accB0, 4u);
+      accB0 += subgroupShuffleXor(accB0, 2u); accB0 += subgroupShuffleXor(accB0, 1u);
+      accB1 += subgroupShuffleXor(accB1, 8u); accB1 += subgroupShuffleXor(accB1, 4u);
+      accB1 += subgroupShuffleXor(accB1, 2u); accB1 += subgroupShuffleXor(accB1, 1u);
+    }
+  } else {
+    red_sh_a[tid] = accA0;
+    red_sh_b[tid] = accB0;
+    red_sh_c[tid] = accA1;
+    red_sh_d[tid] = accB1;
+    workgroupBarrier();
+    if (lane == 0u) {
+      var sa0 = vec4<f32>(0.0); var sb0 = vec4<f32>(0.0);
+      var sa1 = vec4<f32>(0.0); var sb1 = vec4<f32>(0.0);
+      let g_base = grp * 16u;
+      for (var l: u32 = 0u; l < 16u; l = l + 1u) {
+        sa0 += red_sh_a[g_base + l];
+        sb0 += red_sh_b[g_base + l];
+        sa1 += red_sh_c[g_base + l];
+        sb1 += red_sh_d[g_base + l];
+      }
+      accA0 = sa0; accB0 = sb0;
+      accA1 = sa1; accB1 = sb1;
+    }
+  }
+
+  if (lane == 0u) {
+    let add_r = params.add_residual != 0u;
+    if (rA < params.rows) {
+      let i0 = params.out_offset + 0u * params.rows + rA; y[i0] = select(accA0.x, y[i0] + accA0.x, add_r);
+      if (M > 1u) { let i1 = params.out_offset + 1u * params.rows + rA; y[i1] = select(accA0.y, y[i1] + accA0.y, add_r); }
+      if (M > 2u) { let i2 = params.out_offset + 2u * params.rows + rA; y[i2] = select(accA0.z, y[i2] + accA0.z, add_r); }
+      if (M > 3u) { let i3 = params.out_offset + 3u * params.rows + rA; y[i3] = select(accA0.w, y[i3] + accA0.w, add_r); }
+      if (M > 4u) { let i4 = params.out_offset + 4u * params.rows + rA; y[i4] = select(accB0.x, y[i4] + accB0.x, add_r); }
+      if (M > 5u) { let i5 = params.out_offset + 5u * params.rows + rA; y[i5] = select(accB0.y, y[i5] + accB0.y, add_r); }
+      if (M > 6u) { let i6 = params.out_offset + 6u * params.rows + rA; y[i6] = select(accB0.z, y[i6] + accB0.z, add_r); }
+      if (M > 7u) { let i7 = params.out_offset + 7u * params.rows + rA; y[i7] = select(accB0.w, y[i7] + accB0.w, add_r); }
+    }
+    if (rB < params.rows) {
+      let i0 = params.out_offset + 0u * params.rows + rB; y[i0] = select(accA1.x, y[i0] + accA1.x, add_r);
+      if (M > 1u) { let i1 = params.out_offset + 1u * params.rows + rB; y[i1] = select(accA1.y, y[i1] + accA1.y, add_r); }
+      if (M > 2u) { let i2 = params.out_offset + 2u * params.rows + rB; y[i2] = select(accA1.z, y[i2] + accA1.z, add_r); }
+      if (M > 3u) { let i3 = params.out_offset + 3u * params.rows + rB; y[i3] = select(accA1.w, y[i3] + accA1.w, add_r); }
+      if (M > 4u) { let i4 = params.out_offset + 4u * params.rows + rB; y[i4] = select(accB1.x, y[i4] + accB1.x, add_r); }
+      if (M > 5u) { let i5 = params.out_offset + 5u * params.rows + rB; y[i5] = select(accB1.y, y[i5] + accB1.y, add_r); }
+      if (M > 6u) { let i6 = params.out_offset + 6u * params.rows + rB; y[i6] = select(accB1.z, y[i6] + accB1.z, add_r); }
+      if (M > 7u) { let i7 = params.out_offset + 7u * params.rows + rB; y[i7] = select(accB1.w, y[i7] + accB1.w, add_r); }
+    }
+  }
 }
 "#;
 

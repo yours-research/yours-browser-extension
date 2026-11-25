@@ -1,6 +1,6 @@
 # TinyGPT MV3 Extension — Qwen3.5-4B Comprehensive Benchmark Report
 
-Generated: `2026-11-25T04:28:14.859Z`
+Generated: `2026-11-25T06:58:40.255Z`
 
 ## 1. Environment, Phase 0 Storage & WebGPU Limits
 
@@ -110,3 +110,15 @@ Generated: `2026-11-25T04:28:14.859Z`
 - **Track 4 Max-Speed (`21-track4-wgsl-max-speed-128k`) vs. Track 2 Real (`16-wgsl-real-int8kv-128k`):** 1K decode jumped from `73.91` -> **`106.60 tok/s`** (**+44.2%**, **7.83x** vs Baseline ORT), 1K prefill `383` -> **`564.90 tok/s`** (**+47.4%**), 8K `64.39/386` -> **`84.37/495 tok/s`**, 32K `47.68/307` -> **`52.44/359 tok/s`**, 64K `36.26/240` -> **`44.59/271 tok/s`**, and 128K `23.80/165` -> **`26.73/181 tok/s`** (**9.48x** vs Track 1 `08`). Peak RTX 3090 memory bandwidth utilization reached **`27.9%`**, with **32K NIAH PASS** at `392.14 / 63.25 tok/s` and Chat Turn 1 at **`104.74 tok/s`** (`TTFT 104.8 ms`).
 - **Track 4 Balanced Default (`22-track4-wgsl-worker-balanced-smoothness`) vs. Track 3 Balanced (`19-track3-worker-balanced`):** Restoring `chunk=64` plus WY prefill + 16-row GEMV boosted 8K `36.99/194` -> **`52.69/356 tok/s`**, 32K prefill `128.10` -> **`293.93 tok/s`** (**+129.5%**), Chat Turn 1 `40.14` -> **`76.40 tok/s`** (**+90.3%**, `TTFT 143.4 ms`), and Turn 2 (`prefixReused=true`) -> **`80.30 tok/s`** — while maintaining **`143.9 FPS`** (`0.00%` jank >33ms, max `23.9 ms`), **`143.6 FPS`** chat streaming, Snapshot/Restore `165t -> 165t`, **`97.6 ms`** abort latency, and **32K NIAH PASS** (`318.95 / 40.06 tok/s`).
 - **Strict Offline Zero-Network Verification:** Across all `2` Track 4 runs, `0` external `http(s)://` requests and `0` console/offscreen errors were recorded.
+
+## 8. Track 5 — Factored Zero-Barrier Q4 GEMV, Dispatch Fusion (`397 → 269`), 4-Head Grouped GQA INT8/DP4a & Zero-Weight Suffix Speculation
+
+| Run ID | Host / Pacing | Offline Load | 1K Dec / Prefill | 8K Dec / Prefill | 32K Dec / Prefill | 64K Dec / Prefill | 96K Dec / Prefill | 128K Dec / Prefill | Peak % BW | NIAH 32K | Sweep FPS (% Jank) | Net Reqs | Errors |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: |
+| `23-track5-wgsl-max-speed-128k` | `worker` / `max-speed` | **6.97s** | 109.55 / 507 | 97.18 / 501 | 74.06 / 393 | 55.74 / 290 | 43.71 / 229 | 32.32 / 177 | **28.7%** | PASS (62.32 tok/s) | — | 0 | 0 |
+| `24-track5-wgsl-worker-balanced-smoothness` | `worker` / `balanced` | **7.24s** | — | 60.41 / 325 | 41.20 / 259 | — | — | — | **15.8%** | PASS (40.37 tok/s) | 140.3 (0.00%) | 0 | 0 |
+
+- **Track 5 Max-Speed (`23-track5-wgsl-max-speed-128k`) vs. Track 4 Max-Speed (`21-track4-wgsl-max-speed-128k`):** Offline load dropped to **`6.97s`**. Decode speed climbed across every context length: 1K `106.60` -> **`109.55 tok/s`** (+2.8%, **8.04x** vs Baseline ORT, **`28.7%`** BW), 8K `84.37` -> **`97.18 tok/s`** (**+15.2%**), 32K `52.44` -> **`74.06 tok/s`** (**+41.2%** from 4-Q-head GQA + DP4a!), 64K `44.59` -> **`55.74 tok/s`** (**+25.0%**), 96K `34.31` -> **`43.71 tok/s`** (**+27.4%**), and 128K `26.73` -> **`32.32 tok/s`** (**+20.9%**, **11.46x** vs Track 1 `08`).
+- **Zero-Weight Suffix Speculative Decoding (`23-track5-wgsl-max-speed-128k`):** Exact greedy bit-identical parity **`true`** (`239/239` chars exact match), accepting **`74/78`** drafted tokens (**`94.87%`** over `20` steps) and lifting generation speed from `91.77` -> **`114.83 tok/s`** (**1.251x**).
+- **Track 5 Production Default (`24-track5-wgsl-worker-balanced-smoothness`, `worker / balanced` + Speculative):** Improved 8K decode `52.69` -> **`60.41 tok/s`** (**+14.6%**), 32K decode `37.54` -> **`41.20 tok/s`** (**+9.8%**), and Chat Turn 1 -> **`78.29 tok/s`** (`TTFT 162.4 ms`, speculative 4/12), while keeping **`140.3 FPS`** sweep / **`142.7 FPS`** chat with **`0.00%` jank (>33ms)**, Snapshot/Restore `165t -> 165t`, **`99.3 ms`** abort latency, and **32K NIAH PASS** (`302.66 / 40.37 tok/s`).
+- **Strict Offline Zero-Network Verification:** Across all `2` Track 5 runs, `0` external `http(s)://` requests and `0` console/offscreen errors were recorded.

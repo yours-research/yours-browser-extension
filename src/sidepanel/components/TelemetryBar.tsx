@@ -69,6 +69,12 @@ export function TelemetryBar({
               {loadSourceLabel} {(telemetry.coldLoadMs / 1000).toFixed(2)}s
             </span>
           )}
+          {telemetry.speculativeStats && telemetry.speculativeStats.drafted > 0 && (
+            <span className="meta-chip" title="Zero-weight suffix speculative decoding acceptance">
+              Spec {telemetry.speculativeStats.accepted}/{telemetry.speculativeStats.drafted} (
+              {telemetry.speculativeStats.acceptanceRatePct.toFixed(0)}%)
+            </span>
+          )}
         </div>
 
         <div className="telemetry-actions">

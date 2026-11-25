@@ -1,0 +1,231 @@
+{
+  "runId": "23-track5-wgsl-max-speed-128k",
+  "track": "track5-speed",
+  "recordedAt": "2026-11-25T06:39:16.719Z",
+  "label": "Track 5 WGSL Speedups (Zero-Barrier Factored GEMV + Fused Dispatches + 4H GQA + Speculative Parity)",
+  "config": {
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "dtype": "q4f16",
+    "chunkSize": 64,
+    "maxNewTokens": 256,
+    "temperature": 0,
+    "topP": 0.95,
+    "topK": 20,
+    "enableThinking": false,
+    "gpuBandwidthGBs": 936,
+    "wasmVariant": "asyncify",
+    "yieldMode": "none",
+    "fastDecodePath": true,
+    "fastOpfsLoad": true,
+    "graphOptimizationLevel": "all",
+    "validationMode": "basic",
+    "storageBufferCacheMode": "default",
+    "enableMatmulFp32Accumulation": null,
+    "backend": "wgsl",
+    "wgslKvMode": "int8",
+    "wgslMaxContext": 131072,
+    "gpuPacingMode": "max-speed",
+    "executionHost": "worker",
+    "enableSpeculative": true
+  },
+  "coldLoad": {
+    "coldLoadMs": 6969.39999999851,
+    "loadSource": "bundled",
+    "executionHost": "worker",
+    "loadBreakdown": {
+      "opfsReadMs": 5434.39999999851,
+      "tokenizerMs": 525.8000000007451,
+      "modelLoadMs": 550.7000000029802,
+      "totalMs": 6969.39999999851
+    },
+    "estVramMb": 2560.1680908203125
+  },
+  "sweep": {
+    "startedAt": "2026-11-25T06:12:27.795Z",
+    "finishedAt": "2026-11-25T06:37:28.729Z",
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "dtype": "q4f16",
+    "gpuBandwidthGBs": 936,
+    "points": [
+      {
+        "targetTokens": 1024,
+        "actualPromptTokens": 1024,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 2019.8999999985099,
+        "ttftMs": 2020.199999999255,
+        "prefillTokPerSec": 506.95578989096265,
+        "decodeTokPerSec": 109.55152345031412,
+        "kvCacheMb": 16.7578125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 2576.9259033203125,
+        "achievedBandwidthGBs": 268.52085018053623,
+        "bandwidthUtilizationPct": 28.68812501928806,
+        "breakdown": {
+          "avgForwardMs": 8.921874999068677,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 8192,
+        "actualPromptTokens": 8192,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 16350.199999999255,
+        "ttftMs": 16350.300000000745,
+        "prefillTokPerSec": 501.03362650000446,
+        "decodeTokPerSec": 97.1758275126863,
+        "kvCacheMb": 130.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 2690.6759033203125,
+        "achievedBandwidthGBs": 238.18688228957578,
+        "bandwidthUtilizationPct": 25.447316483929033,
+        "breakdown": {
+          "avgForwardMs": 10.15937499946449,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 32768,
+        "actualPromptTokens": 32768,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 83354.90000000224,
+        "ttftMs": 83354.90000000224,
+        "prefillTokPerSec": 393.1142620289764,
+        "decodeTokPerSec": 74.05693126629374,
+        "kvCacheMb": 520.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 3080.6759033203125,
+        "achievedBandwidthGBs": 181.5203432967843,
+        "bandwidthUtilizationPct": 19.393199070169263,
+        "breakdown": {
+          "avgForwardMs": 13.375000000349246,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 65536,
+        "actualPromptTokens": 65536,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 225892.30000000075,
+        "ttftMs": 225892.30000000075,
+        "prefillTokPerSec": 290.1205574514925,
+        "decodeTokPerSec": 55.73941822003934,
+        "kvCacheMb": 1040.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 3600.6759033203125,
+        "achievedBandwidthGBs": 136.62243570534773,
+        "bandwidthUtilizationPct": 14.59641407108416,
+        "breakdown": {
+          "avgForwardMs": 17.787500000093132,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 98304,
+        "actualPromptTokens": 98304,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 429115.8999999985,
+        "ttftMs": 429116,
+        "prefillTokPerSec": 229.08496282705985,
+        "decodeTokPerSec": 43.70987570017443,
+        "kvCacheMb": 1560.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 4120.6759033203125,
+        "achievedBandwidthGBs": 107.13692164782712,
+        "bandwidthUtilizationPct": 11.446252312802043,
+        "breakdown": {
+          "avgForwardMs": 22.737500000046566,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 131072,
+        "actualPromptTokens": 131072,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 740809.5,
+        "ttftMs": 740809.6000000015,
+        "prefillTokPerSec": 176.93077640068063,
+        "decodeTokPerSec": 32.323232323232325,
+        "kvCacheMb": 2080.5078125,
+        "deltaNetStateMb": 50.25,
+        "estVramMb": 4640.6759033203125,
+        "achievedBandwidthGBs": 79.2272124627624,
+        "bandwidthUtilizationPct": 8.464445775936154,
+        "breakdown": {
+          "avgForwardMs": 30.784375000279397,
+          "avgLogitsMs": 0,
+          "avgSampleMs": 0,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      }
+    ],
+    "maxSafeTokens": 131104,
+    "oomTokenCount": null,
+    "recommendation": "Below 40% theoretical bandwidth (28.7% of 936 GB/s): Phase 2 Decision Gate triggers custom Rust/WASM + WGSL engine."
+  },
+  "niah": {
+    "targetTokens": 32768,
+    "actualTokens": 32768,
+    "needleDepthPct": 0.5,
+    "passkey": "VELVET-ORBIT-7492",
+    "responseText": "VELVET-ORBIT-7492",
+    "passed": true,
+    "ttftMs": 99947.60000000149,
+    "prefillTokPerSec": 327.8517943402294,
+    "decodeTokPerSec": 62.3229461756374
+  },
+  "chatTurn1": {
+    "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+    "responseText": "* **Enhanced Privacy**: Data never leaves the user's device, ensuring complete confidentiality for sensitive inputs and outputs.\n* **Reduced Latency**: Local execution eliminates network round-trips, enabling near-instantaneous response times.\n* **Lower Costs**: Running models on-device removes the need for expensive cloud API subscriptions or server infrastructure.\n* **Improved Reliability**: The application remains functional even when the internet connection is unavailable or unstable.",
+    "responseLength": 493,
+    "ttftMs": 118.80000000074506,
+    "prefillTokPerSec": 292.5531914874294,
+    "decodeTokPerSec": 91.70731707317074,
+    "activeContextTokens": 127,
+    "prefixReused": false,
+    "estVramMb": 2562.1834716796875,
+    "speculativeStats": null
+  },
+  "speculativeCheck": {
+    "prompt": "Rewrite and clean up the following config bullet list verbatim in Markdown, keeping every field name and exact numeric limit unchanged:\n- maxBufferSize: 2147483648\n- maxStorageBufferBindingSize: 2147483644\n- workers: DedicatedWorker (es module)\n- kvCacheMode: int8 (131072 context)\n- weightShards: 21 parts (<= 128 MiB each)\n- decodePacing: balanced (144Hz smooth compositor)",
+    "parityPassed": true,
+    "baselineDecodeTokPerSec": 91.76942930905756,
+    "speculativeDecodeTokPerSec": 114.83253588516747,
+    "speedupRatio": 1.251,
+    "speculativeStats": {
+      "drafted": 78,
+      "accepted": 74,
+      "steps": 20,
+      "acceptanceRatePct": 94.87179487179486
+    },
+    "baselineLength": 239,
+    "speculativeLength": 239,
+    "responsePreview": "- maxBufferSize: 2147483648\n- maxStorageBufferBindingSize: 2147483644\n- workers: DedicatedWorker (es module)\n- kvCacheMode: int8 (131072 context)\n- weightShards: 21 parts (<= 128 MiB each)\n- decodePac"
+  },
+  "externalNetworkRequestCount": 0,
+  "externalNetworkRequests": [],
+  "consoleErrorCount": 0,
+  "offscreenErrors": [],
+  "status": "ok"
+}

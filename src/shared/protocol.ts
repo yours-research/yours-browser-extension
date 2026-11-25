@@ -117,13 +117,15 @@ export interface EngineConfig {
   gpuPacingMode: GpuPacingMode;
   /** Host environment executing the inference engine */
   executionHost: ExecutionHost;
+  /** Enables zero-weight suffix speculative decoding for greedy generation */
+  enableSpeculative: boolean;
 }
 
 export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
   modelId: MODEL_PRESETS[0].id,
   dtype: 'q4f16',
   chunkSize: 64,
-  maxNewTokens: 512,
+  maxNewTokens: 1024,
   temperature: 0.0,
   topP: 0.95,
   topK: 20,
@@ -142,6 +144,7 @@ export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
   wgslMaxContext: 131072,
   gpuPacingMode: 'balanced',
   executionHost: 'worker',
+  enableSpeculative: true,
 };
 
 export interface LoadBreakdown {
@@ -185,6 +188,12 @@ export interface TelemetryState {
   lastError: string | null;
   deviceLostReason: string | null;
   maxContextReached: number;
+  speculativeStats: {
+    drafted: number;
+    accepted: number;
+    steps: number;
+    acceptanceRatePct: number;
+  } | null;
 }
 
 export const INITIAL_TELEMETRY_STATE: TelemetryState = {
@@ -212,6 +221,7 @@ export const INITIAL_TELEMETRY_STATE: TelemetryState = {
   lastError: null,
   deviceLostReason: null,
   maxContextReached: 0,
+  speculativeStats: null,
 };
 
 export interface WebGpuProbeInfo {

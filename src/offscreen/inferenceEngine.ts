@@ -20,6 +20,7 @@ import { resolveExtensionAssetUrl } from './gpuPacing.ts';
 import { clearWgslWeightCache } from './onnxWeightLoader.ts';
 import { OpfsModelCache } from './opfsCache.ts';
 import { computeBandwidthStats, isMessagePrefix, type SamplingOptions } from './sampling.ts';
+import { SuffixSpeculator } from './suffixSpeculator.ts';
 import { installWebGpuLimitPatch, probeWebGpu } from './webgpuLimits.ts';
 import { WgslQwen35Engine, type WgslCpuSnapshot } from './wgslRealEngine.ts';
 
@@ -83,9 +84,14 @@ export class InferenceEngine {
 
   private cachedMessages: ChatMessage[] = [];
   private cachedTokenCount = 0;
+  private cachedTokenIds: number[] = [];
   private cachedThinkingMode = false;
   private wgslSnapshot: WgslCpuSnapshot | null = null;
-  private wgslSnapshotMeta: { cachedMessages: ChatMessage[]; cachedThinkingMode: boolean } | null = null;
+  private wgslSnapshotMeta: {
+    cachedMessages: ChatMessage[];
+    cachedThinkingMode: boolean;
+    cachedTokenIds: number[];
+  } | null = null;
 
   private activeRequestId: string | null = null;
   private activeAbortController: AbortController | null = null;
@@ -352,7 +358,7 @@ export class InferenceEngine {
       this.log(
         'info',
         'offscreen',
-        `WGSL Qwen3.5-4B ready in ${(coldLoadMs / 1000).toFixed(2)}s (source=${stats.loadSource}, host=${this.executionHost}, stream=${stats.opfsReadMs.toFixed(0)}ms, compile+verify=${stats.pipelineCompileMs.toFixed(0)}ms, kv=int8, maxSeq=${stats.maxSeqCapacity}, maxBuffer=${(stats.maxBufferSize / (1024 * 1024)).toFixed(0)} MiB).`,
+        `WGSL Qwen3.5-4B ready in ${(coldLoadMs / 1000).toFixed(2)}s (source=${stats.loadSource}, host=${this.executionHost}, stream=${stats.opfsReadMs.toFixed(0)}ms, compile+verify=${stats.pipelineCompileMs.toFixed(0)}ms, kv=int8, dp4a=${stats.usingDp4a}, maxSeq=${stats.maxSeqCapacity}, maxBuffer=${(stats.maxBufferSize / (1024 * 1024)).toFixed(0)} MiB).`,
       );
 
       this.updateTelemetry({
@@ -426,6 +432,7 @@ export class InferenceEngine {
     }
     this.cachedMessages = [];
     this.cachedTokenCount = 0;
+    this.cachedTokenIds = [];
     const wgslMem = this.wgslEngine ? this.wgslEngine.getMemoryStats() : null;
     this.updateTelemetry({
       activeContextTokens: 0,
@@ -434,6 +441,7 @@ export class InferenceEngine {
       estVramMb: wgslMem ? wgslMem.estVramMb : 0,
       prefixReused: null,
       prefillChunkProgress: null,
+      speculativeStats: null,
     });
   }
 
@@ -448,6 +456,7 @@ export class InferenceEngine {
       this.wgslSnapshotMeta = {
         cachedMessages: this.cachedMessages.map((m) => ({ ...m })),
         cachedThinkingMode: this.cachedThinkingMode,
+        cachedTokenIds: [...this.cachedTokenIds],
       };
       this.updateTelemetry({
         hasCpuSnapshot: true,
@@ -475,6 +484,7 @@ export class InferenceEngine {
     this.cachedMessages = this.wgslSnapshotMeta.cachedMessages.map((m) => ({ ...m }));
     this.cachedTokenCount = this.wgslSnapshot.seqPos;
     this.cachedThinkingMode = this.wgslSnapshotMeta.cachedThinkingMode;
+    this.cachedTokenIds = [...this.wgslSnapshotMeta.cachedTokenIds];
     this.refreshCacheTelemetry();
     this.log('info', 'offscreen', `Restored WGSL hybrid state (${this.cachedTokenCount} tokens).`);
   }
@@ -681,12 +691,14 @@ export class InferenceEngine {
     const runStartMs = performance.now();
 
     try {
+      this.wgslEngine?.resetDecodeBurst();
       this.updateTelemetry({
         status: 'generating',
         lastError: null,
         tokensPerSec: null,
         ttftMs: null,
         prefillChunkProgress: null,
+        speculativeStats: null,
       });
 
       let promptTokenIds: number[] | null = null;
@@ -748,23 +760,42 @@ export class InferenceEngine {
       let nextToken = firstToken;
 
       const generatedIds: number[] = [];
+      const sessionTokenIds = reusedPrefix
+        ? [...this.cachedTokenIds, ...promptTokenIds]
+        : [...promptTokenIds];
+      const speculator = new SuffixSpeculator(sessionTokenIds);
+      let specDrafted = 0;
+      let specAccepted = 0;
+      let specSteps = 0;
+
       let emittedText = '';
       let finishReason: 'stop' | 'length' | 'abort' = 'length';
       const decodeStartMs = performance.now();
 
-      for (let step = 0; step < this.config.maxNewTokens; step++) {
+      const buildSpecStats = () =>
+        specSteps > 0
+          ? {
+              drafted: specDrafted,
+              accepted: specAccepted,
+              steps: specSteps,
+              acceptanceRatePct: specDrafted > 0 ? (specAccepted / specDrafted) * 100 : 0,
+            }
+          : null;
+
+      const emitTokenAndCheckDone = (tok: number): boolean => {
         if (this.abortedRequests.has(requestId)) {
           finishReason = 'abort';
-          break;
+          return true;
         }
-
-        if (this.eosTokenIds.has(nextToken)) {
+        if (this.eosTokenIds.has(tok)) {
           finishReason = 'stop';
-          break;
+          return true;
         }
+        generatedIds.push(tok);
+        sessionTokenIds.push(tok);
+        speculator.pushToken(tok);
 
-        generatedIds.push(nextToken);
-        const decodedFull = this.tokenizer.decode(generatedIds, {
+        const decodedFull = this.tokenizer!.decode(generatedIds, {
           skip_special_tokens: true,
         });
         // Hold back trailing replacement char U+FFFD if a multi-byte UTF-8 sequence spans tokens.
@@ -775,21 +806,30 @@ export class InferenceEngine {
           this.callbacks.onTokenDelta(requestId, delta, generatedIds.length);
         }
 
-        if (!this.config.fastDecodePath || step % 4 === 0) {
+        if (generatedIds.length >= this.config.maxNewTokens) {
+          finishReason = 'length';
+          return true;
+        }
+        return false;
+      };
+
+      let iter = 0;
+      while (generatedIds.length < this.config.maxNewTokens) {
+        if (emitTokenAndCheckDone(nextToken)) {
+          break;
+        }
+
+        if (!this.config.fastDecodePath || iter % 4 === 0) {
           const decodeElapsedSec = Math.max(0.001, (performance.now() - decodeStartMs) / 1000);
           this.updateTelemetry({
             tokensPerSec: generatedIds.length / decodeElapsedSec,
+            speculativeStats: buildSpecStats(),
           });
-        }
-
-        if (step + 1 >= this.config.maxNewTokens) {
-          finishReason = 'length';
-          break;
         }
 
         if (this.config.yieldMode !== 'none') {
           await yieldFast(this.config.yieldMode);
-        } else if (step % 8 === 7) {
+        } else if (iter % 8 === 7) {
           await yieldFast('message-channel');
         }
         if (this.abortedRequests.has(requestId)) {
@@ -797,13 +837,67 @@ export class InferenceEngine {
           break;
         }
 
-        const stepRes = await this.decodeNextToken(nextToken, sampleOpts, step);
+        const remainingToMax = this.config.maxNewTokens - generatedIds.length;
+        const canSpeculate =
+          this.config.enableSpeculative &&
+          sampleOpts.temperature <= 0 &&
+          this.wgslEngine !== null &&
+          remainingToMax > 1;
+
+        if (canSpeculate) {
+          const maxDraft = Math.min(4, remainingToMax - 1);
+          const rawDraft = speculator.propose({ maxDraft });
+          const cleanDraft: number[] = [];
+          for (const dt of rawDraft) {
+            if (this.eosTokenIds.has(dt)) break;
+            cleanDraft.push(dt);
+          }
+
+          if (
+            cleanDraft.length > 0 &&
+            this.wgslEngine!.activeSeqPos + 1 + cleanDraft.length <= this.wgslEngine!.maxContextTokens
+          ) {
+            const specRes = await this.wgslEngine!.decodeSpeculativeStep(
+              nextToken,
+              cleanDraft,
+              sampleOpts,
+              this.config.gpuPacingMode,
+            );
+            this.cachedTokenCount = this.wgslEngine!.activeSeqPos;
+            specDrafted += specRes.draftedCount;
+            specAccepted += specRes.acceptedCount;
+            specSteps += 1;
+            if (!this.config.fastDecodePath || iter % 4 === 0) {
+              this.refreshCacheTelemetry();
+            }
+
+            let stoppedMidBatch = false;
+            for (let i = 0; i < specRes.acceptedCount; i++) {
+              if (emitTokenAndCheckDone(specRes.tokens[i])) {
+                stoppedMidBatch = true;
+                break;
+              }
+            }
+            if (stoppedMidBatch) {
+              break;
+            }
+            nextToken = specRes.tokens[specRes.acceptedCount];
+            iter++;
+            continue;
+          }
+        }
+
+        const stepRes = await this.decodeNextToken(nextToken, sampleOpts, iter);
         nextToken = stepRes.nextToken;
+        iter++;
       }
 
       if (generatedIds.length > 0) {
         const totalDecodeSec = Math.max(0.001, (performance.now() - decodeStartMs) / 1000);
-        this.updateTelemetry({ tokensPerSec: generatedIds.length / totalDecodeSec });
+        this.updateTelemetry({
+          tokensPerSec: generatedIds.length / totalDecodeSec,
+          speculativeStats: buildSpecStats(),
+        });
         this.refreshCacheTelemetry();
       }
 
@@ -823,6 +917,7 @@ export class InferenceEngine {
 
       this.cachedMessages = [...messages, { role: 'assistant', content: emittedText }];
       this.cachedThinkingMode = this.config.enableThinking;
+      this.cachedTokenIds = sessionTokenIds;
 
       this.updateTelemetry({ status: 'ready', prefillChunkProgress: null });
       this.callbacks.onGenerationComplete(requestId, finishReason);

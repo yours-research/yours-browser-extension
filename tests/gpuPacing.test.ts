@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  computeDecodeBurstBreatherMs,
   computeDecodePostStepBreatherMs,
   computeDecodeSliceBounds,
   computePrefillSliceBreatherMs,
@@ -50,9 +51,12 @@ describe('protocol defaults (Wave 1B)', () => {
     expect(DEFAULT_ENGINE_CONFIG.fastOpfsLoad).toBe(true);
     expect(DEFAULT_ENGINE_CONFIG.gpuPacingMode).toBe('balanced');
     expect(DEFAULT_ENGINE_CONFIG.executionHost).toBe('worker');
+    expect(DEFAULT_ENGINE_CONFIG.enableSpeculative).toBe(true);
+    expect(DEFAULT_ENGINE_CONFIG.maxNewTokens).toBe(1024);
 
     expect(INITIAL_TELEMETRY_STATE.loadSource).toBeNull();
     expect(INITIAL_TELEMETRY_STATE.executionHost).toBe('worker');
+    expect(INITIAL_TELEMETRY_STATE.speculativeStats).toBeNull();
   });
 });
 
@@ -75,6 +79,7 @@ describe('gpuPacing', () => {
       decodeLongThreshold: 16384,
       decodeSlowStepThresholdMs: Number.POSITIVE_INFINITY,
       decodeSliceBreatherMs: 0,
+      decodeBurstBudgetMs: Number.POSITIVE_INFINITY,
       decodePostStepRatio: 0,
       decodePostStepMinMs: 0,
       decodePostStepMaxMs: 0,
@@ -90,9 +95,10 @@ describe('gpuPacing', () => {
       prefillBreatherMs: 4,
       decodeSplitsShort: 1,
       decodeSplitsLong: 2,
-      decodeLongThreshold: 16384,
-      decodeSlowStepThresholdMs: 11,
+      decodeLongThreshold: 32768,
+      decodeSlowStepThresholdMs: 14,
       decodeSliceBreatherMs: 2,
+      decodeBurstBudgetMs: 14,
       decodePostStepRatio: 0.22,
       decodePostStepMinMs: 2,
       decodePostStepMaxMs: 6,
@@ -111,6 +117,7 @@ describe('gpuPacing', () => {
       decodeLongThreshold: 8192,
       decodeSlowStepThresholdMs: 8,
       decodeSliceBreatherMs: 3,
+      decodeBurstBudgetMs: 8,
       decodePostStepRatio: 0.45,
       decodePostStepMinMs: 4,
       decodePostStepMaxMs: 12,
@@ -149,13 +156,38 @@ describe('gpuPacing', () => {
     expect(selectDecodeSliceCount('max-speed', 0, 0)).toBe(1);
     expect(selectDecodeSliceCount('max-speed', 100000, 200)).toBe(1);
 
-    expect(selectDecodeSliceCount('balanced', 16383, 10.9)).toBe(1);
-    expect(selectDecodeSliceCount('balanced', 16384, 5)).toBe(2);
-    expect(selectDecodeSliceCount('balanced', 1000, 11)).toBe(2);
+    expect(selectDecodeSliceCount('balanced', 32767, 13.9)).toBe(1);
+    expect(selectDecodeSliceCount('balanced', 32768, 5)).toBe(2);
+    expect(selectDecodeSliceCount('balanced', 1000, 14)).toBe(2);
 
     expect(selectDecodeSliceCount('smooth-ui', 8191, 7.9)).toBe(2);
     expect(selectDecodeSliceCount('smooth-ui', 8192, 4)).toBe(4);
     expect(selectDecodeSliceCount('smooth-ui', 512, 8)).toBe(4);
+  });
+
+  it('computes adaptive decode burst breathers only once burst budget is exceeded', () => {
+    expect(computeDecodeBurstBreatherMs('max-speed', 50, 100)).toEqual({
+      breatherMs: 0,
+      nextBurstMs: 0,
+    });
+
+    // Balanced budget = 14ms: two 6ms steps burst cleanly without sleeping, third triggers breather
+    const b1 = computeDecodeBurstBreatherMs('balanced', 6, 0);
+    expect(b1).toEqual({ breatherMs: 0, nextBurstMs: 6 });
+    const b2 = computeDecodeBurstBreatherMs('balanced', 6, b1.nextBurstMs);
+    expect(b2).toEqual({ breatherMs: 0, nextBurstMs: 12 });
+    const b3 = computeDecodeBurstBreatherMs('balanced', 6, b2.nextBurstMs);
+    expect(b3).toEqual({ breatherMs: 4, nextBurstMs: 0 });
+
+    // Smooth-UI budget = 8ms
+    expect(computeDecodeBurstBreatherMs('smooth-ui', 5, 0)).toEqual({
+      breatherMs: 0,
+      nextBurstMs: 5,
+    });
+    expect(computeDecodeBurstBreatherMs('smooth-ui', 5, 5)).toEqual({
+      breatherMs: 5,
+      nextBurstMs: 0,
+    });
   });
 
   it('computes bounded post-step decode breathers per pacing mode', () => {

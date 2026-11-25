@@ -148,14 +148,19 @@ export async function acquireWgslDevice(): Promise<{
   device: GpuDeviceLike;
   hasShaderF16: boolean;
   hasSubgroups: boolean;
+  hasDp4a: boolean;
   maxBufferSize: number;
 }> {
   const nav = navigator as unknown as {
-    gpu?: { requestAdapter(opts?: { powerPreference?: string }): Promise<GpuAdapterLike | null> };
+    gpu?: {
+      requestAdapter(opts?: { powerPreference?: string }): Promise<GpuAdapterLike | null>;
+      wgslLanguageFeatures?: { has?(feature: string): boolean };
+    };
   };
   if (!nav.gpu) {
     throw new Error('WebGPU not supported in Offscreen Document.');
   }
+  const hasDp4a = Boolean(nav.gpu.wgslLanguageFeatures?.has?.('packed_4x8_integer_dot_product'));
   const adapter = await nav.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) {
     throw new Error('No WebGPU adapter returned.');
@@ -174,6 +179,7 @@ export async function acquireWgslDevice(): Promise<{
     device,
     hasShaderF16: features.has('shader-f16'),
     hasSubgroups: features.has('subgroups'),
+    hasDp4a,
     maxBufferSize: device.limits.maxBufferSize ?? 0,
   };
 }

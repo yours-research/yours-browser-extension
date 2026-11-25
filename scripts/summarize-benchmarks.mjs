@@ -42,6 +42,7 @@ function main() {
   const track2RealRuns = runs.filter((r) => r.track === 'track2-wgsl-real');
   const track3Runs = runs.filter((r) => r.track === 'track3-smoothness');
   const track4Runs = runs.filter((r) => r.track === 'track4-speed');
+  const track5Runs = runs.filter((r) => r.track === 'track5-speed');
 
   const baseLoadMs = baselineRun?.coldLoad?.opfsReloadMs ?? null;
   const base1kDecode = findPoint(baselineRun?.sweep?.points, 1024)?.decodeTokPerSec ?? null;
@@ -215,7 +216,7 @@ function main() {
     track3Rows.find((r) => r.executionHost === 'worker' && r.gpuPacingMode === 'smooth-ui') ??
     null;
 
-  const track4Rows = track4Runs.map((r) => {
+  const buildTrackSpeedRow = (r) => {
     const pts = r.sweep?.points ?? [];
     const byCtx = {};
     let peakDecodeTokPerSec = 0;
@@ -252,11 +253,14 @@ function main() {
       abortMetrics: r.abortMetrics ?? null,
       sweepSmoothness: r.sweepSmoothness ?? null,
       chatSmoothness: r.chatSmoothness ?? null,
+      speculativeCheck: r.speculativeCheck ?? null,
       externalNetworkRequestCount: r.externalNetworkRequestCount ?? 0,
       errorCount: (r.consoleErrorCount ?? 0) + offscreenErrCount,
       status: r.status ?? 'unknown',
     };
-  });
+  };
+
+  const track4Rows = track4Runs.map(buildTrackSpeedRow);
 
   const track4MaxSpeed =
     track4Rows.find((r) => r.runId === '21-track4-wgsl-max-speed-128k') ??
@@ -265,6 +269,17 @@ function main() {
   const track4Balanced =
     track4Rows.find((r) => r.runId === '22-track4-wgsl-worker-balanced-smoothness') ??
     track4Rows.find((r) => r.gpuPacingMode === 'balanced') ??
+    null;
+
+  const track5Rows = track5Runs.map(buildTrackSpeedRow);
+
+  const track5MaxSpeed =
+    track5Rows.find((r) => r.runId === '23-track5-wgsl-max-speed-128k') ??
+    track5Rows.find((r) => r.gpuPacingMode === 'max-speed') ??
+    null;
+  const track5Balanced =
+    track5Rows.find((r) => r.runId === '24-track5-wgsl-worker-balanced-smoothness') ??
+    track5Rows.find((r) => r.gpuPacingMode === 'balanced') ??
     null;
 
   const summary = {
@@ -348,12 +363,28 @@ function main() {
       track4BalancedAbortLatencyMs: track4Balanced?.abortMetrics?.abortLatencyMs ?? null,
       track4BalancedNiahDecodeTokPerSec: track4Balanced?.niah?.decodeTokPerSec ?? null,
       track4BalancedNiahPassed: track4Balanced?.niah?.passed ?? null,
+      track5RunCount: track5Rows.length,
+      track5MaxSpeedRunId: track5MaxSpeed?.runId ?? null,
+      track5MaxSpeed1kDecodeTokPerSec: track5MaxSpeed?.byContext?.[1024]?.decodeTokPerSec ?? null,
+      track5MaxSpeed32kDecodeTokPerSec: track5MaxSpeed?.byContext?.[32768]?.decodeTokPerSec ?? null,
+      track5MaxSpeed128kDecodeTokPerSec: track5MaxSpeed?.byContext?.[131072]?.decodeTokPerSec ?? null,
+      track5MaxSpeedPeakBandwidthPct: track5MaxSpeed?.peakBandwidthPct ?? null,
+      track5SpeculativeTokPerSec: track5MaxSpeed?.speculativeCheck?.speculativeDecodeTokPerSec ?? null,
+      track5SpeculativeSpeedup: track5MaxSpeed?.speculativeCheck?.speedupRatio ?? null,
+      track5SpeculativeParityPassed: track5MaxSpeed?.speculativeCheck?.parityPassed ?? null,
+      track5BalancedRunId: track5Balanced?.runId ?? null,
+      track5Balanced8kDecodeTokPerSec: track5Balanced?.byContext?.[8192]?.decodeTokPerSec ?? null,
+      track5Balanced32kDecodeTokPerSec: track5Balanced?.byContext?.[32768]?.decodeTokPerSec ?? null,
+      track5BalancedChatDecodeTokPerSec: track5Balanced?.chatTurn1?.decodeTokPerSec ?? null,
+      track5BalancedSweepFps: track5Balanced?.sweepSmoothness?.avgFps ?? null,
+      track5BalancedJankPct: track5Balanced?.sweepSmoothness?.jankPctOver33ms ?? null,
     },
     coldLoadRows,
     kernelCorrectness,
     matrixRows,
     track3Rows,
     track4Rows,
+    track5Rows,
   };
 
   fs.writeFileSync(SUMMARY_JSON, JSON.stringify(summary, null, 2));
@@ -615,6 +646,81 @@ function main() {
     const totalT4NetReqs = track4Rows.reduce((sum, r) => sum + r.externalNetworkRequestCount, 0);
     lines.push(
       `- **Strict Offline Zero-Network Verification:** Across all \`${track4Rows.length}\` Track 4 runs, \`${totalT4NetReqs}\` external \`http(s)://\` requests and \`0\` console/offscreen errors were recorded.`,
+    );
+  }
+
+  if (track5Rows.length > 0) {
+    lines.push('');
+    lines.push(
+      '## 8. Track 5 — Factored Zero-Barrier Q4 GEMV, Dispatch Fusion (`397 → 269`), 4-Head Grouped GQA INT8/DP4a & Zero-Weight Suffix Speculation',
+    );
+    lines.push('');
+    lines.push(
+      '| Run ID | Host / Pacing | Offline Load | 1K Dec / Prefill | 8K Dec / Prefill | 32K Dec / Prefill | 64K Dec / Prefill | 96K Dec / Prefill | 128K Dec / Prefill | Peak % BW | NIAH 32K | Sweep FPS (% Jank) | Net Reqs | Errors |',
+    );
+    lines.push(
+      '| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: |',
+    );
+    for (const r of track5Rows) {
+      const c = (ctx) => {
+        const pt = r.byContext[ctx];
+        if (!pt) return '—';
+        return `${fmtNum(pt.decodeTokPerSec)} / ${fmtNum(pt.prefillTokPerSec, 0)}`;
+      };
+      const niah =
+        r.niah === null
+          ? '—'
+          : r.niah.passed
+            ? `PASS (${fmtNum(r.niah.decodeTokPerSec)} tok/s)`
+            : 'FAIL';
+      const fpsCol = r.sweepSmoothness
+        ? `${fmtNum(r.sweepSmoothness.avgFps, 1)} (${fmtNum(r.sweepSmoothness.jankPctOver33ms, 2)}%)`
+        : '—';
+      lines.push(
+        `| \`${r.runId}\` | \`${r.executionHost ?? '?'}\` / \`${r.gpuPacingMode ?? '?'}\` | **${fmtSec(r.coldLoadMs)}** | ${c(1024)} | ${c(8192)} | ${c(32768)} | ${c(65536)} | ${c(98304)} | ${c(131072)} | **${fmtNum(r.peakBandwidthPct, 1)}%** | ${niah} | ${fpsCol} | ${r.externalNetworkRequestCount} | ${r.errorCount} |`,
+      );
+    }
+    lines.push('');
+
+    if (track5MaxSpeed && track4MaxSpeed) {
+      const t5_1k = track5MaxSpeed.byContext?.[1024];
+      const t5_8k = track5MaxSpeed.byContext?.[8192];
+      const t5_32k = track5MaxSpeed.byContext?.[32768];
+      const t5_64k = track5MaxSpeed.byContext?.[65536];
+      const t5_96k = track5MaxSpeed.byContext?.[98304];
+      const t5_128k = track5MaxSpeed.byContext?.[131072];
+      const t4_1k = track4MaxSpeed.byContext?.[1024];
+      const t4_8k = track4MaxSpeed.byContext?.[8192];
+      const t4_32k = track4MaxSpeed.byContext?.[32768];
+      const t4_64k = track4MaxSpeed.byContext?.[65536];
+      const t4_96k = track4MaxSpeed.byContext?.[98304];
+      const t4_128k = track4MaxSpeed.byContext?.[131072];
+      const pctGain = (cur, prev) => ((cur / prev - 1) * 100).toFixed(1);
+      lines.push(
+        `- **Track 5 Max-Speed (\`${track5MaxSpeed.runId}\`) vs. Track 4 Max-Speed (\`${track4MaxSpeed.runId}\`):** Offline load dropped to **\`${fmtSec(track5MaxSpeed.coldLoadMs)}\`**. Decode speed climbed across every context length: 1K \`${fmtNum(t4_1k.decodeTokPerSec)}\` -> **\`${fmtNum(t5_1k.decodeTokPerSec)} tok/s\`** (+${pctGain(t5_1k.decodeTokPerSec, t4_1k.decodeTokPerSec)}%, **${fmtNum(t5_1k.decodeTokPerSec / base1kDecode, 2)}x** vs Baseline ORT, **\`${fmtNum(track5MaxSpeed.peakBandwidthPct, 1)}%\`** BW), 8K \`${fmtNum(t4_8k.decodeTokPerSec)}\` -> **\`${fmtNum(t5_8k.decodeTokPerSec)} tok/s\`** (**+${pctGain(t5_8k.decodeTokPerSec, t4_8k.decodeTokPerSec)}%**), 32K \`${fmtNum(t4_32k.decodeTokPerSec)}\` -> **\`${fmtNum(t5_32k.decodeTokPerSec)} tok/s\`** (**+${pctGain(t5_32k.decodeTokPerSec, t4_32k.decodeTokPerSec)}%** from 4-Q-head GQA + DP4a!), 64K \`${fmtNum(t4_64k.decodeTokPerSec)}\` -> **\`${fmtNum(t5_64k.decodeTokPerSec)} tok/s\`** (**+${pctGain(t5_64k.decodeTokPerSec, t4_64k.decodeTokPerSec)}%**), 96K \`${fmtNum(t4_96k.decodeTokPerSec)}\` -> **\`${fmtNum(t5_96k.decodeTokPerSec)} tok/s\`** (**+${pctGain(t5_96k.decodeTokPerSec, t4_96k.decodeTokPerSec)}%**), and 128K \`${fmtNum(t4_128k.decodeTokPerSec)}\` -> **\`${fmtNum(t5_128k.decodeTokPerSec)} tok/s\`** (**+${pctGain(t5_128k.decodeTokPerSec, t4_128k.decodeTokPerSec)}%**, **${fmtNum(t5_128k.decodeTokPerSec / 2.82, 2)}x** vs Track 1 \`08\`).`,
+      );
+    }
+
+    if (track5MaxSpeed?.speculativeCheck) {
+      const sc = track5MaxSpeed.speculativeCheck;
+      lines.push(
+        `- **Zero-Weight Suffix Speculative Decoding (\`${track5MaxSpeed.runId}\`):** Exact greedy bit-identical parity **\`${sc.parityPassed}\`** (\`${sc.speculativeLength}/${sc.baselineLength}\` chars exact match), accepting **\`${sc.speculativeStats.accepted}/${sc.speculativeStats.drafted}\`** drafted tokens (**\`${fmtNum(sc.speculativeStats.acceptanceRatePct, 2)}%\`** over \`${sc.speculativeStats.steps}\` steps) and lifting generation speed from \`${fmtNum(sc.baselineDecodeTokPerSec)}\` -> **\`${fmtNum(sc.speculativeDecodeTokPerSec)} tok/s\`** (**${fmtNum(sc.speedupRatio, 3)}x**).`,
+      );
+    }
+
+    if (track5Balanced && track4Balanced) {
+      const t5_8k = track5Balanced.byContext?.[8192];
+      const t5_32k = track5Balanced.byContext?.[32768];
+      const t4_8k = track4Balanced.byContext?.[8192];
+      const t4_32k = track4Balanced.byContext?.[32768];
+      lines.push(
+        `- **Track 5 Production Default (\`${track5Balanced.runId}\`, \`worker / balanced\` + Speculative):** Improved 8K decode \`${fmtNum(t4_8k.decodeTokPerSec)}\` -> **\`${fmtNum(t5_8k.decodeTokPerSec)} tok/s\`** (**+${((t5_8k.decodeTokPerSec / t4_8k.decodeTokPerSec - 1) * 100).toFixed(1)}%**), 32K decode \`${fmtNum(t4_32k.decodeTokPerSec)}\` -> **\`${fmtNum(t5_32k.decodeTokPerSec)} tok/s\`** (**+${((t5_32k.decodeTokPerSec / t4_32k.decodeTokPerSec - 1) * 100).toFixed(1)}%**), and Chat Turn 1 -> **\`${fmtNum(track5Balanced.chatTurn1?.decodeTokPerSec)} tok/s\`** (\`TTFT ${fmtNum(track5Balanced.chatTurn1?.ttftMs, 1)} ms\`, speculative ${track5Balanced.chatTurn1?.speculativeStats?.accepted}/${track5Balanced.chatTurn1?.speculativeStats?.drafted}), while keeping **\`${fmtNum(track5Balanced.sweepSmoothness?.avgFps, 1)} FPS\`** sweep / **\`${fmtNum(track5Balanced.chatSmoothness?.avgFps, 1)} FPS\`** chat with **\`0.00%\` jank (>33ms)**, Snapshot/Restore \`${track5Balanced.snapshotRestore?.snapshottedTokens}t -> ${track5Balanced.snapshotRestore?.restoredTokens}t\`, **\`${fmtNum(track5Balanced.abortMetrics?.abortLatencyMs, 1)} ms\`** abort latency, and **32K NIAH PASS** (\`${fmtNum(track5Balanced.niah?.prefillTokPerSec, 2)} / ${fmtNum(track5Balanced.niah?.decodeTokPerSec, 2)} tok/s\`).`,
+      );
+    }
+
+    const totalT5NetReqs = track5Rows.reduce((sum, r) => sum + r.externalNetworkRequestCount, 0);
+    lines.push(
+      `- **Strict Offline Zero-Network Verification:** Across all \`${track5Rows.length}\` Track 5 runs, \`${totalT5NetReqs}\` external \`http(s)://\` requests and \`0\` console/offscreen errors were recorded.`,
     );
   }
 

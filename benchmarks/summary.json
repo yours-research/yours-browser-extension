@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-25T04:28:14.859Z",
+  "generatedAt": "2026-11-25T06:58:40.255Z",
   "hardware": {
     "vendor": "nvidia",
     "architecture": "ampere",
@@ -71,7 +71,22 @@
     "track4BalancedJankPct": 0,
     "track4BalancedAbortLatencyMs": 97.6,
     "track4BalancedNiahDecodeTokPerSec": 40.05826656961006,
-    "track4BalancedNiahPassed": true
+    "track4BalancedNiahPassed": true,
+    "track5RunCount": 2,
+    "track5MaxSpeedRunId": "23-track5-wgsl-max-speed-128k",
+    "track5MaxSpeed1kDecodeTokPerSec": 109.55152345031412,
+    "track5MaxSpeed32kDecodeTokPerSec": 74.05693126629374,
+    "track5MaxSpeed128kDecodeTokPerSec": 32.323232323232325,
+    "track5MaxSpeedPeakBandwidthPct": 28.68812501928806,
+    "track5SpeculativeTokPerSec": 114.83253588516747,
+    "track5SpeculativeSpeedup": 1.251,
+    "track5SpeculativeParityPassed": true,
+    "track5BalancedRunId": "24-track5-wgsl-worker-balanced-smoothness",
+    "track5Balanced8kDecodeTokPerSec": 60.41155370973194,
+    "track5Balanced32kDecodeTokPerSec": 41.19994850010389,
+    "track5BalancedChatDecodeTokPerSec": 78.28766552824743,
+    "track5BalancedSweepFps": 140.25,
+    "track5BalancedJankPct": 0
   },
   "coldLoadRows": [
     {
@@ -1236,6 +1251,104 @@
           "status": "ok"
         }
       }
+    },
+    {
+      "runId": "23-track5-wgsl-max-speed-128k",
+      "track": "track5-speed",
+      "label": "Track 5 WGSL Speedups (Zero-Barrier Factored GEMV + Fused Dispatches + 4H GQA + Speculative Parity)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 109.55152345031412,
+      "peakBandwidthPct": 28.68812501928806,
+      "speedupVsBaseline1k": 8.042793564459945,
+      "speedupVsBaseline64k": 16.419613307850028,
+      "niahPassed": true,
+      "niahTtftMs": 99947.60000000149,
+      "niahDecodeTokPerSec": 62.3229461756374,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": 506.95578989096265,
+          "decodeTokPerSec": 109.55152345031412,
+          "kvCacheMb": 16.7578125,
+          "estVramMb": 2576.9259033203125,
+          "bandwidthUtilizationPct": 28.68812501928806,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": 501.03362650000446,
+          "decodeTokPerSec": 97.1758275126863,
+          "kvCacheMb": 130.5078125,
+          "estVramMb": 2690.6759033203125,
+          "bandwidthUtilizationPct": 25.447316483929033,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 393.1142620289764,
+          "decodeTokPerSec": 74.05693126629374,
+          "kvCacheMb": 520.5078125,
+          "estVramMb": 3080.6759033203125,
+          "bandwidthUtilizationPct": 19.393199070169263,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": 290.1205574514925,
+          "decodeTokPerSec": 55.73941822003934,
+          "kvCacheMb": 1040.5078125,
+          "estVramMb": 3600.6759033203125,
+          "bandwidthUtilizationPct": 14.59641407108416,
+          "status": "ok"
+        },
+        "98304": {
+          "prefillTokPerSec": 229.08496282705985,
+          "decodeTokPerSec": 43.70987570017443,
+          "kvCacheMb": 1560.5078125,
+          "estVramMb": 4120.6759033203125,
+          "bandwidthUtilizationPct": 11.446252312802043,
+          "status": "ok"
+        },
+        "131072": {
+          "prefillTokPerSec": 176.93077640068063,
+          "decodeTokPerSec": 32.323232323232325,
+          "kvCacheMb": 2080.5078125,
+          "estVramMb": 4640.6759033203125,
+          "bandwidthUtilizationPct": 8.464445775936154,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "24-track5-wgsl-worker-balanced-smoothness",
+      "track": "track5-speed",
+      "label": "Track 5 WGSL Speedups (Dedicated Worker, Balanced Default + Speculative + Extended Suite)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 60.41155370973194,
+      "peakBandwidthPct": 15.819900544059992,
+      "speedupVsBaseline1k": null,
+      "speedupVsBaseline64k": null,
+      "niahPassed": true,
+      "niahTtftMs": 108267.89999999851,
+      "niahDecodeTokPerSec": 40.366972477064216,
+      "byContext": {
+        "8192": {
+          "prefillTokPerSec": 324.90273145156175,
+          "decodeTokPerSec": 60.41155370973194,
+          "kvCacheMb": 130.5078125,
+          "estVramMb": 2690.6759033203125,
+          "bandwidthUtilizationPct": 15.819900544059992,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 258.8025485353458,
+          "decodeTokPerSec": 41.19994850010389,
+          "kvCacheMb": 520.5078125,
+          "estVramMb": 3080.6759033203125,
+          "bandwidthUtilizationPct": 10.788980710937079,
+          "status": "ok"
+        }
+      }
     }
   ],
   "track3Rows": [
@@ -1589,6 +1702,7 @@
       "abortMetrics": null,
       "sweepSmoothness": null,
       "chatSmoothness": null,
+      "speculativeCheck": null,
       "externalNetworkRequestCount": 0,
       "errorCount": 0,
       "status": "ok"
@@ -1680,6 +1794,202 @@
         "avgInputLatencyMs": 3.72,
         "frameCount": 222
       },
+      "speculativeCheck": null,
+      "externalNetworkRequestCount": 0,
+      "errorCount": 0,
+      "status": "ok"
+    }
+  ],
+  "track5Rows": [
+    {
+      "runId": "23-track5-wgsl-max-speed-128k",
+      "label": "Track 5 WGSL Speedups (Zero-Barrier Factored GEMV + Fused Dispatches + 4H GQA + Speculative Parity)",
+      "executionHost": "worker",
+      "gpuPacingMode": "max-speed",
+      "coldLoadMs": 6969.39999999851,
+      "loadSource": "bundled",
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": 506.95578989096265,
+          "decodeTokPerSec": 109.55152345031412,
+          "bandwidthUtilizationPct": 28.68812501928806
+        },
+        "8192": {
+          "prefillTokPerSec": 501.03362650000446,
+          "decodeTokPerSec": 97.1758275126863,
+          "bandwidthUtilizationPct": 25.447316483929033
+        },
+        "32768": {
+          "prefillTokPerSec": 393.1142620289764,
+          "decodeTokPerSec": 74.05693126629374,
+          "bandwidthUtilizationPct": 19.393199070169263
+        },
+        "65536": {
+          "prefillTokPerSec": 290.1205574514925,
+          "decodeTokPerSec": 55.73941822003934,
+          "bandwidthUtilizationPct": 14.59641407108416
+        },
+        "98304": {
+          "prefillTokPerSec": 229.08496282705985,
+          "decodeTokPerSec": 43.70987570017443,
+          "bandwidthUtilizationPct": 11.446252312802043
+        },
+        "131072": {
+          "prefillTokPerSec": 176.93077640068063,
+          "decodeTokPerSec": 32.323232323232325,
+          "bandwidthUtilizationPct": 8.464445775936154
+        }
+      },
+      "peakDecodeTokPerSec": 109.55152345031412,
+      "peakBandwidthPct": 28.68812501928806,
+      "niah": {
+        "targetTokens": 32768,
+        "actualTokens": 32768,
+        "needleDepthPct": 0.5,
+        "passkey": "VELVET-ORBIT-7492",
+        "responseText": "VELVET-ORBIT-7492",
+        "passed": true,
+        "ttftMs": 99947.60000000149,
+        "prefillTokPerSec": 327.8517943402294,
+        "decodeTokPerSec": 62.3229461756374
+      },
+      "chatTurn1": {
+        "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+        "responseText": "* **Enhanced Privacy**: Data never leaves the user's device, ensuring complete confidentiality for sensitive inputs and outputs.\n* **Reduced Latency**: Local execution eliminates network round-trips, enabling near-instantaneous response times.\n* **Lower Costs**: Running models on-device removes the need for expensive cloud API subscriptions or server infrastructure.\n* **Improved Reliability**: The application remains functional even when the internet connection is unavailable or unstable.",
+        "responseLength": 493,
+        "ttftMs": 118.80000000074506,
+        "prefillTokPerSec": 292.5531914874294,
+        "decodeTokPerSec": 91.70731707317074,
+        "activeContextTokens": 127,
+        "prefixReused": false,
+        "estVramMb": 2562.1834716796875,
+        "speculativeStats": null
+      },
+      "turn2": null,
+      "snapshotRestore": null,
+      "abortMetrics": null,
+      "sweepSmoothness": null,
+      "chatSmoothness": null,
+      "speculativeCheck": {
+        "prompt": "Rewrite and clean up the following config bullet list verbatim in Markdown, keeping every field name and exact numeric limit unchanged:\n- maxBufferSize: 2147483648\n- maxStorageBufferBindingSize: 2147483644\n- workers: DedicatedWorker (es module)\n- kvCacheMode: int8 (131072 context)\n- weightShards: 21 parts (<= 128 MiB each)\n- decodePacing: balanced (144Hz smooth compositor)",
+        "parityPassed": true,
+        "baselineDecodeTokPerSec": 91.76942930905756,
+        "speculativeDecodeTokPerSec": 114.83253588516747,
+        "speedupRatio": 1.251,
+        "speculativeStats": {
+          "drafted": 78,
+          "accepted": 74,
+          "steps": 20,
+          "acceptanceRatePct": 94.87179487179486
+        },
+        "baselineLength": 239,
+        "speculativeLength": 239,
+        "responsePreview": "- maxBufferSize: 2147483648\n- maxStorageBufferBindingSize: 2147483644\n- workers: DedicatedWorker (es module)\n- kvCacheMode: int8 (131072 context)\n- weightShards: 21 parts (<= 128 MiB each)\n- decodePac"
+      },
+      "externalNetworkRequestCount": 0,
+      "errorCount": 0,
+      "status": "ok"
+    },
+    {
+      "runId": "24-track5-wgsl-worker-balanced-smoothness",
+      "label": "Track 5 WGSL Speedups (Dedicated Worker, Balanced Default + Speculative + Extended Suite)",
+      "executionHost": "worker",
+      "gpuPacingMode": "balanced",
+      "coldLoadMs": 7240.10000000149,
+      "loadSource": "bundled",
+      "byContext": {
+        "8192": {
+          "prefillTokPerSec": 324.90273145156175,
+          "decodeTokPerSec": 60.41155370973194,
+          "bandwidthUtilizationPct": 15.819900544059992
+        },
+        "32768": {
+          "prefillTokPerSec": 258.8025485353458,
+          "decodeTokPerSec": 41.19994850010389,
+          "bandwidthUtilizationPct": 10.788980710937079
+        }
+      },
+      "peakDecodeTokPerSec": 60.41155370973194,
+      "peakBandwidthPct": 15.819900544059992,
+      "niah": {
+        "targetTokens": 32768,
+        "actualTokens": 32768,
+        "needleDepthPct": 0.5,
+        "passkey": "VELVET-ORBIT-7492",
+        "responseText": "VELVET-ORBIT-7492",
+        "passed": true,
+        "ttftMs": 108267.89999999851,
+        "prefillTokPerSec": 302.6572098603655,
+        "decodeTokPerSec": 40.366972477064216
+      },
+      "chatTurn1": {
+        "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+        "responseText": "* **Enhanced Privacy**: Data never leaves the user's device, ensuring complete confidentiality for sensitive inputs and outputs.\n* **Reduced Latency**: Local execution eliminates network round-trips, enabling near-instantaneous response times.\n* **Lower Costs**: Running models on-device removes the need for expensive cloud API subscriptions or server infrastructure.\n* **Improved Reliability**: The application remains functional even when the internet connection is unavailable or unstable.",
+        "responseLength": 493,
+        "ttftMs": 162.40000000223517,
+        "prefillTokPerSec": 227.58620689655174,
+        "decodeTokPerSec": 78.28766552824743,
+        "activeContextTokens": 127,
+        "prefixReused": false,
+        "estVramMb": 2562.1834716796875,
+        "speculativeStats": {
+          "drafted": 12,
+          "accepted": 4,
+          "steps": 3,
+          "acceptanceRatePct": 33.33333333333333
+        }
+      },
+      "turn2": {
+        "prompt": "Summarize bullet 1 in one short sentence.",
+        "responseText": "Running locally ensures all data stays private on the user's device.",
+        "responseLength": 68,
+        "ttftMs": 131.19999999925494,
+        "prefillTokPerSec": 191.71779140775672,
+        "decodeTokPerSec": 74.58405048734613,
+        "activeContextTokens": 165,
+        "prefixReused": true,
+        "estVramMb": 2562.7864990234375,
+        "speculativeStats": {
+          "drafted": 4,
+          "accepted": 1,
+          "steps": 1,
+          "acceptanceRatePct": 25
+        }
+      },
+      "snapshotRestore": {
+        "snapshottedTokens": 165,
+        "restoredTokens": 165,
+        "passed": true
+      },
+      "abortMetrics": {
+        "stoppedCleanly": true,
+        "abortLatencyMs": 99.34,
+        "preservedPartialChars": 39,
+        "partialPreview": "# The Architecture of Parallelism: A De"
+      },
+      "sweepSmoothness": {
+        "avgFps": 140.25,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 7.3,
+        "p99FrameMs": 17.6,
+        "maxFrameMs": 34.6,
+        "jankPctOver33ms": 0,
+        "freezePctOver100ms": 0,
+        "avgInputLatencyMs": 3.94,
+        "frameCount": 21502
+      },
+      "chatSmoothness": {
+        "avgFps": 142.72,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 8.1,
+        "p99FrameMs": 11,
+        "maxFrameMs": 28.4,
+        "jankPctOver33ms": 0,
+        "freezePctOver100ms": 0,
+        "avgInputLatencyMs": 4.19,
+        "frameCount": 315
+      },
+      "speculativeCheck": null,
       "externalNetworkRequestCount": 0,
       "errorCount": 0,
       "status": "ok"
