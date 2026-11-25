@@ -1,0 +1,229 @@
+import type { GpuPacingMode } from '../shared/protocol.ts';
+
+/**
+ * Policy parameters governing WebGPU command pacing, prefill chunking,
+ * per-decode layer splitting, and UI breathers to prevent desktop frame freezes.
+ */
+export interface GpuPacingPolicy {
+  mode: GpuPacingMode;
+  prefillChunkShort: number;
+  prefillChunkLong: number;
+  prefillLongThreshold: number;
+  prefillBurstBudgetMs: number;
+  prefillBreatherMs: number;
+  decodeSplitsShort: 1 | 2 | 4;
+  decodeSplitsLong: 1 | 2 | 4;
+  decodeLongThreshold: number;
+  decodeSlowStepThresholdMs: number;
+  decodeSliceBreatherMs: number;
+  decodePostStepRatio: number;
+  decodePostStepMinMs: number;
+  decodePostStepMaxMs: number;
+  loadChunkYieldMs: number;
+}
+
+const GPU_PACING_POLICIES: Record<GpuPacingMode, GpuPacingPolicy> = {
+  'max-speed': {
+    mode: 'max-speed',
+    prefillChunkShort: 64,
+    prefillChunkLong: 64,
+    prefillLongThreshold: 16384,
+    prefillBurstBudgetMs: Number.POSITIVE_INFINITY,
+    prefillBreatherMs: 0,
+    decodeSplitsShort: 1,
+    decodeSplitsLong: 1,
+    decodeLongThreshold: 16384,
+    decodeSlowStepThresholdMs: Number.POSITIVE_INFINITY,
+    decodeSliceBreatherMs: 0,
+    decodePostStepRatio: 0,
+    decodePostStepMinMs: 0,
+    decodePostStepMaxMs: 0,
+    loadChunkYieldMs: 0,
+  },
+  balanced: {
+    mode: 'balanced',
+    prefillChunkShort: 32,
+    prefillChunkLong: 16,
+    prefillLongThreshold: 16384,
+    prefillBurstBudgetMs: 8,
+    prefillBreatherMs: 4,
+    decodeSplitsShort: 1,
+    decodeSplitsLong: 2,
+    decodeLongThreshold: 16384,
+    decodeSlowStepThresholdMs: 11,
+    decodeSliceBreatherMs: 2,
+    decodePostStepRatio: 0.22,
+    decodePostStepMinMs: 2,
+    decodePostStepMaxMs: 6,
+    loadChunkYieldMs: 1,
+  },
+  'smooth-ui': {
+    mode: 'smooth-ui',
+    prefillChunkShort: 16,
+    prefillChunkLong: 16,
+    prefillLongThreshold: 8192,
+    prefillBurstBudgetMs: 6,
+    prefillBreatherMs: 8,
+    decodeSplitsShort: 2,
+    decodeSplitsLong: 4,
+    decodeLongThreshold: 8192,
+    decodeSlowStepThresholdMs: 8,
+    decodeSliceBreatherMs: 3,
+    decodePostStepRatio: 0.45,
+    decodePostStepMinMs: 4,
+    decodePostStepMaxMs: 12,
+    loadChunkYieldMs: 4,
+  },
+};
+
+/** Returns a shallow copy of the GPU pacing policy for the given mode. */
+export function getGpuPacingPolicy(mode: GpuPacingMode): GpuPacingPolicy {
+  const policy = GPU_PACING_POLICIES[mode] ?? GPU_PACING_POLICIES.balanced;
+  return { ...policy };
+}
+
+/** Selects the prefill chunk token limit (clamped to `[1, 64]`) for the active pacing mode. */
+export function selectPrefillChunkSize(
+  mode: GpuPacingMode,
+  currentSeqPos: number,
+  requestedChunkSize?: number,
+): number {
+  const policy = getGpuPacingPolicy(mode);
+  if (policy.mode === 'max-speed') {
+    return Math.max(1, Math.min(64, requestedChunkSize || 64));
+  }
+  const limit =
+    currentSeqPos >= policy.prefillLongThreshold
+      ? policy.prefillChunkLong
+      : policy.prefillChunkShort;
+  if (requestedChunkSize && requestedChunkSize > 0) {
+    return Math.max(1, Math.min(64, Math.min(limit, requestedChunkSize)));
+  }
+  return Math.max(1, Math.min(64, limit));
+}
+
+/** Selects how many GPU command-submission slices a single decode step should be split across. */
+export function selectDecodeSliceCount(
+  mode: GpuPacingMode,
+  currentSeqPos: number,
+  lastStepGpuMs: number,
+): 1 | 2 | 4 {
+  const policy = getGpuPacingPolicy(mode);
+  if (policy.mode === 'max-speed') {
+    return 1;
+  }
+  if (
+    currentSeqPos >= policy.decodeLongThreshold ||
+    lastStepGpuMs >= policy.decodeSlowStepThresholdMs
+  ) {
+    return policy.decodeSplitsLong;
+  }
+  return policy.decodeSplitsShort;
+}
+
+/** Computes the post-decode-step breather duration in milliseconds to let the browser composite frames. */
+export function computeDecodePostStepBreatherMs(
+  mode: GpuPacingMode,
+  stepGpuMs: number,
+): number {
+  const policy = getGpuPacingPolicy(mode);
+  if (policy.mode === 'max-speed' || policy.decodePostStepMaxMs <= 0) {
+    return 0;
+  }
+  const safeStepMs = Number.isFinite(stepGpuMs) && stepGpuMs > 0 ? stepGpuMs : 0;
+  return Math.min(
+    policy.decodePostStepMaxMs,
+    Math.max(policy.decodePostStepMinMs, Math.round(safeStepMs * policy.decodePostStepRatio)),
+  );
+}
+
+/** Computes whether an accumulated prefill GPU burst should pause for a UI breather and reset its counter. */
+export function computePrefillSliceBreatherMs(
+  mode: GpuPacingMode,
+  cumulativeBurstMs: number,
+): { breatherMs: number; nextBurstMs: number } {
+  const policy = getGpuPacingPolicy(mode);
+  if (cumulativeBurstMs >= policy.prefillBurstBudgetMs && policy.prefillBreatherMs > 0) {
+    return { breatherMs: policy.prefillBreatherMs, nextBurstMs: 0 };
+  }
+  return { breatherMs: 0, nextBurstMs: cumulativeBurstMs };
+}
+
+/**
+ * Partitions `[0, totalSteps)` along layer boundaries into contiguous, non-empty
+ * decode step slices so each slice aligns cleanly with whole transformer layers.
+ */
+export function computeDecodeSliceBounds(
+  layerEndStepIndices: number[],
+  numSlices: 1 | 2 | 4,
+): Array<{ start: number; end: number }> {
+  const layerCount = layerEndStepIndices.length;
+  if (layerCount === 0) {
+    return [];
+  }
+  const totalSteps = layerEndStepIndices[layerCount - 1];
+  if (!Number.isFinite(totalSteps) || totalSteps <= 0) {
+    return [];
+  }
+  if (numSlices === 1 || layerCount === 1) {
+    return [{ start: 0, end: totalSteps }];
+  }
+
+  const splitLayerIndices =
+    numSlices === 2
+      ? [Math.floor(layerCount / 2) - 1]
+      : [
+          Math.floor(layerCount / 4) - 1,
+          Math.floor(layerCount / 2) - 1,
+          Math.floor((3 * layerCount) / 4) - 1,
+        ];
+
+  const bounds: Array<{ start: number; end: number }> = [];
+  let start = 0;
+  for (const layerIdx of splitLayerIndices) {
+    if (layerIdx < 0 || layerIdx >= layerCount) {
+      continue;
+    }
+    const end = layerEndStepIndices[layerIdx];
+    if (end > start && end < totalSteps) {
+      bounds.push({ start, end });
+      start = end;
+    }
+  }
+  if (start < totalSteps) {
+    bounds.push({ start, end: totalSteps });
+  }
+  return bounds;
+}
+
+/** Async timer helper that avoids scheduling macrotasks when `ms <= 0`. */
+export function sleepMs(ms: number): Promise<void> {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Resolves an extension-relative asset path across workers, offscreen documents,
+ * explicit asset base URLs, and plain test environments.
+ */
+export function resolveExtensionAssetUrl(relativePath: string, assetBaseUrl?: string): string {
+  const cleanPath = relativePath.replace(/^\/+/, '');
+  const trimmedBase = assetBaseUrl?.trim();
+  if (trimmedBase) {
+    const normalizedBase = trimmedBase.endsWith('/') ? trimmedBase : `${trimmedBase}/`;
+    try {
+      return new URL(cleanPath, normalizedBase).href;
+    } catch {
+      return `${normalizedBase}${cleanPath}`;
+    }
+  }
+  if (typeof chrome !== 'undefined' && typeof chrome.runtime?.getURL === 'function') {
+    return chrome.runtime.getURL(cleanPath);
+  }
+  if (typeof self !== 'undefined' && self.location?.origin && self.location.origin !== 'null') {
+    return `${self.location.origin}/${cleanPath}`;
+  }
+  return `/${cleanPath}`;
+}

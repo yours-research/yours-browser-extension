@@ -1,0 +1,1409 @@
+{
+  "generatedAt": "2026-11-24T23:48:57.939Z",
+  "hardware": {
+    "vendor": "nvidia",
+    "architecture": "ampere",
+    "gpuModelNote": "NVIDIA GeForce RTX 3090 (936 GB/s theoretical memory bandwidth)",
+    "theoreticalBandwidthGBs": 936,
+    "features": {
+      "shaderF16": true,
+      "subgroups": true
+    },
+    "grantedLimits": {
+      "maxBufferSize": 2147483648,
+      "maxStorageBufferBindingSize": 2147483644
+    }
+  },
+  "phase0OpfsSpike": {
+    "writeMs": 12137.5,
+    "writeMBs": 210.91658084449023,
+    "verifyMs": 1367.9000000953674,
+    "verifyMBs": 1871.4818333368826,
+    "totalBytes": 2684354560,
+    "quotaBytes": 91118308530
+  },
+  "phase1ChatCheck": {
+    "firstDownloadAndCompileMs": 773122.7999999523,
+    "warmReopenReady": true,
+    "stopAbortClean": null
+  },
+  "highlights": {
+    "baselinePeakDecodeTokPerSec": 13.621078618057288,
+    "bestTrack1RunId": "07-ort-chunk-2048",
+    "bestTrack1PeakDecodeTokPerSec": 17.60563380374065,
+    "bestTrack1PeakBandwidthPct": 5.022119899143966,
+    "bestTrack2RunId": "13-wgsl-q4-subgroups-f16-int8kv",
+    "bestTrack2PeakDecodeTokPerSec": 75.24100631471647,
+    "bestTrack2PeakBandwidthPct": 21.125308018443853,
+    "bestTrack2RealRunId": "16-wgsl-real-int8kv-128k",
+    "bestTrack2RealPeakDecodeTokPerSec": 73.9143824960748,
+    "bestTrack2RealPeakBandwidthPct": 19.355869996025973,
+    "fastestTrack1ReloadMs": 5921.200000047684,
+    "fastestTrack2OpfsLoadMs": 3141.600000143051,
+    "fastestTrack2RealLoadMs": 4711.100000143051,
+    "track3RunCount": 4,
+    "track3DefaultRunId": "19-track3-worker-balanced",
+    "track3DefaultLoadMs": 8128.299999952316,
+    "track3DefaultSweepFps": 143.99,
+    "track3DefaultSweepP99Ms": 7.3,
+    "track3DefaultSweepMaxStallMs": 20.8,
+    "track3DefaultJankPct": 0,
+    "track3DefaultChatFps": 143.48,
+    "track3DefaultNiahPassed": true,
+    "track3DefaultAbortLatencyMs": 106.35,
+    "track3MainthreadRunId": "17-track3-mainthread-max-speed",
+    "track3MainthreadSweepFps": 142.5,
+    "track3MainthreadMaxStallMs": 35.5,
+    "track3SmoothUiRunId": "20-track3-worker-smooth-ui",
+    "track3SmoothUiSweepFps": 143.99
+  },
+  "coldLoadRows": [
+    {
+      "runId": "00-baseline-ort-default",
+      "track": "Baseline ORT",
+      "configSummary": "asyncify, fastOpfsLoad=false, graphOpt=all",
+      "reloadMs": 14172,
+      "opfsReadMs": null,
+      "tokenizerMs": null,
+      "modelLoadMs": null,
+      "speedupVsBaseline": 1
+    },
+    {
+      "runId": "01-ort-js-fastpath",
+      "track": "Track 1 ORT",
+      "configSummary": "asyncify, fastOpfs=false, graphOpt=all",
+      "reloadMs": 13322.900000095367,
+      "opfsReadMs": 257.6000008583069,
+      "tokenizerMs": 782.4000000953674,
+      "modelLoadMs": 12540.200000047684,
+      "speedupVsBaseline": 1.0637323705723645
+    },
+    {
+      "runId": "02-ort-fast-opfs-load",
+      "track": "Track 1 ORT",
+      "configSummary": "asyncify, fastOpfs=true, graphOpt=all",
+      "reloadMs": 6446.900000095367,
+      "opfsReadMs": 88.89999985694885,
+      "tokenizerMs": 908.9000000953674,
+      "modelLoadMs": 5537.599999904633,
+      "speedupVsBaseline": 2.1982658331586276
+    },
+    {
+      "runId": "03-ort-wasm-jspi",
+      "track": "Track 1 ORT",
+      "configSummary": "jspi, fastOpfs=true, graphOpt=all",
+      "reloadMs": 6144.200000047684,
+      "opfsReadMs": 88.79999995231628,
+      "tokenizerMs": 811.5,
+      "modelLoadMs": 5332.399999856949,
+      "speedupVsBaseline": 2.306565541468379
+    },
+    {
+      "runId": "04-ort-ep-bucket-wgpuonly",
+      "track": "Track 1 ORT",
+      "configSummary": "asyncify, fastOpfs=true, graphOpt=all",
+      "reloadMs": 7242.700000047684,
+      "opfsReadMs": 78.99999952316284,
+      "tokenizerMs": 825.8000001907349,
+      "modelLoadMs": 6416.699999809265,
+      "speedupVsBaseline": 1.9567288442026725
+    },
+    {
+      "runId": "05-ort-graph-opt-basic",
+      "track": "Track 1 ORT",
+      "configSummary": "asyncify, fastOpfs=true, graphOpt=basic",
+      "reloadMs": 5921.200000047684,
+      "opfsReadMs": 75.59999942779541,
+      "tokenizerMs": 794.3999998569489,
+      "modelLoadMs": 5126.600000143051,
+      "speedupVsBaseline": 2.393433763407058
+    },
+    {
+      "runId": "06-ort-chunk-1024",
+      "track": "Track 1 ORT",
+      "configSummary": "jspi, fastOpfs=true, graphOpt=all",
+      "reloadMs": 6000.799999952316,
+      "opfsReadMs": 67.40000009536743,
+      "tokenizerMs": 729.2999999523163,
+      "modelLoadMs": 5271.400000095367,
+      "speedupVsBaseline": 2.361685108670946
+    },
+    {
+      "runId": "07-ort-chunk-2048",
+      "track": "Track 1 ORT",
+      "configSummary": "jspi, fastOpfs=true, graphOpt=all",
+      "reloadMs": 6000.799999952316,
+      "opfsReadMs": 67.40000009536743,
+      "tokenizerMs": 729.2999999523163,
+      "modelLoadMs": 5271.400000095367,
+      "speedupVsBaseline": 2.361685108670946
+    },
+    {
+      "runId": "08-ort-ceiling-128k-and-niah",
+      "track": "Track 1 ORT",
+      "configSummary": "jspi, fastOpfs=true, graphOpt=all",
+      "reloadMs": 6000.799999952316,
+      "opfsReadMs": 67.40000009536743,
+      "tokenizerMs": 729.2999999523163,
+      "modelLoadMs": 5271.400000095367,
+      "speedupVsBaseline": 2.361685108670946
+    },
+    {
+      "runId": "track2-opfs-16mib",
+      "track": "Track 2 WGSL",
+      "configSummary": "Direct OPFS File.slice() -> GPUQueue.writeBuffer (16 MiB chunk)",
+      "reloadMs": 3141.600000143051,
+      "opfsReadMs": 3141.600000143051,
+      "tokenizerMs": 0,
+      "modelLoadMs": 3141.600000143051,
+      "throughputMBs": 814.8714030695925,
+      "speedupVsBaseline": 4.511077157930572
+    },
+    {
+      "runId": "track2-opfs-32mib",
+      "track": "Track 2 WGSL",
+      "configSummary": "Direct OPFS File.slice() -> GPUQueue.writeBuffer (32 MiB chunk)",
+      "reloadMs": 3219.5,
+      "opfsReadMs": 3219.5,
+      "tokenizerMs": 0,
+      "modelLoadMs": 3219.5,
+      "throughputMBs": 795.1545271004815,
+      "speedupVsBaseline": 4.401925764870321
+    },
+    {
+      "runId": "track2-opfs-64mib",
+      "track": "Track 2 WGSL",
+      "configSummary": "Direct OPFS File.slice() -> GPUQueue.writeBuffer (64 MiB chunk)",
+      "reloadMs": 3294,
+      "opfsReadMs": 3294,
+      "tokenizerMs": 0,
+      "modelLoadMs": 3294,
+      "throughputMBs": 777.170613236187,
+      "speedupVsBaseline": 4.302367941712204
+    },
+    {
+      "runId": "14-wgsl-real-chat-and-load",
+      "track": "Track 2 WGSL (Real)",
+      "configSummary": "Real Qwen3.5-4B OPFS slabs -> WebGPU (int8 KV)",
+      "reloadMs": 4980.599999904633,
+      "opfsReadMs": 3830.100000143051,
+      "tokenizerMs": 817.4000000953674,
+      "modelLoadMs": 8.599999904632568,
+      "speedupVsBaseline": 2.8454403084510624
+    },
+    {
+      "runId": "15-wgsl-real-fp16kv",
+      "track": "Track 2 WGSL (Real)",
+      "configSummary": "Real Qwen3.5-4B OPFS slabs -> WebGPU (fp16 KV)",
+      "reloadMs": 4975.400000095367,
+      "opfsReadMs": 3639.9000000953674,
+      "tokenizerMs": 768.6999998092651,
+      "modelLoadMs": 237.30000019073486,
+      "speedupVsBaseline": 2.8484141977988413
+    },
+    {
+      "runId": "16-wgsl-real-int8kv-128k",
+      "track": "Track 2 WGSL (Real)",
+      "configSummary": "Real Qwen3.5-4B OPFS slabs -> WebGPU (int8 KV)",
+      "reloadMs": 4711.100000143051,
+      "opfsReadMs": 3544.2000000476837,
+      "tokenizerMs": 770.7999999523163,
+      "modelLoadMs": 14.5,
+      "speedupVsBaseline": 3.0082146419243214
+    }
+  ],
+  "kernelCorrectness": [
+    {
+      "kernel": "q4-scalar",
+      "passed": true,
+      "maxAbsError": 0,
+      "details": "maxAbsError=0.00e+0 (tol=0.001)"
+    },
+    {
+      "kernel": "q4-vec4-f16",
+      "passed": true,
+      "maxAbsError": 0.0004417002201080322,
+      "details": "maxAbsError=4.42e-4 (tol=0.02)"
+    },
+    {
+      "kernel": "q4-subgroups-f16",
+      "passed": true,
+      "maxAbsError": 0.0009700953960418701,
+      "details": "maxAbsError=9.70e-4 (tol=0.02)"
+    },
+    {
+      "kernel": "deltanet_step",
+      "passed": true,
+      "maxAbsError": 5.21540641784668e-8,
+      "details": "2-step recurrent maxAbsError=5.22e-8"
+    },
+    {
+      "kernel": "gqa_fp16_step",
+      "passed": true,
+      "maxAbsError": 0.000037223100662231445,
+      "details": "40-step Split-8 GQA maxAbsError=3.72e-5 (tol=0.01)"
+    },
+    {
+      "kernel": "gqa_int8_step",
+      "passed": true,
+      "maxAbsError": 0.0004385411739349365,
+      "details": "40-step Split-8 GQA maxAbsError=4.39e-4 (tol=0.05)"
+    },
+    {
+      "kernel": "argmax_vocab_248k",
+      "passed": true,
+      "maxAbsError": 0,
+      "details": "expected=173421, got=173421"
+    }
+  ],
+  "matrixRows": [
+    {
+      "runId": "00-baseline-ort-default",
+      "track": "baseline",
+      "label": "Baseline ORT WebGPU (asyncify, setTimeout yield, standard decode & OPFS stream)",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 13.621078618057288,
+      "peakBandwidthPct": 3.885499990407367,
+      "speedupVsBaseline1k": 1,
+      "speedupVsBaseline64k": 1,
+      "niahPassed": true,
+      "niahTtftMs": 56281.40000009537,
+      "niahDecodeTokPerSec": 4.693032979031716,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": 920.6977161986133,
+          "decodeTokPerSec": 13.621078618057288,
+          "kvCacheMb": 33,
+          "estVramMb": 2792.205,
+          "bandwidthUtilizationPct": 3.885499990407367,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": 861.3003616745448,
+          "decodeTokPerSec": 13.348907057969077,
+          "kvCacheMb": 257,
+          "estVramMb": 3016.205,
+          "bandwidthUtilizationPct": 3.8078613082027175,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 563.6225407730739,
+          "decodeTokPerSec": 6.334501256942801,
+          "kvCacheMb": 1025,
+          "estVramMb": 3784.205,
+          "bandwidthUtilizationPct": 1.806957089320222,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": 386.83614358585663,
+          "decodeTokPerSec": 3.3946851959900277,
+          "kvCacheMb": 2049,
+          "estVramMb": 4808.205,
+          "bandwidthUtilizationPct": 0.9683557129586937,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "01-ort-js-fastpath",
+      "track": "track1-ort",
+      "label": "ORT WebGPU + JS Fast Decode Path (yield=none, float16 LUT argmax, pooled mask)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 14.166814237947372,
+      "peakBandwidthPct": 4.041174574286269,
+      "speedupVsBaseline1k": 1.0400655216222459,
+      "speedupVsBaseline64k": 0.8241748633879782,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": 677.8314688341023,
+          "decodeTokPerSec": 14.166814237947372,
+          "kvCacheMb": 33,
+          "estVramMb": 2792.205,
+          "bandwidthUtilizationPct": 4.041174574286269,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": 868.8734978778181,
+          "decodeTokPerSec": 13.496984267034808,
+          "kvCacheMb": 257,
+          "estVramMb": 3016.205,
+          "bandwidthUtilizationPct": 3.8501012813015962,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 559.9520158311309,
+          "decodeTokPerSec": 6.314377047298846,
+          "kvCacheMb": 1025,
+          "estVramMb": 3784.205,
+          "bandwidthUtilizationPct": 1.8012165295179399,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": 373.18018004197467,
+          "decodeTokPerSec": 2.797814207650273,
+          "kvCacheMb": 2049,
+          "estVramMb": 4808.205,
+          "bandwidthUtilizationPct": 0.7980944374386998,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "02-ort-fast-opfs-load",
+      "track": "track1-ort",
+      "label": "ORT WebGPU + Fast OPFS Load (arrayBuffer direct path)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 13.759889921444895,
+      "peakBandwidthPct": 3.92509680451473,
+      "speedupVsBaseline1k": 0.9741261351512562,
+      "speedupVsBaseline64k": null,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": 681.7122694244592,
+          "decodeTokPerSec": 13.26864867079956,
+          "kvCacheMb": 33,
+          "estVramMb": 2792.205,
+          "bandwidthUtilizationPct": 3.784967088785772,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": 887.2138107214449,
+          "decodeTokPerSec": 13.759889921444895,
+          "kvCacheMb": 257,
+          "estVramMb": 3016.205,
+          "bandwidthUtilizationPct": 3.92509680451473,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "03-ort-wasm-jspi",
+      "track": "track1-ort",
+      "label": "ORT WebGPU + JSPI WASM Build + JS Fast Decode",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 15.719408556884824,
+      "peakBandwidthPct": 4.484062056290863,
+      "speedupVsBaseline1k": 1.1265464659457651,
+      "speedupVsBaseline64k": 0.8549648091602904,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": 699.9794928567453,
+          "decodeTokPerSec": 15.344777979541865,
+          "kvCacheMb": 33,
+          "estVramMb": 2792.205,
+          "bandwidthUtilizationPct": 4.377196282625724,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": 886.7624294901709,
+          "decodeTokPerSec": 15.719408556884824,
+          "kvCacheMb": 257,
+          "estVramMb": 3016.205,
+          "bandwidthUtilizationPct": 4.484062056290863,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 568.385630778304,
+          "decodeTokPerSec": 6.684073107049609,
+          "kvCacheMb": 1025,
+          "estVramMb": 3784.205,
+          "bandwidthUtilizationPct": 1.9066747004083822,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": 374.16900179741026,
+          "decodeTokPerSec": 2.902336380748877,
+          "kvCacheMb": 2049,
+          "estVramMb": 4808.205,
+          "bandwidthUtilizationPct": 0.8279100573290064,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "04-ort-ep-bucket-wgpuonly",
+      "track": "track1-ort",
+      "label": "ORT WebGPU EP Tuned (bucket cache, wgpuOnly validation, fp32Accum=false)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 11.467889907864944,
+      "peakBandwidthPct": 3.27128910833327,
+      "speedupVsBaseline1k": 0.831316348262822,
+      "speedupVsBaseline64k": 0.72734778281567,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": 576.2521102982555,
+          "decodeTokPerSec": 11.32342533616419,
+          "kvCacheMb": 33,
+          "estVramMb": 2792.205,
+          "bandwidthUtilizationPct": 3.2300796632006823,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": 841.629424153696,
+          "decodeTokPerSec": 11.467889907864944,
+          "kvCacheMb": 257,
+          "estVramMb": 3016.205,
+          "bandwidthUtilizationPct": 3.27128910833327,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 554.1893999104723,
+          "decodeTokPerSec": 6.1241674959251275,
+          "kvCacheMb": 1025,
+          "estVramMb": 3784.205,
+          "bandwidthUtilizationPct": 1.7469580356965906,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": 375.08320269845296,
+          "decodeTokPerSec": 2.469116750660525,
+          "kvCacheMb": 2049,
+          "estVramMb": 4808.205,
+          "bandwidthUtilizationPct": 0.7043313807973933,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "05-ort-graph-opt-basic",
+      "track": "track1-ort",
+      "label": "ORT WebGPU graphOptimizationLevel=basic (cold compile vs throughput tradeoff)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 14.810700730297748,
+      "peakBandwidthPct": 4.224847323706729,
+      "speedupVsBaseline1k": 1.0362120678110993,
+      "speedupVsBaseline64k": null,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": 719.4042433127668,
+          "decodeTokPerSec": 14.114326040634694,
+          "kvCacheMb": 33,
+          "estVramMb": 2792.205,
+          "bandwidthUtilizationPct": 4.026201979540025,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": 911.7925315821692,
+          "decodeTokPerSec": 14.810700730297748,
+          "kvCacheMb": 257,
+          "estVramMb": 3016.205,
+          "bandwidthUtilizationPct": 4.224847323706729,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 573.2820607908169,
+          "decodeTokPerSec": 7.263647713085915,
+          "kvCacheMb": 1025,
+          "estVramMb": 3784.205,
+          "bandwidthUtilizationPct": 2.072002072002072,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "06-ort-chunk-1024",
+      "track": "track1-ort",
+      "label": "Winning ORT Config (03-ort-wasm-jspi) + Chunk Size 1024",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 15.825132288961575,
+      "peakBandwidthPct": 4.514220428581988,
+      "speedupVsBaseline1k": 1.115315229942215,
+      "speedupVsBaseline64k": 1.0817153217544342,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": 716.0839160839162,
+          "decodeTokPerSec": 15.191796430959553,
+          "kvCacheMb": 33,
+          "estVramMb": 2792.205,
+          "bandwidthUtilizationPct": 4.333557315241667,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": 982.4898057088031,
+          "decodeTokPerSec": 15.825132288961575,
+          "kvCacheMb": 257,
+          "estVramMb": 3016.205,
+          "bandwidthUtilizationPct": 4.514220428581988,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 648.2756437637137,
+          "decodeTokPerSec": 7.16027835559189,
+          "kvCacheMb": 1025,
+          "estVramMb": 3784.205,
+          "bandwidthUtilizationPct": 2.042515300152815,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": 444.32180516566683,
+          "decodeTokPerSec": 3.6720829890353675,
+          "kvCacheMb": 2049,
+          "estVramMb": 4808.205,
+          "bandwidthUtilizationPct": 1.047485211615858,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "07-ort-chunk-2048",
+      "track": "track1-ort",
+      "label": "Winning ORT Config (03-ort-wasm-jspi) + Chunk Size 2048",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 17.60563380374065,
+      "peakBandwidthPct": 5.022119899143966,
+      "speedupVsBaseline1k": 1.2925286093276847,
+      "speedupVsBaseline64k": 1.090058628299782,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": 998.6346790567221,
+          "decodeTokPerSec": 17.60563380374065,
+          "kvCacheMb": 33,
+          "estVramMb": 2792.205,
+          "bandwidthUtilizationPct": 5.022119899143966,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": 939.1049156221594,
+          "decodeTokPerSec": 16.08686909271713,
+          "kvCacheMb": 257,
+          "estVramMb": 3016.205,
+          "bandwidthUtilizationPct": 4.588882529653284,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 566.7792107170719,
+          "decodeTokPerSec": 3.46804521467533,
+          "kvCacheMb": 1025,
+          "estVramMb": 3784.205,
+          "bandwidthUtilizationPct": 0.9892821285452063,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": 367.7471558742278,
+          "decodeTokPerSec": 3.700405888250466,
+          "kvCacheMb": 2049,
+          "estVramMb": 4808.205,
+          "bandwidthUtilizationPct": 1.055564500174011,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "08-ort-ceiling-128k-and-niah",
+      "track": "track1-ort",
+      "label": "Winning ORT Config (03-ort-wasm-jspi, chunk=1024) 64K-128K Ceiling + 32K NIAH",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 3.569038590229757,
+      "peakBandwidthPct": 1.0180911363155398,
+      "speedupVsBaseline1k": null,
+      "speedupVsBaseline64k": 1.0513606959625252,
+      "niahPassed": true,
+      "niahTtftMs": 50711.700000047684,
+      "niahDecodeTokPerSec": 7.119741100323625,
+      "byContext": {
+        "65536": {
+          "prefillTokPerSec": 440.6160664580144,
+          "decodeTokPerSec": 3.569038590229757,
+          "kvCacheMb": 2048.5,
+          "estVramMb": 4807.705,
+          "bandwidthUtilizationPct": 1.0180911363155398,
+          "status": "ok"
+        },
+        "98304": {
+          "prefillTokPerSec": 331.936981137534,
+          "decodeTokPerSec": 1.508622721737185,
+          "kvCacheMb": 3072.5,
+          "estVramMb": 5831.705,
+          "bandwidthUtilizationPct": 0.4303443020340047,
+          "status": "ok"
+        },
+        "131072": {
+          "prefillTokPerSec": 269.8437207272308,
+          "decodeTokPerSec": 2.8179432536203985,
+          "kvCacheMb": 4096.5,
+          "estVramMb": 6855.705,
+          "bandwidthUtilizationPct": 0.803836376834024,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "10-wgsl-q4-scalar-fp16kv",
+      "track": "track2-wgsl",
+      "label": "Rust/WASM + Custom WGSL Qwen3.5-4B (q4-scalar, static FP16 KV, single-encoder)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 39.810898235753086,
+      "peakBandwidthPct": 11.17764805275752,
+      "speedupVsBaseline1k": 2.9227419760265017,
+      "speedupVsBaseline64k": 8.019823038314762,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 39.810898235753086,
+          "kvCacheMb": 33,
+          "estVramMb": 2590.25,
+          "bandwidthUtilizationPct": 11.17764805275752,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 38.73154199728049,
+          "kvCacheMb": 257,
+          "estVramMb": 2814.25,
+          "bandwidthUtilizationPct": 10.874598769976958,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 32.676401512874634,
+          "kvCacheMb": 1025,
+          "estVramMb": 3582.25,
+          "bandwidthUtilizationPct": 9.174505774237698,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 27.224774542626886,
+          "kvCacheMb": 2049,
+          "estVramMb": 4606.25,
+          "bandwidthUtilizationPct": 7.643860390968631,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "11-wgsl-q4-vec4-f16-fp16kv",
+      "track": "track2-wgsl",
+      "label": "Rust/WASM + Custom WGSL Qwen3.5-4B (q4-vec4-f16, static FP16 KV, single-encoder)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 39.374923093543075,
+      "peakBandwidthPct": 11.05523994554737,
+      "speedupVsBaseline1k": 2.890734588474091,
+      "speedupVsBaseline64k": 7.715256179708539,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 39.374923093543075,
+          "kvCacheMb": 33,
+          "estVramMb": 2590.25,
+          "bandwidthUtilizationPct": 11.05523994554737,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 38.208955223880594,
+          "kvCacheMb": 257,
+          "estVramMb": 2814.25,
+          "bandwidthUtilizationPct": 10.727872840923586,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 31.87886033225752,
+          "kvCacheMb": 1025,
+          "estVramMb": 3582.25,
+          "bandwidthUtilizationPct": 8.950581295776349,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 26.190865936527153,
+          "kvCacheMb": 2049,
+          "estVramMb": 4606.25,
+          "bandwidthUtilizationPct": 7.353571373894377,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "12-wgsl-q4-subgroups-f16-fp16kv",
+      "track": "track2-wgsl",
+      "label": "Rust/WASM + Custom WGSL Qwen3.5-4B (q4-subgroups-f16 + subgroupAdd, static FP16 KV)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 72.05584329401437,
+      "peakBandwidthPct": 20.231014425135967,
+      "speedupVsBaseline1k": 5.29002477076161,
+      "speedupVsBaseline64k": 11.17148613162978,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 72.05584329401437,
+          "kvCacheMb": 33,
+          "estVramMb": 2590.25,
+          "bandwidthUtilizationPct": 20.231014425135967,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 66.1293655909483,
+          "kvCacheMb": 257,
+          "estVramMb": 2814.25,
+          "bandwidthUtilizationPct": 18.567045891567556,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 49.58165478040211,
+          "kvCacheMb": 1025,
+          "estVramMb": 3582.25,
+          "bandwidthUtilizationPct": 13.92096917097288,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 37.92367858825152,
+          "kvCacheMb": 2049,
+          "estVramMb": 4606.25,
+          "bandwidthUtilizationPct": 10.647776134442523,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "13-wgsl-q4-subgroups-f16-int8kv",
+      "track": "track2-wgsl",
+      "label": "Rust/WASM + Custom WGSL Qwen3.5-4B (q4-subgroups-f16 + INT8 Quantized KV, up to 128K)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 75.24100631471647,
+      "peakBandwidthPct": 21.125308018443853,
+      "speedupVsBaseline1k": 5.523865504672328,
+      "speedupVsBaseline64k": 10.99941656942824,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 75.24100631471647,
+          "kvCacheMb": 16.7578125,
+          "estVramMb": 2574.0078125,
+          "bandwidthUtilizationPct": 21.125308018443853,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 67.05783737804366,
+          "kvCacheMb": 130.5078125,
+          "estVramMb": 2687.7578125,
+          "bandwidthUtilizationPct": 18.827731566168747,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 50.401638045665976,
+          "kvCacheMb": 520.5078125,
+          "estVramMb": 3077.7578125,
+          "bandwidthUtilizationPct": 14.151194680932338,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 37.33955659276546,
+          "kvCacheMb": 1040.5078125,
+          "estVramMb": 3597.7578125,
+          "bandwidthUtilizationPct": 10.48377305049417,
+          "status": "ok"
+        },
+        "131072": {
+          "prefillTokPerSec": null,
+          "decodeTokPerSec": 25.01367935216839,
+          "kvCacheMb": 2080.5078125,
+          "estVramMb": 4637.7578125,
+          "bandwidthUtilizationPct": 7.023054407046011,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "14-wgsl-real-chat-and-load",
+      "track": "track2-wgsl-real",
+      "label": "Real Qwen3.5-4B WGSL (INT8 KV): Repack, Warm Load, Chat, Prefix Reuse, Snapshot & Abort",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 0,
+      "peakBandwidthPct": 0,
+      "speedupVsBaseline1k": null,
+      "speedupVsBaseline64k": null,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {}
+    },
+    {
+      "runId": "15-wgsl-real-fp16kv",
+      "track": "track2-wgsl-real",
+      "label": "Real Qwen3.5-4B WGSL (FP16 KV, 1K-64K Sweep + 32K NIAH)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 71.78106775106053,
+      "peakBandwidthPct": 18.797221442514832,
+      "speedupVsBaseline1k": 5.269851952539302,
+      "speedupVsBaseline64k": 10.86753516434703,
+      "niahPassed": true,
+      "niahTtftMs": 106347.10000014305,
+      "niahDecodeTokPerSec": 49.04146233766598,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": 391.7967554474153,
+          "decodeTokPerSec": 71.78106775106053,
+          "kvCacheMb": 33,
+          "estVramMb": 2593.1680908203125,
+          "bandwidthUtilizationPct": 18.797221442514832,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": 391.31763986815855,
+          "decodeTokPerSec": 66.00660066655826,
+          "kvCacheMb": 257,
+          "estVramMb": 2817.1680908203125,
+          "bandwidthUtilizationPct": 17.28506872731231,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 309.005558101405,
+          "decodeTokPerSec": 48.58053741867846,
+          "kvCacheMb": 1025,
+          "estVramMb": 3585.1680908203125,
+          "bandwidthUtilizationPct": 12.721726609336834,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": 240.74672038793858,
+          "decodeTokPerSec": 36.89186073930992,
+          "kvCacheMb": 2049,
+          "estVramMb": 4609.1680908203125,
+          "bandwidthUtilizationPct": 9.660826976664497,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "16-wgsl-real-int8kv-128k",
+      "track": "track2-wgsl-real",
+      "label": "Real Qwen3.5-4B WGSL (INT8 KV, 1K-128K Sweep + 32K NIAH)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 73.9143824960748,
+      "peakBandwidthPct": 19.355869996025973,
+      "speedupVsBaseline1k": 5.4264705878789545,
+      "speedupVsBaseline64k": 10.681182960459218,
+      "niahPassed": true,
+      "niahTtftMs": 108642.29999995232,
+      "niahDecodeTokPerSec": 45.39826662057267,
+      "byContext": {
+        "1024": {
+          "prefillTokPerSec": 383.1618334892423,
+          "decodeTokPerSec": 73.9143824960748,
+          "kvCacheMb": 16.630859375,
+          "estVramMb": 2576.7989501953125,
+          "bandwidthUtilizationPct": 19.355869996025973,
+          "status": "ok"
+        },
+        "8192": {
+          "prefillTokPerSec": 385.9999623055585,
+          "decodeTokPerSec": 64.39495572022916,
+          "kvCacheMb": 130.380859375,
+          "estVramMb": 2690.5489501953125,
+          "bandwidthUtilizationPct": 16.863029213384763,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 307.36761140059184,
+          "decodeTokPerSec": 47.67580454274946,
+          "kvCacheMb": 520.380859375,
+          "estVramMb": 3080.5489501953125,
+          "bandwidthUtilizationPct": 12.484805304764718,
+          "status": "ok"
+        },
+        "65536": {
+          "prefillTokPerSec": 239.54302022468434,
+          "decodeTokPerSec": 36.259253671531845,
+          "kvCacheMb": 1040.380859375,
+          "estVramMb": 3600.5489501953125,
+          "bandwidthUtilizationPct": 9.495166928525288,
+          "status": "ok"
+        },
+        "131072": {
+          "prefillTokPerSec": 165.21231544669888,
+          "decodeTokPerSec": 23.802439751200026,
+          "kvCacheMb": 2080.380859375,
+          "estVramMb": 4640.5489501953125,
+          "bandwidthUtilizationPct": 6.233116125091551,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "17-track3-mainthread-max-speed",
+      "track": "track3-smoothness",
+      "label": "Offline Bundled WGSL (Offscreen Main Thread, Max Speed / Unpaced)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 57.647270771928795,
+      "peakBandwidthPct": 15.09602111262198,
+      "speedupVsBaseline1k": null,
+      "speedupVsBaseline64k": null,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "8192": {
+          "prefillTokPerSec": 351.6423138324576,
+          "decodeTokPerSec": 57.647270771928795,
+          "kvCacheMb": 130.5078125,
+          "estVramMb": 2690.6759033203125,
+          "bandwidthUtilizationPct": 15.09602111262198,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 279.1231743445417,
+          "decodeTokPerSec": 43.301759133964815,
+          "kvCacheMb": 520.5078125,
+          "estVramMb": 3080.6759033203125,
+          "bandwidthUtilizationPct": 11.339379320942882,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "18-track3-worker-max-speed",
+      "track": "track3-smoothness",
+      "label": "Offline Bundled WGSL (Dedicated Worker, Max Speed / Unpaced)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 56.92937198337695,
+      "peakBandwidthPct": 14.90802582466497,
+      "speedupVsBaseline1k": null,
+      "speedupVsBaseline64k": null,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "8192": {
+          "prefillTokPerSec": 347.26726268305003,
+          "decodeTokPerSec": 56.92937198337695,
+          "kvCacheMb": 130.5078125,
+          "estVramMb": 2690.6759033203125,
+          "bandwidthUtilizationPct": 14.90802582466497,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 278.24858277362983,
+          "decodeTokPerSec": 43.26663061672016,
+          "kvCacheMb": 520.5078125,
+          "estVramMb": 3080.6759033203125,
+          "bandwidthUtilizationPct": 11.33018025859562,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "19-track3-worker-balanced",
+      "track": "track3-smoothness",
+      "label": "Offline Bundled WGSL (Dedicated Worker, Balanced Default)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 36.98566805159083,
+      "peakBandwidthPct": 9.685392184136564,
+      "speedupVsBaseline1k": null,
+      "speedupVsBaseline64k": null,
+      "niahPassed": true,
+      "niahTtftMs": 240818,
+      "niahDecodeTokPerSec": 31.27665623687408,
+      "byContext": {
+        "8192": {
+          "prefillTokPerSec": 194.23414793712703,
+          "decodeTokPerSec": 36.98566805159083,
+          "kvCacheMb": 130.5078125,
+          "estVramMb": 2690.6759033203125,
+          "bandwidthUtilizationPct": 9.685392184136564,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 128.10203126635713,
+          "decodeTokPerSec": 28.802880288028803,
+          "kvCacheMb": 520.5078125,
+          "estVramMb": 3080.6759033203125,
+          "bandwidthUtilizationPct": 7.542575443903503,
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "runId": "20-track3-worker-smooth-ui",
+      "track": "track3-smoothness",
+      "label": "Offline Bundled WGSL (Dedicated Worker, Smooth UI / 60 FPS Priority)",
+      "status": "ok",
+      "consoleErrorCount": 0,
+      "offscreenErrorCount": 0,
+      "peakDecodeTokPerSec": 23.463851005366507,
+      "peakBandwidthPct": 6.1444502995085655,
+      "speedupVsBaseline1k": null,
+      "speedupVsBaseline64k": null,
+      "niahPassed": null,
+      "niahTtftMs": null,
+      "niahDecodeTokPerSec": null,
+      "byContext": {
+        "8192": {
+          "prefillTokPerSec": 89.26255963000216,
+          "decodeTokPerSec": 23.463851005366507,
+          "kvCacheMb": 130.5078125,
+          "estVramMb": 2690.6759033203125,
+          "bandwidthUtilizationPct": 6.1444502995085655,
+          "status": "ok"
+        },
+        "32768": {
+          "prefillTokPerSec": 84.88411070370802,
+          "decodeTokPerSec": 19.046485329335404,
+          "kvCacheMb": 520.5078125,
+          "estVramMb": 3080.6759033203125,
+          "bandwidthUtilizationPct": 4.987680089668742,
+          "status": "ok"
+        }
+      }
+    }
+  ],
+  "track3Rows": [
+    {
+      "runId": "17-track3-mainthread-max-speed",
+      "label": "Offline Bundled WGSL (Offscreen Main Thread, Max Speed / Unpaced)",
+      "executionHost": "offscreen-main",
+      "gpuPacingMode": "max-speed",
+      "coldLoadMs": 8890.699999809265,
+      "loadSource": "bundled",
+      "idleSmoothness": {
+        "avgFps": 139.24,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 7.1,
+        "p99FrameMs": 7.2,
+        "maxFrameMs": 90.4,
+        "jankPctOver33ms": 0.25,
+        "freezePctOver100ms": 0,
+        "avgInputLatencyMs": 3.7,
+        "frameCount": 400
+      },
+      "loadSmoothness": {
+        "avgFps": 137.51,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 7.5,
+        "p99FrameMs": 11,
+        "maxFrameMs": 148.1,
+        "jankPctOver33ms": 0.24,
+        "freezePctOver100ms": 0.16,
+        "avgInputLatencyMs": 6.93,
+        "frameCount": 1230
+      },
+      "sweepSmoothness": {
+        "avgFps": 142.5,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 7.1,
+        "p99FrameMs": 11.6,
+        "maxFrameMs": 35.5,
+        "jankPctOver33ms": 0,
+        "freezePctOver100ms": 0,
+        "avgInputLatencyMs": 3.44,
+        "frameCount": 20241
+      },
+      "chatSmoothness": {
+        "avgFps": 143.33,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 9.3,
+        "p99FrameMs": 17.9,
+        "maxFrameMs": 26.5,
+        "jankPctOver33ms": 0,
+        "freezePctOver100ms": 0,
+        "avgInputLatencyMs": 4.44,
+        "frameCount": 259
+      },
+      "decode8kTokPerSec": 57.647270771928795,
+      "prefill8kTokPerSec": 351.6423138324576,
+      "decode32kTokPerSec": 43.301759133964815,
+      "prefill32kTokPerSec": 279.1231743445417,
+      "chatTurn1DecodeTokPerSec": 61.590879306161135,
+      "chatTurn1TtftMs": 157.5,
+      "turn2PrefixReused": null,
+      "snapshotRestorePassed": null,
+      "snapshottedTokens": null,
+      "restoredTokens": null,
+      "abortLatencyMs": null,
+      "abortPreservedChars": null,
+      "niahPassed": null,
+      "niahDecodeTokPerSec": null,
+      "niahPasskey": null,
+      "externalNetworkRequestCount": 0,
+      "errorCount": 0,
+      "status": "ok"
+    },
+    {
+      "runId": "18-track3-worker-max-speed",
+      "label": "Offline Bundled WGSL (Dedicated Worker, Max Speed / Unpaced)",
+      "executionHost": "worker",
+      "gpuPacingMode": "max-speed",
+      "coldLoadMs": 8105.5,
+      "loadSource": "bundled",
+      "idleSmoothness": {
+        "avgFps": 142.69,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 7.1,
+        "p99FrameMs": 7.4,
+        "maxFrameMs": 20.9,
+        "jankPctOver33ms": 0,
+        "freezePctOver100ms": 0,
+        "avgInputLatencyMs": 4.68,
+        "frameCount": 391
+      },
+      "loadSmoothness": {
+        "avgFps": 137.55,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 7.4,
+        "p99FrameMs": 9.6,
+        "maxFrameMs": 167.8,
+        "jankPctOver33ms": 0.18,
+        "freezePctOver100ms": 0.18,
+        "avgInputLatencyMs": 4.44,
+        "frameCount": 1131
+      },
+      "sweepSmoothness": {
+        "avgFps": 142.41,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 7.1,
+        "p99FrameMs": 11.7,
+        "maxFrameMs": 34.4,
+        "jankPctOver33ms": 0,
+        "freezePctOver100ms": 0,
+        "avgInputLatencyMs": 3.26,
+        "frameCount": 20369
+      },
+      "chatSmoothness": {
+        "avgFps": 143.4,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 8.1,
+        "p99FrameMs": 10.7,
+        "maxFrameMs": 24.6,
+        "jankPctOver33ms": 0,
+        "freezePctOver100ms": 0,
+        "avgInputLatencyMs": 3.67,
+        "frameCount": 255
+      },
+      "decode8kTokPerSec": 56.92937198337695,
+      "prefill8kTokPerSec": 347.26726268305003,
+      "decode32kTokPerSec": 43.26663061672016,
+      "prefill32kTokPerSec": 278.24858277362983,
+      "chatTurn1DecodeTokPerSec": 64.99792559597611,
+      "chatTurn1TtftMs": 156,
+      "turn2PrefixReused": null,
+      "snapshotRestorePassed": null,
+      "snapshottedTokens": null,
+      "restoredTokens": null,
+      "abortLatencyMs": null,
+      "abortPreservedChars": null,
+      "niahPassed": null,
+      "niahDecodeTokPerSec": null,
+      "niahPasskey": null,
+      "externalNetworkRequestCount": 0,
+      "errorCount": 0,
+      "status": "ok"
+    },
+    {
+      "runId": "19-track3-worker-balanced",
+      "label": "Offline Bundled WGSL (Dedicated Worker, Balanced Default)",
+      "executionHost": "worker",
+      "gpuPacingMode": "balanced",
+      "coldLoadMs": 8128.299999952316,
+      "loadSource": "bundled",
+      "idleSmoothness": {
+        "avgFps": 129.7,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 7.2,
+        "p99FrameMs": 7.7,
+        "maxFrameMs": 269.8,
+        "jankPctOver33ms": 0.53,
+        "freezePctOver100ms": 0.26,
+        "avgInputLatencyMs": 11.11,
+        "frameCount": 379
+      },
+      "loadSmoothness": {
+        "avgFps": 137.99,
+        "p50FrameMs": 7,
+        "p95FrameMs": 7.4,
+        "p99FrameMs": 10,
+        "maxFrameMs": 168.2,
+        "jankPctOver33ms": 0.17,
+        "freezePctOver100ms": 0.17,
+        "avgInputLatencyMs": 4.21,
+        "frameCount": 1156
+      },
+      "sweepSmoothness": {
+        "avgFps": 143.99,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 7.1,
+        "p99FrameMs": 7.3,
+        "maxFrameMs": 20.8,
+        "jankPctOver33ms": 0,
+        "freezePctOver100ms": 0,
+        "avgInputLatencyMs": 3.36,
+        "frameCount": 43229
+      },
+      "chatSmoothness": {
+        "avgFps": 143.48,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 8.5,
+        "p99FrameMs": 11,
+        "maxFrameMs": 28.1,
+        "jankPctOver33ms": 0,
+        "freezePctOver100ms": 0,
+        "avgInputLatencyMs": 3.23,
+        "frameCount": 408
+      },
+      "decode8kTokPerSec": 36.98566805159083,
+      "prefill8kTokPerSec": 194.23414793712703,
+      "decode32kTokPerSec": 28.802880288028803,
+      "prefill32kTokPerSec": 128.10203126635713,
+      "chatTurn1DecodeTokPerSec": 40.136635354397946,
+      "chatTurn1TtftMs": 284.2999999523163,
+      "turn2PrefixReused": true,
+      "snapshotRestorePassed": true,
+      "snapshottedTokens": 165,
+      "restoredTokens": 165,
+      "abortLatencyMs": 106.35,
+      "abortPreservedChars": 33,
+      "niahPassed": true,
+      "niahDecodeTokPerSec": 31.27665623687408,
+      "niahPasskey": "VELVET-ORBIT-7492",
+      "externalNetworkRequestCount": 0,
+      "errorCount": 0,
+      "status": "ok"
+    },
+    {
+      "runId": "20-track3-worker-smooth-ui",
+      "label": "Offline Bundled WGSL (Dedicated Worker, Smooth UI / 60 FPS Priority)",
+      "executionHost": "worker",
+      "gpuPacingMode": "smooth-ui",
+      "coldLoadMs": 7823.200000047684,
+      "loadSource": "bundled",
+      "idleSmoothness": {
+        "avgFps": 132.29,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 7.1,
+        "p99FrameMs": 7.2,
+        "maxFrameMs": 245.3,
+        "jankPctOver33ms": 0.26,
+        "freezePctOver100ms": 0.26,
+        "avgInputLatencyMs": 11.72,
+        "frameCount": 383
+      },
+      "loadSmoothness": {
+        "avgFps": 136.58,
+        "p50FrameMs": 7,
+        "p95FrameMs": 7.5,
+        "p99FrameMs": 11.1,
+        "maxFrameMs": 199.3,
+        "jankPctOver33ms": 0.18,
+        "freezePctOver100ms": 0.18,
+        "avgInputLatencyMs": 3.61,
+        "frameCount": 1086
+      },
+      "sweepSmoothness": {
+        "avgFps": 143.99,
+        "p50FrameMs": 6.9,
+        "p95FrameMs": 7.1,
+        "p99FrameMs": 7.2,
+        "maxFrameMs": 26.1,
+        "jankPctOver33ms": 0,
+        "freezePctOver100ms": 0,
+        "avgInputLatencyMs": 3.37,
+        "frameCount": 69272
+      },
+      "chatSmoothness": {
+        "avgFps": 143.65,
+        "p50FrameMs": 7,
+        "p95FrameMs": 7.4,
+        "p99FrameMs": 9.3,
+        "maxFrameMs": 31.9,
+        "jankPctOver33ms": 0,
+        "freezePctOver100ms": 0,
+        "avgInputLatencyMs": 3.76,
+        "frameCount": 691
+      },
+      "decode8kTokPerSec": 23.463851005366507,
+      "prefill8kTokPerSec": 89.26255963000216,
+      "decode32kTokPerSec": 19.046485329335404,
+      "prefill32kTokPerSec": 84.88411070370802,
+      "chatTurn1DecodeTokPerSec": 23.340699724657455,
+      "chatTurn1TtftMs": 495.2999999523163,
+      "turn2PrefixReused": null,
+      "snapshotRestorePassed": null,
+      "snapshottedTokens": null,
+      "restoredTokens": null,
+      "abortLatencyMs": null,
+      "abortPreservedChars": null,
+      "niahPassed": null,
+      "niahDecodeTokPerSec": null,
+      "niahPasskey": null,
+      "externalNetworkRequestCount": 0,
+      "errorCount": 0,
+      "status": "ok"
+    }
+  ]
+}

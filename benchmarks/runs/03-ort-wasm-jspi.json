@@ -1,0 +1,139 @@
+{
+  "runId": "03-ort-wasm-jspi",
+  "track": "track1-ort",
+  "recordedAt": "2026-11-24T18:52:19.824Z",
+  "label": "ORT WebGPU + JSPI WASM Build + JS Fast Decode",
+  "config": {
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "dtype": "q4f16",
+    "chunkSize": 512,
+    "maxNewTokens": 512,
+    "temperature": 0,
+    "topP": 0.95,
+    "topK": 20,
+    "enableThinking": false,
+    "gpuBandwidthGBs": 936,
+    "wasmVariant": "jspi",
+    "yieldMode": "none",
+    "fastDecodePath": true,
+    "fastOpfsLoad": true,
+    "graphOptimizationLevel": "all",
+    "validationMode": "basic",
+    "storageBufferCacheMode": "default",
+    "enableMatmulFp32Accumulation": null
+  },
+  "coldLoad": {
+    "opfsReloadMs": 6144.200000047684,
+    "loadedFromCache": true,
+    "loadBreakdown": {
+      "opfsReadMs": 88.79999995231628,
+      "tokenizerMs": 811.5,
+      "modelLoadMs": 5332.399999856949,
+      "totalMs": 6144.200000047684
+    }
+  },
+  "sweep": {
+    "startedAt": "2026-11-24T18:47:55.851Z",
+    "finishedAt": "2026-11-24T18:52:19.319Z",
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "dtype": "q4f16",
+    "gpuBandwidthGBs": 936,
+    "points": [
+      {
+        "targetTokens": 1024,
+        "actualPromptTokens": 1024,
+        "decodeTokens": 32,
+        "chunkSize": 512,
+        "prefillMs": 1462.8999998569489,
+        "ttftMs": 1463.0999999046326,
+        "prefillTokPerSec": 699.9794928567453,
+        "decodeTokPerSec": 15.344777979541865,
+        "kvCacheMb": 33,
+        "deltaNetStateMb": 25.125,
+        "estVramMb": 2792.205,
+        "achievedBandwidthGBs": 40.97055720537678,
+        "bandwidthUtilizationPct": 4.377196282625724,
+        "breakdown": {
+          "avgForwardMs": 59.56562500447035,
+          "avgLogitsMs": 0.009375005960464478,
+          "avgSampleMs": 5.15625,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 8192,
+        "actualPromptTokens": 8192,
+        "decodeTokens": 32,
+        "chunkSize": 512,
+        "prefillMs": 9238.100000143051,
+        "ttftMs": 9238.200000047684,
+        "prefillTokPerSec": 886.7624294901709,
+        "decodeTokPerSec": 15.719408556884824,
+        "kvCacheMb": 257,
+        "deltaNetStateMb": 25.125,
+        "estVramMb": 3016.205,
+        "achievedBandwidthGBs": 41.97082084688248,
+        "bandwidthUtilizationPct": 4.484062056290863,
+        "breakdown": {
+          "avgForwardMs": 57.650000020861626,
+          "avgLogitsMs": 0.0031249970197677612,
+          "avgSampleMs": 5.6968750059604645,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 32768,
+        "actualPromptTokens": 32768,
+        "decodeTokens": 32,
+        "chunkSize": 512,
+        "prefillMs": 57651,
+        "ttftMs": 57651,
+        "prefillTokPerSec": 568.385630778304,
+        "decodeTokPerSec": 6.684073107049609,
+        "kvCacheMb": 1025,
+        "deltaNetStateMb": 25.125,
+        "estVramMb": 3784.205,
+        "achievedBandwidthGBs": 17.846475195822457,
+        "bandwidthUtilizationPct": 1.9066747004083822,
+        "breakdown": {
+          "avgForwardMs": 144.47187496721745,
+          "avgLogitsMs": 0.003125004470348358,
+          "avgSampleMs": 4.809375017881393,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      },
+      {
+        "targetTokens": 65536,
+        "actualPromptTokens": 65536,
+        "decodeTokens": 32,
+        "chunkSize": 512,
+        "prefillMs": 175150.79999995232,
+        "ttftMs": 175150.79999995232,
+        "prefillTokPerSec": 374.16900179741026,
+        "decodeTokPerSec": 2.902336380748877,
+        "kvCacheMb": 2049,
+        "deltaNetStateMb": 25.125,
+        "estVramMb": 4808.205,
+        "achievedBandwidthGBs": 7.749238136599501,
+        "bandwidthUtilizationPct": 0.8279100573290064,
+        "breakdown": {
+          "avgForwardMs": 339.33750001341105,
+          "avgLogitsMs": 0.00937499850988388,
+          "avgSampleMs": 4.8156250193715096,
+          "avgYieldMs": 0
+        },
+        "status": "ok"
+      }
+    ],
+    "maxSafeTokens": 65568,
+    "oomTokenCount": null,
+    "recommendation": "Below 40% theoretical bandwidth (4.5% of 936 GB/s): Phase 2 Decision Gate triggers custom Rust/WASM + WGSL engine."
+  },
+  "niah": null,
+  "consoleErrorCount": 0,
+  "offscreenErrors": [],
+  "status": "ok"
+}

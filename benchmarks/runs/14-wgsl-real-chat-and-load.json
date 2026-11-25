@@ -1,0 +1,76 @@
+{
+  "runId": "14-wgsl-real-chat-and-load",
+  "track": "track2-wgsl-real",
+  "recordedAt": "2026-11-24T21:15:34.099Z",
+  "label": "Real Qwen3.5-4B WGSL (INT8 KV): Repack, Warm Load, Chat, Prefix Reuse, Snapshot & Abort",
+  "config": {
+    "backend": "wgsl",
+    "wgslKvMode": "int8",
+    "wgslMaxContext": 131072,
+    "yieldMode": "none",
+    "fastDecodePath": true,
+    "fastOpfsLoad": true,
+    "chunkSize": 64,
+    "enableThinking": false,
+    "temperature": 0,
+    "maxNewTokens": 256
+  },
+  "initialLoad": {
+    "coldLoadMs": 5040.100000143051,
+    "loadedFromCache": true,
+    "loadBreakdown": {
+      "opfsReadMs": 3715.2999999523163,
+      "tokenizerMs": 778.6999998092651,
+      "modelLoadMs": 251.59999990463257,
+      "totalMs": 5040.100000143051
+    },
+    "estVramMb": 2560.1680908203125,
+    "deltaNetStateMb": 50.25
+  },
+  "coldLoad": {
+    "opfsReloadMs": 4980.599999904633,
+    "loadedFromCache": true,
+    "loadBreakdown": {
+      "opfsReadMs": 3830.100000143051,
+      "tokenizerMs": 817.4000000953674,
+      "modelLoadMs": 8.599999904632568,
+      "totalMs": 4980.599999904633
+    }
+  },
+  "turn1": {
+    "prompt": "List 3 benefits of hybrid linear + full attention in 3 short bullets.",
+    "responseText": "* **Balanced Efficiency**: Combines the speed of linear attention with the global context capture of full attention, reducing computational costs while maintaining performance.\n* **Improved Accuracy**: Leverages the strengths of both mechanisms to better handle long-range dependencies and complex patterns in data.\n* **Scalability**: Enables faster training and inference on large data",
+    "responseLength": 386,
+    "ttftMs": 324.7000000476837,
+    "prefillTokPerSec": 92.5925925633918,
+    "decodeTokPerSec": 66.89791873405181,
+    "activeContextTokens": 109,
+    "prefixReused": false,
+    "estVramMb": 2561.8978271484375
+  },
+  "turn2": {
+    "prompt": "Summarize bullet 1 in one short sentence.",
+    "responseText": "It balances speed and global context to reduce costs while maintaining performance.",
+    "responseLength": 83,
+    "ttftMs": 107.79999995231628,
+    "prefillTokPerSec": 233.20895563881604,
+    "decodeTokPerSec": 66.94129761487122,
+    "activeContextTokens": 147,
+    "prefixReused": true,
+    "estVramMb": 2562.5008544921875
+  },
+  "snapshotRestore": {
+    "snapshottedTokens": 147,
+    "restoredTokens": 147,
+    "passed": true
+  },
+  "stopMetrics": {
+    "stoppedCleanly": true,
+    "preservedPartialChars": 34,
+    "partialPreview": "# The Architecture of Parallelism:"
+  },
+  "warmReopenReady": true,
+  "consoleErrorCount": 0,
+  "offscreenErrors": [],
+  "status": "ok"
+}

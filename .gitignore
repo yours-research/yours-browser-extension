@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.vite/
+*.local
+.bench-profile/
+.bench-profile-track3/
+model-bundle/

@@ -1,0 +1,23 @@
+{
+  "firstLoadMs": 773122.7999999523,
+  "firstLoadedFromCache": false,
+  "opfsReloadMs": 14172,
+  "opfsLoadedFromCache": true,
+  "warmReopenReady": true,
+  "chatMetrics": {
+    "prompt": "List 3 benefits of hybrid linear + full attention in 3 short bullets.",
+    "responsePreview": "* **Balanced Efficiency**: Combines the speed of linear attention with the accuracy of full attention, reducing computational costs while maintaining high performance.\n* **Scalability**: Enables training on larger models and datasets without the prohibitive quadratic memory and time costs associated",
+    "responseLength": 495,
+    "ttftMs": 1905.6000001430511,
+    "prefillTokPerSec": 14.891240759830916,
+    "decodeTokPerSec": 12.152940076502224,
+    "activeContextTokens": 119,
+    "estVramMb": 2762.92375
+  },
+  "stopMetrics": {
+    "stoppedCleanly": true,
+    "preservedPartialChars": 34,
+    "partialPreview": "# The Architecture of Parallelism:"
+  },
+  "offscreenErrorCount": 0
+}

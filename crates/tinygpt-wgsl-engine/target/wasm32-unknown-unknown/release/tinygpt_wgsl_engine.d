@@ -1,0 +1,1 @@
+C:\Users\taylo\.t3\projects\tinygpt-browser\crates\tinygpt-wgsl-engine\target\wasm32-unknown-unknown\release\tinygpt_wgsl_engine.wasm: C:\Users\taylo\.t3\projects\tinygpt-browser\crates\tinygpt-wgsl-engine\src\lib.rs

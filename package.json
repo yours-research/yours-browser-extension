@@ -1,0 +1,38 @@
+{
+  "name": "tinygpt-browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build:wasm": "cargo build --manifest-path crates/tinygpt-wgsl-engine/Cargo.toml --target wasm32-unknown-unknown --release",
+    "build": "npm run build:wasm && tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e:phase0": "node scripts/e2e-bench.mjs --stage phase0",
+    "e2e:phase1": "node scripts/e2e-bench.mjs --stage phase1",
+    "e2e:phase2": "node scripts/e2e-bench.mjs --stage phase2",
+    "e2e:all": "node scripts/e2e-bench.mjs --stage all",
+    "e2e:track1": "node scripts/run-track1-matrix.mjs",
+    "e2e:track2": "node scripts/run-track2-wgsl.mjs",
+    "e2e:track2:real": "node scripts/run-track2-real.mjs",
+    "bundle:model": "node scripts/bundle-model.mjs",
+    "e2e:track3": "node scripts/run-track3-smoothness.mjs"
+  },
+  "dependencies": {
+    "@assistant-ui/react": "^0.15.38",
+    "@huggingface/transformers": "^4.3.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.312",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "playwright": "^1.65.1",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0"
+  }
+}

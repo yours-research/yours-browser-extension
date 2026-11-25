@@ -1,0 +1,124 @@
+{
+  "probeInfo": {
+    "supported": true,
+    "adapterInfo": {
+      "vendor": "nvidia",
+      "architecture": "ampere",
+      "device": "unknown",
+      "description": "unknown"
+    },
+    "features": [
+      "bgra8unorm-storage",
+      "chromium-experimental-multi-draw-indirect",
+      "chromium-experimental-sampling-resource-table",
+      "chromium-experimental-timestamp-query-inside-passes",
+      "clip-distances",
+      "core-features-and-limits",
+      "depth-clip-control",
+      "depth32float-stencil8",
+      "dual-source-blending",
+      "float32-blendable",
+      "float32-filterable",
+      "indirect-first-instance",
+      "primitive-index",
+      "rg11b10ufloat-renderable",
+      "shader-f16",
+      "subgroups",
+      "texture-component-swizzle",
+      "texture-compression-bc",
+      "texture-compression-bc-sliced-3d",
+      "texture-formats-tier1",
+      "texture-formats-tier2",
+      "timestamp-query"
+    ],
+    "hasShaderF16": true,
+    "hasSubgroups": true,
+    "adapterLimits": {
+      "maxBufferSize": 2147483648,
+      "maxStorageBufferBindingSize": 2147483644,
+      "maxComputeWorkgroupStorageSize": 32768,
+      "maxComputeInvocationsPerWorkgroup": 1024,
+      "maxStorageBuffersPerShaderStage": 16
+    },
+    "grantedLimits": {
+      "maxBufferSize": 2147483648,
+      "maxStorageBufferBindingSize": 2147483644
+    },
+    "error": null,
+    "probedAt": "2026-11-24T17:57:32.120Z"
+  },
+  "writeResult": {
+    "action": "write",
+    "ok": true,
+    "totalBytes": 2684354560,
+    "shardCount": 10,
+    "durationMs": 12137.5,
+    "throughputMBs": 210.91658084449023,
+    "details": "Wrote 10 shards (2.50 GiB) to OPFS in 12.14s."
+  },
+  "verifyResult": {
+    "action": "verify",
+    "ok": true,
+    "totalBytes": 2684354560,
+    "shardCount": 10,
+    "durationMs": 1367.9000000953674,
+    "throughputMBs": 1871.4818333368826,
+    "details": "Verified 10 persisted shards (2.50 GiB) created 2026-11-24T17:57:44.694Z."
+  },
+  "opfsStatus": {
+    "supported": true,
+    "persisted": false,
+    "quotaBytes": 91118308530,
+    "usageBytes": 2684357810,
+    "modelFilesCount": 0,
+    "modelCacheBytes": 0,
+    "spikeFiles": [
+      {
+        "name": "spike-manifest.json",
+        "sizeBytes": 103
+      },
+      {
+        "name": "spike-shard-00.bin",
+        "sizeBytes": 268435456
+      },
+      {
+        "name": "spike-shard-01.bin",
+        "sizeBytes": 268435456
+      },
+      {
+        "name": "spike-shard-02.bin",
+        "sizeBytes": 268435456
+      },
+      {
+        "name": "spike-shard-03.bin",
+        "sizeBytes": 268435456
+      },
+      {
+        "name": "spike-shard-04.bin",
+        "sizeBytes": 268435456
+      },
+      {
+        "name": "spike-shard-05.bin",
+        "sizeBytes": 268435456
+      },
+      {
+        "name": "spike-shard-06.bin",
+        "sizeBytes": 268435456
+      },
+      {
+        "name": "spike-shard-07.bin",
+        "sizeBytes": 268435456
+      },
+      {
+        "name": "spike-shard-08.bin",
+        "sizeBytes": 268435456
+      },
+      {
+        "name": "spike-shard-09.bin",
+        "sizeBytes": 268435456
+      }
+    ],
+    "error": null
+  },
+  "consoleErrorCount": 0
+}

@@ -1,0 +1,134 @@
+{
+  "runId": "11-wgsl-q4-vec4-f16-fp16kv",
+  "track": "track2-wgsl",
+  "recordedAt": "2026-11-24T19:40:01.757Z",
+  "label": "Rust/WASM + Custom WGSL Qwen3.5-4B (q4-vec4-f16, static FP16 KV, single-encoder)",
+  "config": {
+    "gemvVariant": "q4-vec4-f16",
+    "kvMode": "fp16",
+    "contextLengths": [
+      1024,
+      8192,
+      32768,
+      65536
+    ],
+    "decodeTokens": 32,
+    "warmupTokens": 2,
+    "gpuBandwidthGBs": 936
+  },
+  "wgslResult": {
+    "startedAt": "2026-11-24T19:39:54.317Z",
+    "finishedAt": "2026-11-24T19:40:01.445Z",
+    "gemvVariant": "q4-vec4-f16",
+    "kvMode": "fp16",
+    "gpuBandwidthGBs": 936,
+    "hasShaderF16": true,
+    "hasSubgroups": true,
+    "maxBufferSize": 2147483648,
+    "allocatedWeightMb": 2506.25,
+    "allocatedKvMb": 2049.25,
+    "allocatedDeltaNetMb": 51,
+    "pipelineCompileMs": 34.200000047683716,
+    "correctness": [
+      {
+        "kernel": "q4-scalar",
+        "passed": true,
+        "maxAbsError": 0,
+        "details": "maxAbsError=0.00e+0 (tol=0.001)"
+      },
+      {
+        "kernel": "q4-vec4-f16",
+        "passed": true,
+        "maxAbsError": 0.0004417002201080322,
+        "details": "maxAbsError=4.42e-4 (tol=0.02)"
+      },
+      {
+        "kernel": "q4-subgroups-f16",
+        "passed": true,
+        "maxAbsError": 0.0009700953960418701,
+        "details": "maxAbsError=9.70e-4 (tol=0.02)"
+      },
+      {
+        "kernel": "deltanet_step",
+        "passed": true,
+        "maxAbsError": 5.21540641784668e-8,
+        "details": "2-step recurrent maxAbsError=5.22e-8"
+      },
+      {
+        "kernel": "gqa_fp16_step",
+        "passed": true,
+        "maxAbsError": 0.000037223100662231445,
+        "details": "40-step Split-8 GQA maxAbsError=3.72e-5 (tol=0.01)"
+      },
+      {
+        "kernel": "gqa_int8_step",
+        "passed": true,
+        "maxAbsError": 0.0004385411739349365,
+        "details": "40-step Split-8 GQA maxAbsError=4.39e-4 (tol=0.05)"
+      },
+      {
+        "kernel": "argmax_vocab_248k",
+        "passed": true,
+        "maxAbsError": 0,
+        "details": "expected=173421, got=173421"
+      }
+    ],
+    "points": [
+      {
+        "contextLength": 1024,
+        "decodeTokens": 32,
+        "decodeMs": 812.7000000476837,
+        "decodeTokPerSec": 39.374923093543075,
+        "kvCacheMb": 33,
+        "deltaNetStateMb": 51,
+        "weightMb": 2506.25,
+        "estVramMb": 2590.25,
+        "achievedBandwidthGBs": 103.4770458903234,
+        "bandwidthUtilizationPct": 11.05523994554737,
+        "status": "ok"
+      },
+      {
+        "contextLength": 8192,
+        "decodeTokens": 32,
+        "decodeMs": 837.5,
+        "decodeTokPerSec": 38.208955223880594,
+        "kvCacheMb": 257,
+        "deltaNetStateMb": 51,
+        "weightMb": 2506.25,
+        "estVramMb": 2814.25,
+        "achievedBandwidthGBs": 100.41288979104476,
+        "bandwidthUtilizationPct": 10.727872840923586,
+        "status": "ok"
+      },
+      {
+        "contextLength": 32768,
+        "decodeTokens": 32,
+        "decodeMs": 1003.7999999523163,
+        "decodeTokPerSec": 31.87886033225752,
+        "kvCacheMb": 1025,
+        "deltaNetStateMb": 51,
+        "weightMb": 2506.25,
+        "estVramMb": 3582.25,
+        "achievedBandwidthGBs": 83.77744092846663,
+        "bandwidthUtilizationPct": 8.950581295776349,
+        "status": "ok"
+      },
+      {
+        "contextLength": 65536,
+        "decodeTokens": 32,
+        "decodeMs": 1221.7999999523163,
+        "decodeTokPerSec": 26.190865936527153,
+        "kvCacheMb": 2049,
+        "deltaNetStateMb": 51,
+        "weightMb": 2506.25,
+        "estVramMb": 4606.25,
+        "achievedBandwidthGBs": 68.82942805965136,
+        "bandwidthUtilizationPct": 7.353571373894377,
+        "status": "ok"
+      }
+    ]
+  },
+  "consoleErrorCount": 0,
+  "offscreenErrors": [],
+  "status": "ok"
+}

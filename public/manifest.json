@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "TinyGPT Extension (v0.1 POC)",
+  "version": "0.1.0",
+  "description": "Offline bundled Qwen3.5-4B local WebGPU LLM (Custom Rust/WGSL INT8 128K engine in Dedicated Worker).",
+  "permissions": [
+    "sidePanel",
+    "offscreen",
+    "storage",
+    "unlimitedStorage"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open TinyGPT Side Panel"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
