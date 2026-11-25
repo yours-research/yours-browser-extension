@@ -1,3 +1,4 @@
+import { rankPassagesBm25 } from './bm25Ranker.ts';
 import { runJsCalc } from './jsCalc.ts';
 import { extractTabContent } from './pageExtractor.ts';
 import { validateToolCall } from './toolProtocol.ts';
@@ -82,7 +83,7 @@ async function getActiveTabId(): Promise<number | null> {
   return focusedTab?.id ?? allActiveTabs[0]?.id ?? null;
 }
 
-export async function extractActiveTabPreview(maxChars = 4000): Promise<ExtractedPageContent> {
+export async function extractActiveTabPreview(maxChars = 5000): Promise<ExtractedPageContent> {
   const tabId = await getActiveTabId();
   if (tabId === null) {
     return {
@@ -101,6 +102,7 @@ export async function extractActiveTabPreview(maxChars = 4000): Promise<Extracte
 
 export interface ExecuteToolOptions {
   hasPermission?: () => Promise<boolean>;
+  searchViaChromiumSerp?: WebSearchDeps['searchViaChromiumSerp'];
   fetchFn?: typeof fetch;
   openHiddenTabAndExtract?: (url: string) => Promise<HiddenTabHtmlResponse>;
   onSourceReady?: (src: FetchedSourceResult) => void;
@@ -134,11 +136,15 @@ export async function executeToolCall(
       }
       const mode = (call.arguments.mode as PageExtractMode) ?? 'auto';
       const maxChars = (call.arguments.maxChars as number) ?? 8000;
+      const query = typeof call.arguments.query === 'string' ? call.arguments.query.trim() : '';
       const page = await extractTabContent(tabId, { mode, maxChars });
       if (page.error && !page.content) {
         return { ok: false, toolName: 'read_active_page', data: page, error: page.error };
       }
-      const formatted = `[${page.mode.toUpperCase()}] ${page.title}\nURL: ${page.url}\n\n${page.content}`;
+      const searchable = page.fullContent || page.content;
+      const formatted = query
+        ? `[${page.mode.toUpperCase()}: MATCHED FOR "${query}"] ${page.title}\nURL: ${page.url}\n\n${rankPassagesBm25(searchable, query, maxChars).excerpt}`
+        : `[${page.mode.toUpperCase()}] ${page.title}\nURL: ${page.url}\n\n${page.content}`;
       return { ok: true, toolName: 'read_active_page', data: page, formatted };
     }
 
@@ -157,11 +163,15 @@ export async function executeToolCall(
       const tabId = call.arguments.tabId as number;
       const mode = (call.arguments.mode as PageExtractMode) ?? 'auto';
       const maxChars = (call.arguments.maxChars as number) ?? 8000;
+      const query = typeof call.arguments.query === 'string' ? call.arguments.query.trim() : '';
       const page = await extractTabContent(tabId, { mode, maxChars });
       if (page.error && !page.content) {
         return { ok: false, toolName: 'read_tab', data: page, error: page.error };
       }
-      const formatted = `[${page.mode.toUpperCase()}] ${page.title}\nURL: ${page.url}\n\n${page.content}`;
+      const searchable = page.fullContent || page.content;
+      const formatted = query
+        ? `[${page.mode.toUpperCase()}: MATCHED FOR "${query}"] ${page.title}\nURL: ${page.url}\n\n${rankPassagesBm25(searchable, query, maxChars).excerpt}`
+        : `[${page.mode.toUpperCase()}] ${page.title}\nURL: ${page.url}\n\n${page.content}`;
       return { ok: true, toolName: 'read_tab', data: page, formatted };
     }
 
@@ -188,14 +198,19 @@ export async function executeToolCall(
       }
       const searchDeps: WebSearchDeps = {
         hasPermission: async () => true,
+        searchViaChromiumSerp: options?.searchViaChromiumSerp,
         fetchFn: options?.fetchFn,
         openHiddenTabAndExtract: options?.openHiddenTabAndExtract,
       };
-      const res = await runWebSearch(
-        call.arguments.query as string,
-        (call.arguments.limit as number) ?? 5,
-        searchDeps,
-      );
+      const queryStr = call.arguments.query as string;
+      const limit = (call.arguments.limit as number) ?? 5;
+      const readTopN =
+        typeof call.arguments.readTopN === 'number'
+          ? call.arguments.readTopN
+          : options?.searchViaChromiumSerp || options?.openHiddenTabAndExtract
+            ? 2
+            : 0;
+      const res = await runWebSearch(queryStr, limit, searchDeps);
       if (res.blockedByCaptcha) {
         return {
           ok: false,
@@ -209,10 +224,52 @@ export async function executeToolCall(
       if (!res.ok) {
         return { ok: false, toolName: 'web_search', data: res, error: res.error };
       }
-      const formatted = res.results
+
+      const formattedResults = res.results
         .map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`)
         .join('\n\n');
-      return { ok: true, toolName: 'web_search', data: res, formatted };
+
+      // Fused 1-step Firecrawl-style Search + Read: extract top unique-domain pages in parallel
+      if (readTopN > 0 && res.results.length > 0 && (options?.searchViaChromiumSerp || options?.openHiddenTabAndExtract || call.arguments.readTopN !== undefined)) {
+        const pickedUrls: string[] = [];
+        const seenDomains = new Set<string>();
+        for (const item of res.results) {
+          if (pickedUrls.length >= readTopN) break;
+          if (!seenDomains.has(item.domain)) {
+            seenDomains.add(item.domain);
+            pickedUrls.push(item.url);
+          }
+        }
+        if (pickedUrls.length > 0) {
+          const scraped = await runFetchAndReadUrls(pickedUrls, {
+            query: queryStr,
+            maxCharsPerSource: 2600,
+            concurrency: 3,
+            onSourceReady: options?.onSourceReady,
+            deps: {
+              hasPermission: async () => true,
+              fetchFn: options?.fetchFn,
+              openHiddenTabAndExtract: options?.openHiddenTabAndExtract,
+              timeoutMs: 6500,
+            },
+          });
+          const usable = scraped.filter((s) => !s.error && s.excerpt.trim().length > 0);
+          res.scrapedSources = usable;
+          if (usable.length > 0) {
+            const excerptBlock = usable
+              .map((s) => `### ${s.title || s.url}\nURL: ${s.url}\n\n${s.excerpt}`)
+              .join('\n\n---\n\n');
+            return {
+              ok: true,
+              toolName: 'web_search',
+              data: res,
+              formatted: `${formattedResults}\n\n## Top Source Excerpts\n\n${excerptBlock}`,
+            };
+          }
+        }
+      }
+
+      return { ok: true, toolName: 'web_search', data: res, formatted: formattedResults };
     }
 
     case 'fetch_and_read_url': {

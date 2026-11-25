@@ -10,10 +10,14 @@ export const TIER1_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'read_active_page',
     description:
-      'Extract clean readable text, selected text, YouTube captions, PDF text, or interactive elements from the currently active browser tab.',
+      'Extract clean markdown, selected text, YouTube captions, PDF text, or interactive elements from the active browser tab, or search within the full page with `query`.',
     parameters: {
       type: 'object',
       properties: {
+        query: {
+          type: 'string',
+          description: 'Optional query to retrieve matching sections from the full page using BM25.',
+        },
         mode: {
           type: 'string',
           description: 'Extraction mode (default auto).',
@@ -30,7 +34,8 @@ export const TIER1_TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'web_search',
-    description: 'Search the web using DuckDuckGo and return top results with URLs and snippets.',
+    description:
+      'Search the web directly in Chromium and return top results plus clean markdown excerpts from top sources.',
     parameters: {
       type: 'object',
       properties: {
@@ -40,9 +45,15 @@ export const TIER1_TOOL_DEFINITIONS: ToolDefinition[] = [
         },
         limit: {
           type: 'integer',
-          description: 'Number of results (1-8, default 5).',
+          description: 'Number of search results (1-8, default 5).',
           minimum: 1,
           maximum: 8,
+        },
+        readTopN: {
+          type: 'integer',
+          description: 'Number of top results to auto-read into markdown excerpts (0-3, default 2).',
+          minimum: 0,
+          maximum: 3,
         },
       },
       required: ['query'],
@@ -86,13 +97,18 @@ export const TIER1_TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'read_tab',
-    description: 'Extract readable content or interactive elements from a specific open tab by tabId.',
+    description:
+      'Extract readable markdown or interactive elements from a specific open tab by tabId, optionally filtered with `query`.',
     parameters: {
       type: 'object',
       properties: {
         tabId: {
           type: 'integer',
           description: 'Numeric Chrome tab ID from list_open_tabs.',
+        },
+        query: {
+          type: 'string',
+          description: 'Optional query to retrieve matching sections from the full tab using BM25.',
         },
         mode: {
           type: 'string',
@@ -207,7 +223,11 @@ export function validateToolCall(call: {
     case 'read_active_page': {
       const mode = typeof args.mode === 'string' && VALID_PAGE_MODES.has(args.mode) ? args.mode : 'auto';
       const maxChars = clampInt(args.maxChars, 500, 24000, 8000);
-      return { valid: true, normalized: { name, arguments: { mode, maxChars } } };
+      const outArgs: Record<string, unknown> = { mode, maxChars };
+      if (typeof args.query === 'string' && args.query.trim()) {
+        outArgs.query = args.query.trim();
+      }
+      return { valid: true, normalized: { name, arguments: outArgs } };
     }
 
     case 'web_search': {
@@ -215,9 +235,13 @@ export function validateToolCall(call: {
         return { valid: false, error: 'web_search requires a non-empty string "query".' };
       }
       const limit = clampInt(args.limit, 1, 8, 5);
+      const outArgs: Record<string, unknown> = { query: args.query.trim(), limit };
+      if (typeof args.readTopN === 'number' && Number.isFinite(args.readTopN)) {
+        outArgs.readTopN = clampInt(args.readTopN, 0, 3, 2);
+      }
       return {
         valid: true,
-        normalized: { name, arguments: { query: args.query.trim(), limit } },
+        normalized: { name, arguments: outArgs },
       };
     }
 
@@ -251,9 +275,13 @@ export function validateToolCall(call: {
       }
       const mode = typeof args.mode === 'string' && VALID_PAGE_MODES.has(args.mode) ? args.mode : 'auto';
       const maxChars = clampInt(args.maxChars, 500, 24000, 8000);
+      const outArgs: Record<string, unknown> = { tabId: args.tabId, mode, maxChars };
+      if (typeof args.query === 'string' && args.query.trim()) {
+        outArgs.query = args.query.trim();
+      }
       return {
         valid: true,
-        normalized: { name, arguments: { tabId: args.tabId, mode, maxChars } },
+        normalized: { name, arguments: outArgs },
       };
     }
 

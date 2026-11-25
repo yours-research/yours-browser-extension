@@ -23,8 +23,11 @@ import type { FetchedSourceResult } from '../src/tools/types.ts';
 import { runFetchAndReadUrls } from '../src/tools/urlFetcher.ts';
 import {
   detectAntiBotChallenge,
+  parseBingWebHtmlResults,
   parseDuckDuckGoHtmlResults,
+  parseStartpageHtmlResults,
   runWebSearch,
+  unwrapBingRedirectUrl,
 } from '../src/tools/webSearch.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -518,5 +521,117 @@ describe('browserTools Option A & offline execution', () => {
     });
     expect(calcResult.ok).toBe(true);
     expect(calcResult.formatted).toBe('60');
+  });
+
+  it('parses Bing/Startpage SERPs, avoids false-positive CAPTCHA on 200 articles, and supports zero-key Chromium SERP search + fused scrape', async () => {
+    const encodedTarget = Buffer.from('https://www.w3.org/TR/webgpu/?v=2', 'utf8')
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    const bingHref = `https://www.bing.com/ck/a?!&&p=abc&u=a1${encodedTarget}&ntb=1`;
+    expect(unwrapBingRedirectUrl(bingHref)).toBe('https://www.w3.org/TR/webgpu/?v=2');
+
+    const bingHtml = `
+      <ul>
+        <li class="b_algo">
+          <h2><a href="${bingHref}">WebGPU Specification</a></h2>
+          <div class="b_caption"><p>W3C WebGPU candidate recommendation.</p></div>
+        </li>
+      </ul>
+    `;
+    const bingItems = parseBingWebHtmlResults(bingHtml, 5);
+    expect(bingItems).toHaveLength(1);
+    expect(bingItems[0]).toMatchObject({
+      title: 'WebGPU Specification',
+      url: 'https://www.w3.org/TR/webgpu/?v=2',
+      domain: 'w3.org',
+    });
+
+    const spHtml = `
+      <div class="w-gl__result">
+        <a class="w-gl__result-title" href="https://webgpu.org/">WebGPU Hub</a>
+        <p class="w-gl__description">Community docs and samples.</p>
+      </div>
+    `;
+    expect(parseStartpageHtmlResults(spHtml, 5)[0]?.url).toBe('https://webgpu.org/');
+
+    // False-positive guard: rich 200 OK article with footer reCAPTCHA must NOT trigger CAPTCHA block
+    const richArticleWithRecaptchaFooter = `
+      <html><body>
+        <article><h1>Deep Technical Article</h1><p>${'Detailed technical explanation about WebGPU shaders and DeltaNet memory layouts. '.repeat(14)}</p></article>
+        <div class="newsletter"><div class="g-recaptcha" data-sitekey="footer-key"></div></div>
+      </body></html>
+    `;
+    expect(detectAntiBotChallenge(richArticleWithRecaptchaFooter, 200)).toBe(false);
+
+    // Zero-key direct Chromium SERP + fused parallel URL markdown extraction via executeToolCall
+    const serpResult = await executeToolCall(
+      { name: 'web_search', arguments: { query: 'webgpu wgsl', limit: 3, readTopN: 1 } },
+      {
+        hasPermission: async () => true,
+        searchViaChromiumSerp: async (q) => ({
+          ok: true,
+          engine: 'bing',
+          query: q,
+          elapsedMs: 420,
+          results: [
+            {
+              title: 'WebGPU Spec',
+              url: 'https://www.w3.org/TR/webgpu/',
+              snippet: 'W3C WebGPU spec summary.',
+              domain: 'w3.org',
+            },
+          ],
+        }),
+        fetchFn: async () =>
+          new Response(
+            `<article><h1>WebGPU Standard</h1><p>${'WGSL defines compute and fragment shader execution on WebGPU devices. '.repeat(8)}</p></article>`,
+            { status: 200, headers: { 'content-type': 'text/html' } },
+          ),
+      },
+    );
+    expect(serpResult.ok).toBe(true);
+    expect(serpResult.formatted).toContain('WebGPU Spec');
+    expect(serpResult.formatted).toContain('## Top Source Excerpts');
+    expect(serpResult.formatted).toContain('WGSL defines compute and fragment shader execution');
+  });
+
+  it('supports query-targeted BM25 search inside read_active_page over fullContent', async () => {
+    const longBody = [
+      '# Overview',
+      'Intro section about installation. '.repeat(40),
+      '## Enterprise Pricing',
+      'The Enterprise plan includes 10,000 req/min and dedicated GPU workers at $490/mo.',
+    ].join('\n\n');
+
+    (globalThis as { chrome?: unknown }).chrome = {
+      permissions: { contains: vi.fn(async () => true) },
+      tabs: { query: vi.fn(async () => [{ id: 9, title: 'Pricing Docs', url: 'https://docs.test/api', active: true, windowId: 1 }]) },
+      scripting: {
+        executeScript: vi.fn(async () => [
+          {
+            result: {
+              mode: 'article',
+              title: 'Pricing Docs',
+              url: 'https://docs.test/api',
+              content: longBody.slice(0, 500),
+              fullContent: longBody,
+              contentHash: 'deadbeef',
+              charCount: longBody.length,
+              truncated: true,
+            },
+          },
+        ]),
+      },
+    };
+
+    const pageSearch = await executeToolCall({
+      name: 'read_active_page',
+      arguments: { query: 'Enterprise plan $490/mo req/min', maxChars: 1200 },
+    });
+    expect(pageSearch.ok).toBe(true);
+    expect(pageSearch.formatted).toContain('MATCHED FOR "Enterprise plan $490/mo req/min"');
+    expect(pageSearch.formatted).toContain('$490/mo');
   });
 });

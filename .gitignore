@@ -8,5 +8,6 @@ dist/
 .bench-profile-track5/
 .bench-profile-track6/
 .bench-profile-track6-matrix/
+.bench-profile-firecrawl-eval/
 .tmp-dl-bench/
 model-bundle/

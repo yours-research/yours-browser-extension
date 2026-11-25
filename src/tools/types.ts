@@ -62,6 +62,11 @@ export interface ExtractedPageContent {
   error?: string;
   youtubeCaptionUrl?: string;
   youtubeLanguageCode?: string;
+  fullContent?: string;
+  outline?: string[];
+  viewportExcerpt?: string;
+  selectionText?: string;
+  metadata?: Record<string, string>;
 }
 
 export interface SearchResultItem {
@@ -71,11 +76,25 @@ export interface SearchResultItem {
   domain: string;
 }
 
+export interface ChromiumSerpResponse {
+  ok: boolean;
+  engine: 'bing' | 'ddg' | 'startpage';
+  query: string;
+  results: SearchResultItem[];
+  elapsedMs: number;
+  blockedByCaptcha?: boolean;
+  manualUrl?: string;
+  error?: string;
+}
+
 export interface WebSearchResult {
   ok: boolean;
   query: string;
   results: SearchResultItem[];
   fromHiddenTab?: boolean;
+  engine?: string;
+  elapsedMs?: number;
+  scrapedSources?: FetchedSourceResult[];
   needsPermission?: boolean;
   blockedByCaptcha?: boolean;
   manualUrl?: string;
@@ -106,6 +125,8 @@ export interface HiddenTabHtmlResponse {
   html: string;
   title?: string;
   url?: string;
+  markdown?: string;
+  blockedByCaptcha?: boolean;
 }
 
 export interface JsCalcInput {

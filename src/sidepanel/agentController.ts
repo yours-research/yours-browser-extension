@@ -140,6 +140,7 @@ export interface ExtractedActiveTab {
   url: string;
   content: string;
   mode?: string;
+  truncated?: boolean;
 }
 
 export interface ActiveTabSpeculativePrefillOptions {

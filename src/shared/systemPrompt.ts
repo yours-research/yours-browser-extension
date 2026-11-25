@@ -33,6 +33,7 @@ export interface AssistantModeOptions {
   pageEnabled: boolean;
   pageAttached: boolean;
   researchEnabled: boolean;
+  pageTruncated?: boolean;
 }
 
 /**
@@ -41,7 +42,7 @@ export interface AssistantModeOptions {
  * disabled web search or re-reading an already-attached active tab.
  */
 export function buildModeSystemMessage(options: AssistantModeOptions): ChatMessage {
-  const { pageEnabled, pageAttached, researchEnabled } = options;
+  const { pageEnabled, pageAttached, researchEnabled, pageTruncated } = options;
 
   const lines: string[] = [
     'You are TinyGPT, a fast, accurate local browser assistant.',
@@ -53,24 +54,32 @@ export function buildModeSystemMessage(options: AssistantModeOptions): ChatMessa
     lines.push('Web search is OFF. Do NOT call web_search or fetch_and_read_url.');
   }
   if (pageEnabled && pageAttached) {
-    lines.push(
-      'The active browser tab content is already attached below. Answer questions about it directly without calling read_active_page.',
-    );
+    if (pageTruncated) {
+      lines.push(
+        'A preview of the active browser tab is attached below (truncated). If the answer may be elsewhere on the page, call read_active_page with a specific "query".',
+      );
+    } else {
+      lines.push(
+        'The active browser tab content is already attached below. Answer questions about it directly without calling read_active_page.',
+      );
+    }
   } else if (!pageEnabled) {
     lines.push('Active page reading is OFF unless the user explicitly mentions another open tab.');
   }
 
   const tools: string[] = [];
   if (pageEnabled && !pageAttached) {
-    tools.push('- read_active_page(mode?: "auto" | "article" | "selection" | "interactive"): Read the current tab.');
+    tools.push('- read_active_page(query?: string, mode?: "auto" | "article" | "selection" | "interactive"): Read the current tab.');
+  } else if (pageEnabled && pageAttached && pageTruncated) {
+    tools.push('- read_active_page(query?: string, mode?: "auto" | "article" | "selection" | "interactive"): Search/read sections of the current tab.');
   }
   if (researchEnabled) {
-    tools.push('- web_search(query: string, limit?: number): Search the web for current events, facts, or URLs.');
+    tools.push('- web_search(query: string, limit?: number, readTopN?: number): Search the web in Chromium and extract top source excerpts.');
     tools.push('- fetch_and_read_url(urls: string[], query?: string): Fetch and extract readable content from URLs.');
   }
   if (pageEnabled) {
     tools.push('- list_open_tabs(): List open browser tabs with tabId, title, and URL.');
-    tools.push('- read_tab(tabId: number, mode?: string): Read content from a specific open tab.');
+    tools.push('- read_tab(tabId: number, query?: string, mode?: string): Read content from a specific open tab.');
   }
   tools.push('- js_calc(expression: string): Evaluate exact math, stats, units, or date arithmetic.');
 

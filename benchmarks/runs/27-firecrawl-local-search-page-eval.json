@@ -1,0 +1,159 @@
+{
+  "runId": "27-firecrawl-local-search-page-eval",
+  "track": "track6-firecrawl-local-eval",
+  "recordedAt": "2026-11-25T20:32:14.151Z",
+  "optionAFailClosedVerified": true,
+  "pageReaderV2Fixtures": [
+    {
+      "id": "deep_doc_bm25_table",
+      "extractMs": 24.26,
+      "fullChars": 13930,
+      "previewChars": 4951,
+      "needleRecalled": true
+    },
+    {
+      "id": "multi_article_thread_12x",
+      "extractMs": 5.22,
+      "fullChars": 1535,
+      "all12Posts": true
+    },
+    {
+      "id": "open_shadow_dom",
+      "extractMs": 7.96,
+      "fullChars": 123,
+      "extracted": true
+    },
+    {
+      "id": "jsonld_and_hidden_noise_strip",
+      "extractMs": 7.36,
+      "zeroNoiseLeak": true,
+      "metadataKeys": [
+        "description",
+        "author",
+        "price",
+        "rating"
+      ]
+    },
+    {
+      "id": "scrolled_viewport_and_iframe",
+      "extractMs": 3.56,
+      "viewportCaptured": true,
+      "iframeCaptured": true
+    },
+    {
+      "id": "selection_and_spa_pushstate",
+      "spaUrl": "http://127.0.0.1:49769/spa/v2-route",
+      "selectionOk": true,
+      "spaRouteOk": true
+    },
+    {
+      "id": "recaptcha_footer_200_no_false_positive",
+      "extractMs": 6.34,
+      "falsePositiveCaptcha": false
+    },
+    {
+      "id": "resolved_links_and_fenced_code",
+      "extractMs": 4.92,
+      "preservedLinksAndLang": true
+    }
+  ],
+  "liveChromiumSerpAndScrape": [
+    {
+      "query": "W3C WebGPU specification",
+      "engine": "bing",
+      "serpMs": 696,
+      "scrapeMs": 186,
+      "totalMs": 882,
+      "resultCount": 5,
+      "blockedByCaptcha": false,
+      "topUrls": [
+        "https://www.w3.org/TR/webgpu/",
+        "https://www.w3.org/TR/webgpu/all/",
+        "https://webgpu.org/"
+      ],
+      "scraped": [
+        {
+          "url": "https://www.w3.org/TR/webgpu/",
+          "status": 403,
+          "blockedByCaptcha": true,
+          "excerptChars": 0
+        },
+        {
+          "url": "https://webgpu.org/",
+          "status": 200,
+          "blockedByCaptcha": false,
+          "excerptChars": 2375,
+          "topScore": 4.11
+        }
+      ]
+    },
+    {
+      "query": "Gemma 4 E4B architecture",
+      "engine": "bing",
+      "serpMs": 1703,
+      "scrapeMs": 725,
+      "totalMs": 2428,
+      "resultCount": 5,
+      "blockedByCaptcha": false,
+      "topUrls": [
+        "https://deepmind.google/models/gemma/gemma-4/",
+        "https://deepmind.google/models/gemma/",
+        "https://gemma4.com/"
+      ],
+      "scraped": [
+        {
+          "url": "https://deepmind.google/models/gemma/gemma-4/",
+          "status": 200,
+          "blockedByCaptcha": false,
+          "excerptChars": 2399,
+          "topScore": 2.49
+        },
+        {
+          "url": "https://gemma4.com/",
+          "status": 200,
+          "blockedByCaptcha": false,
+          "excerptChars": 2362,
+          "topScore": 2.83
+        }
+      ]
+    },
+    {
+      "query": "Chrome MV3 offscreen document",
+      "engine": "ddg",
+      "serpMs": 9047,
+      "scrapeMs": 714,
+      "totalMs": 9761,
+      "resultCount": 5,
+      "blockedByCaptcha": false,
+      "topUrls": [
+        "https://developer.chrome.com/blog/Offscreen-Documents-in-Manifest-v3/",
+        "https://developer.chrome.com/docs/extensions/reference/api/offscreen",
+        "https://kromio.ai/blog/chrome-extension-offscreen-documents"
+      ],
+      "scraped": [
+        {
+          "url": "https://developer.chrome.com/blog/Offscreen-Documents-in-Manifest-v3/",
+          "status": 200,
+          "blockedByCaptcha": false,
+          "excerptChars": 2300,
+          "topScore": 4.08
+        },
+        {
+          "url": "https://kromio.ai/blog/chrome-extension-offscreen-documents",
+          "status": 200,
+          "blockedByCaptcha": false,
+          "excerptChars": 0,
+          "topScore": 0
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "pageFixturesPassed": "8/8",
+    "serpQueriesSucceeded": "3/3",
+    "queriesWithDistilledSources": "3/3",
+    "falsePositiveCaptchaRatePct": 0,
+    "apiKeysRequired": 0
+  },
+  "status": "ok"
+}

@@ -1,6 +1,7 @@
 import type { ChatModelAdapter, ThreadMessage } from '@assistant-ui/react';
 import type { ChatMessage } from '../shared/protocol.ts';
 import { buildModeSystemMessage } from '../shared/systemPrompt.ts';
+import { rankPassagesBm25 } from '../tools/bm25Ranker.ts';
 import {
   detectPendingToolCall,
   formatToolResultMessage,
@@ -15,10 +16,18 @@ import {
 } from './agentController.ts';
 import type { OffscreenEngineClient } from './engineClient.ts';
 
+export interface ActivePageAdapterSnapshot {
+  contextMsg: ChatMessage;
+  groundingText: string;
+  fullContent?: string;
+  truncated?: boolean;
+}
+
 export interface TinyGptChatAdapterOptions {
   enableAgentTools?: boolean;
   getModeOptions?: () => { pageEnabled: boolean; researchEnabled: boolean };
-  getActivePageContext?: () => { contextMsg: ChatMessage; groundingText: string } | null;
+  getActivePageContext?: () => ActivePageAdapterSnapshot | null;
+  refreshActivePage?: () => Promise<ActivePageAdapterSnapshot | null>;
   onToolStatus?: (status: ToolStatusUpdate | null) => void;
   onPermissionRequired?: (req: { toolName: string; label: string }) => void;
   onBeforeGenerate?: () => void;
@@ -194,12 +203,53 @@ export function createTinyGptChatAdapter(
     async *run({ messages, abortSignal }) {
       options.onBeforeGenerate?.();
       const baseRequestId = makeRequestId();
-      const chatMessages = toChatMessages(messages);
+      const baseChatMessages = toChatMessages(messages);
       const modeOpts = options.getModeOptions?.() ?? {
         pageEnabled: true,
         researchEnabled: false,
       };
-      const activePage = modeOpts.pageEnabled ? (options.getActivePageContext?.() ?? null) : null;
+      let activePage = modeOpts.pageEnabled ? (options.getActivePageContext?.() ?? null) : null;
+      if (modeOpts.pageEnabled && options.refreshActivePage) {
+        const refreshed = await Promise.race([
+          options.refreshActivePage().catch(() => null),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 220)),
+        ]);
+        if (refreshed) {
+          activePage = refreshed;
+        }
+      }
+
+      // If page was truncated in the warm preview, append BM25-retrieved passages to the
+      // final user turn so the cached `tab:*` KV prefix stays intact (`prefixReused: true`).
+      let chatMessages = baseChatMessages;
+      let groundingText = activePage?.groundingText ?? '';
+      if (
+        activePage?.truncated &&
+        activePage.fullContent &&
+        activePage.fullContent.length > activePage.contextMsg.content.length &&
+        baseChatMessages.length > 0
+      ) {
+        const lastIdx = baseChatMessages.length - 1;
+        const lastMsg = baseChatMessages[lastIdx];
+        if (lastMsg.role === 'user' && lastMsg.content.trim()) {
+          const ranked = rankPassagesBm25(activePage.fullContent, lastMsg.content, 4200);
+          if (
+            ranked.topScore > 0 &&
+            ranked.excerpt &&
+            !activePage.contextMsg.content.includes(ranked.excerpt.slice(0, 120))
+          ) {
+            chatMessages = [
+              ...baseChatMessages.slice(0, lastIdx),
+              {
+                role: 'user',
+                content: `${lastMsg.content}\n\n[Relevant sections retrieved from full page]\n${ranked.excerpt}`,
+              },
+            ];
+            groundingText = `${groundingText}\n\n${ranked.excerpt}`;
+          }
+        }
+      }
+
       const engineBridge = createSinglePassEngineBridge(client, baseRequestId, true);
 
       const parserAdapter: ToolParserAdapter = {
@@ -270,9 +320,10 @@ export function createTinyGptChatAdapter(
           pageEnabled: modeOpts.pageEnabled,
           pageAttached: Boolean(activePage),
           researchEnabled: modeOpts.researchEnabled,
+          pageTruncated: Boolean(activePage?.truncated),
         }),
         activePageContext: activePage?.contextMsg ?? null,
-        initialGroundingText: activePage?.groundingText ?? '',
+        initialGroundingText: groundingText,
         engine: engineBridge,
         tools: toolBridge,
         parser: parserAdapter,

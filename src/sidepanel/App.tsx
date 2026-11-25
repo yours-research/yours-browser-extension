@@ -92,6 +92,7 @@ export function App() {
               pageEnabled: includeActivePageRef.current,
               pageAttached: hasPage,
               researchEnabled: researchEnabledRef.current,
+              pageTruncated: Boolean(page?.truncated),
             }),
           ];
           if (hasPage && page) {
@@ -131,6 +132,7 @@ export function App() {
               url: page.url,
               content: page.content,
               mode: page.mode,
+              truncated: page.truncated,
             };
           }
           setActivePagePreview(null);
@@ -142,6 +144,7 @@ export function App() {
             pageEnabled: true,
             pageAttached: true,
             researchEnabled: researchEnabledRef.current,
+            pageTruncated: Boolean(tab.truncated),
           }),
           buildActivePageContextMessage({
             title: tab.title,
@@ -182,8 +185,8 @@ export function App() {
         tabCtrl.notifyTabChanged(true);
       }
     };
-    const onUpdated = (_tabId: number, changeInfo: { status?: string }) => {
-      if (changeInfo.status === 'complete' && includeActivePageRef.current) {
+    const onUpdated = (_tabId: number, changeInfo: { status?: string; url?: string }) => {
+      if ((changeInfo.status === 'complete' || typeof changeInfo.url === 'string') && includeActivePageRef.current) {
         tabCtrl.notifyTabChanged(true);
       }
     };
@@ -217,8 +220,45 @@ export function App() {
               content: page.content,
               mode: page.mode,
             }),
-            groundingText: page.content,
+            groundingText: page.fullContent ?? page.content,
+            fullContent: page.fullContent ?? page.content,
+            truncated: page.truncated,
           };
+        },
+        refreshActivePage: async () => {
+          if (!includeActivePageRef.current) {
+            return null;
+          }
+          if (overriddenPageRef.current) {
+            return {
+              contextMsg: buildActivePageContextMessage({
+                title: overriddenPageRef.current.title,
+                url: overriddenPageRef.current.url,
+                content: overriddenPageRef.current.content,
+                mode: overriddenPageRef.current.mode,
+              }),
+              groundingText: overriddenPageRef.current.fullContent ?? overriddenPageRef.current.content,
+              fullContent: overriddenPageRef.current.fullContent ?? overriddenPageRef.current.content,
+              truncated: overriddenPageRef.current.truncated,
+            };
+          }
+          const fresh = await engineClient.extractActiveTabPreview();
+          if (fresh && fresh.content.trim().length > 0 && !fresh.error) {
+            setActivePageError(null);
+            setActivePagePreview(fresh);
+            return {
+              contextMsg: buildActivePageContextMessage({
+                title: fresh.title,
+                url: fresh.url,
+                content: fresh.content,
+                mode: fresh.mode,
+              }),
+              groundingText: fresh.fullContent ?? fresh.content,
+              fullContent: fresh.fullContent ?? fresh.content,
+              truncated: fresh.truncated,
+            };
+          }
+          return null;
         },
         onBeforeGenerate: () => {
           typingCtrl.cancelForSubmit();

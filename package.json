@@ -21,7 +21,8 @@
     "e2e:track4": "node scripts/run-track4-speed.mjs",
     "e2e:track5": "node scripts/run-track5-speed.mjs",
     "e2e:track6": "node scripts/run-track6-ux-crossgpu.mjs",
-    "e2e:track6:matrix": "node scripts/run-track6-4mode-matrix.mjs"
+    "e2e:track6:matrix": "node scripts/run-track6-4mode-matrix.mjs",
+    "eval:firecrawl": "node scripts/eval-search-and-page.mjs"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.15.38",

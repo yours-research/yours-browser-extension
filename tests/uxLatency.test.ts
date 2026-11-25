@@ -151,6 +151,15 @@ describe('systemPrompt', () => {
     const mOnOn = buildModeSystemMessage({ pageEnabled: true, pageAttached: false, researchEnabled: true });
     expect(mOnOn.content).toContain('- read_active_page');
     expect(mOnOn.content).toContain('- web_search');
+
+    const mTrunc = buildModeSystemMessage({
+      pageEnabled: true,
+      pageAttached: true,
+      researchEnabled: false,
+      pageTruncated: true,
+    });
+    expect(mTrunc.content).toContain('truncated');
+    expect(mTrunc.content).toContain('- read_active_page(query?: string');
   });
 });
 

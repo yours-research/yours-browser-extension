@@ -175,7 +175,7 @@ async function fetchSingleSource(
   if (markdown.length < 200 && deps.openHiddenTabAndExtract) {
     try {
       const tabRes = await deps.openHiddenTabAndExtract(normalizedUrl);
-      if (detectAntiBotChallenge(tabRes.html)) {
+      if (tabRes.blockedByCaptcha || detectAntiBotChallenge(tabRes.html)) {
         return {
           url: normalizedUrl,
           title: tabRes.title || title,
@@ -188,14 +188,21 @@ async function fetchSingleSource(
           error: 'Blocked by anti-bot/CAPTCHA challenge in background tab.',
         };
       }
-      const tabDistilled = distillHtmlToMarkdown(tabRes.html, {
-        baseUrl: tabRes.url ?? normalizedUrl,
-        maxChars: Math.max(maxCharsPerSource * 3, 12000),
-      });
-      if (tabDistilled.markdown.length > markdown.length) {
-        title = tabDistilled.title || tabRes.title || title;
-        markdown = tabDistilled.markdown;
+      const tabMarkdown = tabRes.markdown?.trim();
+      if (tabMarkdown && tabMarkdown.length > markdown.length) {
+        title = tabRes.title || title;
+        markdown = tabMarkdown;
         fromHiddenTab = true;
+      } else {
+        const tabDistilled = distillHtmlToMarkdown(tabRes.html, {
+          baseUrl: tabRes.url ?? normalizedUrl,
+          maxChars: Math.max(maxCharsPerSource * 3, 12000),
+        });
+        if (tabDistilled.markdown.length > markdown.length) {
+          title = tabDistilled.title || tabRes.title || title;
+          markdown = tabDistilled.markdown;
+          fromHiddenTab = true;
+        }
       }
     } catch {
       // Keep static result or error
