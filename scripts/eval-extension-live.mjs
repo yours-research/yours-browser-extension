@@ -3326,6 +3326,414 @@ async function main() {
       }
 
       // ------------------------------------------------------------------
+      // Case 37 (v9): PromptTemplateList Filter, Pin Persistence & Live Qwen Turn @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV9Ptl = sidePanel.viewportSize();
+      try {
+        const errorsBeforePtl = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/article-quantum`, { waitUntil: 'domcontentloaded' });
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', true);
+        await homePage.bringToFront();
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          window.__TINYGPT_UI__.refreshActiveTab();
+          await window.__TINYGPT_UI__.clearChat();
+        });
+        await waitForUiMetrics(
+          sidePanel,
+          (m) => Boolean(m.activePage?.url?.includes('/article-quantum')),
+          { timeoutMs: 12000, pollMs: 100 },
+        );
+
+        const composerEl = sidePanel.locator('.yui-composer-input');
+        await composerEl.click();
+        await composerEl.fill('/prompts');
+        const ptl = sidePanel.locator('[data-slot="prompt-template-list"]');
+        await ptl.waitFor({ state: 'visible', timeout: 5000 });
+
+        // Category filter check
+        await ptl.locator('[role="tab"]:has-text("Page")').click();
+        const filteredRows = await ptl.locator('[data-template-id]').count();
+        await ptl.locator('[role="tab"]:has-text("All")').click();
+
+        // Pin persistence via chrome.storage.local
+        await ptl.locator('[data-template-id="audit-page"] .yui-ptl-pin-btn').click();
+        const pinPersisted = await sidePanel.evaluate(
+          () =>
+            new Promise((resolve) => {
+              const row = document.querySelector('[data-slot="prompt-template-list"] [data-template-id="audit-page"]');
+              const pinnedAttr = row?.getAttribute('data-pinned') === 'true';
+              if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+                chrome.storage.local.get('yours-pinned-templates', (res) => {
+                  const arr = res?.['yours-pinned-templates'];
+                  resolve({
+                    pinnedAttr,
+                    inStorage: Array.isArray(arr) && arr.includes('audit-page'),
+                  });
+                });
+              } else {
+                resolve({ pinnedAttr, inStorage: true });
+              }
+            }),
+        );
+
+        const ptlDom = await sidePanel.evaluate(() => {
+          const el = document.querySelector('[data-slot="prompt-template-list"]');
+          const styledNodes = el
+            ? Array.from(el.querySelectorAll('[style]')).length + (el.getAttribute('style') ? 1 : 0)
+            : -1;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          return { styledNodes, overflowPx };
+        });
+
+        await ptl.locator('[data-template-id="summarize"] .yui-ptl-main').click();
+        await ptl.waitFor({ state: 'hidden', timeout: 5000 });
+        const insertedText = await composerEl.inputValue();
+        await sidePanel.locator('.yui-send-btn').click();
+        const ptlStart = Date.now();
+        await waitForUiMetrics(
+          sidePanel,
+          (m) => m.turnState === 'idle' && !m.isGenerating && m.lastAssistantText.length > 0,
+          { timeoutMs: 60000, pollMs: 120 },
+        );
+        const ptlMetrics = await sidePanel.evaluate(() => window.__TINYGPT_UI__.getMetrics());
+        const ptlAns = ptlMetrics?.lastAssistantText ?? '';
+        const ptlLeaks = findLeakedPatterns(ptlAns);
+
+        const ptlChecks = {
+          categoryFiltered: filteredRows >= 1,
+          pinPersisted: pinPersisted.pinnedAttr && pinPersisted.inStorage,
+          selectedInsertedAndRanQwen:
+            /summarize/i.test(insertedText) && /QUANTUM-ANCHOR-8821|49|BUDGET-CAP-49M/i.test(ptlAns),
+          zeroInlineStyles: ptlDom.styledNodes === 0,
+          zeroOverflowAt340px: ptlDom.overflowPx === 0,
+          zeroLeaks: ptlLeaks.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforePtl,
+        };
+        const ptlScore = Object.values(ptlChecks).filter(Boolean).length / Object.keys(ptlChecks).length;
+        recordCase({
+          id: 'V9_prompt_template_list_category_pin_and_live_qwen_340px',
+          suite: 'harness',
+          passed: ptlScore === 1,
+          score: ptlScore,
+          latencyMs: Date.now() - ptlStart,
+          metrics: {
+            filteredRows,
+            pinnedInStorage: pinPersisted.inStorage,
+            styledNodes: ptlDom.styledNodes,
+            overflowPx: ptlDom.overflowPx,
+            ttftMs: round(ptlMetrics?.ttftMs ?? 0, 1),
+            leakCount: ptlLeaks.length,
+          },
+          ...(ptlScore < 1 ? { error: `Checks=${JSON.stringify(ptlChecks)} ans=${JSON.stringify(ptlAns.slice(0, 140))}` } : {}),
+        });
+      } finally {
+        await sidePanel
+          .evaluate(() => {
+            if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+              chrome.storage.local.remove('yours-pinned-templates');
+            }
+          })
+          .catch(() => {});
+        await toggleChip(sidePanel, 'Page', false).catch(() => {});
+        if (origViewportV9Ptl) {
+          await sidePanel.setViewportSize(origViewportV9Ptl).catch(() => {});
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Case 38 (v9): ExportSessionCard Markdown & JSON + 0 Network @ 340px
+      // ------------------------------------------------------------------
+      let v9ExportTab = null;
+      const origViewportV9Exp = sidePanel.viewportSize();
+      try {
+        const errorsBeforeExp = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/home`, { waitUntil: 'domcontentloaded' });
+        v9ExportTab = await context.newPage();
+        attachPageDiagnostics(v9ExportTab, 'v9ExportTab', runtimeErrors);
+        await v9ExportTab.goto(`${baseUrl}/spec-alpha`, { waitUntil: 'domcontentloaded' });
+
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', true);
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await homePage.bringToFront();
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          window.__TINYGPT_UI__.refreshActiveTab();
+          await window.__TINYGPT_UI__.clearChat();
+        });
+        await waitForUiMetrics(
+          sidePanel,
+          (m) => Boolean(m.activePage?.url?.includes('/home')),
+          { timeoutMs: 12000, pollMs: 100 },
+        );
+
+        const expTurn = await runUiTurn(
+          sidePanel,
+          'Use list_tabs and read_tab on Alpha Cluster Spec and state its cluster identifier.',
+          { timeoutMs: 90000 },
+        );
+
+        const netBeforeExport = networkRequests.length;
+        await sidePanel.locator('button.yui-notch-btn[aria-label="Threads"]').click();
+        const exportCard = sidePanel.locator('[data-slot="export-session-card"]');
+        await exportCard.waitFor({ state: 'visible', timeout: 5000 });
+
+        const expDom = await sidePanel.evaluate(() => {
+          const el = document.querySelector('[data-slot="export-session-card"]');
+          const styledNodes = el
+            ? Array.from(el.querySelectorAll('[style]')).length + (el.getAttribute('style') ? 1 : 0)
+            : -1;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          return { styledNodes, overflowPx };
+        });
+
+        await exportCard.locator('.yui-export-copy-btn').click();
+        const mdExport = await sidePanel.evaluate(() => window.__TINYGPT_UI__.getLastExport());
+
+        await exportCard.locator('button:has-text("JSON")').click();
+        await exportCard.locator('button[aria-label="Include tool traces"]').click();
+        await exportCard.locator('.yui-export-copy-btn').click();
+        const jsonExport = await sidePanel.evaluate(() => window.__TINYGPT_UI__.getLastExport());
+
+        await exportCard.locator('.yui-export-dl-btn').click();
+        await sidePanel.locator('[data-slot="status-toast"]').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+        await sidePanel.locator('button.yui-notch-btn[aria-label="Threads"]').click();
+        const netDuringExport = networkRequests.slice(netBeforeExport).filter((r) => !r.url.startsWith(baseUrl));
+
+        let parsedJson = null;
+        try {
+          parsedJson = jsonExport?.content ? JSON.parse(jsonExport.content) : null;
+        } catch {
+          parsedJson = null;
+        }
+
+        const expChecks = {
+          markdownValid:
+            mdExport?.format === 'markdown' &&
+            /^#\s+/m.test(mdExport.content) &&
+            /ALPHA-TOKEN-718/i.test(mdExport.content),
+          jsonValidWithToggles:
+            Boolean(parsedJson) &&
+            jsonExport?.format === 'json' &&
+            parsedJson.includeToolTraces === false &&
+            Array.isArray(parsedJson.messages) &&
+            !parsedJson.messages.some((m) => m.role === 'tool') &&
+            Array.isArray(parsedJson.citations) &&
+            parsedJson.citations.length >= 1,
+          zeroNetworkRequests: netDuringExport.length === 0,
+          zeroInlineStyles: expDom.styledNodes === 0,
+          zeroOverflowAt340px: expDom.overflowPx === 0,
+          zeroLeaks: expTurn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeExp,
+        };
+        const expScore = Object.values(expChecks).filter(Boolean).length / Object.keys(expChecks).length;
+        recordCase(
+          {
+            id: 'V9_export_session_card_markdown_json_and_zero_net_340px',
+            suite: 'harness',
+            passed: expScore === 1,
+            score: expScore,
+            latencyMs: expTurn.elapsedMs,
+            metrics: {
+              markdownBytes: mdExport?.byteLength ?? 0,
+              jsonBytes: jsonExport?.byteLength ?? 0,
+              styledNodes: expDom.styledNodes,
+              overflowPx: expDom.overflowPx,
+              ttftMs: round(expTurn.metrics?.ttftMs ?? 0, 1),
+              leakCount: expTurn.leakedTags.length,
+            },
+            ...(expScore < 1 ? { error: `Checks=${JSON.stringify(expChecks)} md=${JSON.stringify(mdExport?.content?.slice(0, 120))} json=${JSON.stringify(jsonExport?.content?.slice(0, 120))}` } : {}),
+          },
+          expTurn,
+        );
+      } finally {
+        if (v9ExportTab) await v9ExportTab.close().catch(() => {});
+        await toggleChip(sidePanel, 'Page', false).catch(() => {});
+        if (origViewportV9Exp) {
+          await sidePanel.setViewportSize(origViewportV9Exp).catch(() => {});
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Case 39 (v9): GenUI TimelineCard & QuoteExcerptCard @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV9Gen = sidePanel.viewportSize();
+      try {
+        const errorsBeforeGen = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/home`, { waitUntil: 'domcontentloaded' });
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', false);
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          await window.__TINYGPT_UI__.clearChat();
+        });
+
+        const tlTurn = await runUiTurn(
+          sidePanel,
+          'Output ONLY this exact fenced block and nothing else:\n```genui\n{"type":"timeline","title":"Release Verification","steps":[{"id":"s1","label":"Build","status":"done"},{"id":"s2","label":"Eval","status":"active"}]}\n```',
+          { timeoutMs: 60000 },
+        );
+        const tlCard = sidePanel.locator('[data-slot="timeline-card"]').first();
+        await tlCard.waitFor({ state: 'visible', timeout: 8000 });
+
+        const qecTurn = await runUiTurn(
+          sidePanel,
+          'Output ONLY this exact fenced block and nothing else:\n```genui\n{"type":"quote_excerpt","sourceTitle":"WebGPU Architecture","sourceDomain":"gpuweb.github.io","sourceUrl":"https://gpuweb.github.io/gpuweb/","locator":"Sec 2.1","quote":"WebGPU exposes modern GPU compute capabilities safely."}\n```',
+          { timeoutMs: 60000 },
+        );
+        const qecCard = sidePanel.locator('[data-slot="quote-excerpt-card"]').first();
+        await qecCard.waitFor({ state: 'visible', timeout: 8000 });
+        await qecCard.locator('.yui-qec-copy').click();
+        const qecCopyText = (await qecCard.locator('.yui-qec-copy').textContent()) ?? '';
+
+        const genDom = await sidePanel.evaluate(() => {
+          const tl = document.querySelector('[data-slot="timeline-card"]');
+          const qec = document.querySelector('[data-slot="quote-excerpt-card"]');
+          const countStyles = (root) =>
+            root ? Array.from(root.querySelectorAll('[style]')).length + (root.getAttribute('style') ? 1 : 0) : -1;
+          const link = qec?.querySelector('a.yui-qec-link');
+          return {
+            hasTl: Boolean(tl),
+            hasQec: Boolean(qec),
+            tlStyled: countStyles(tl),
+            qecStyled: countStyles(qec),
+            safeHttpsHref: link ? /^https:\/\//i.test(link.getAttribute('href') || '') : false,
+            overflowPx: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
+          };
+        });
+
+        const genChecks = {
+          timelineAndQuoteRendered: genDom.hasTl && genDom.hasQec,
+          copyFeedbackAndSafeHref: /copied/i.test(qecCopyText) && genDom.safeHttpsHref,
+          zeroInlineStyles: genDom.tlStyled === 0 && genDom.qecStyled === 0,
+          zeroOverflowAt340px: genDom.overflowPx === 0,
+          zeroLeaks: tlTurn.leakedTags.length + qecTurn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeGen,
+        };
+        const genScore = Object.values(genChecks).filter(Boolean).length / Object.keys(genChecks).length;
+        recordCase(
+          {
+            id: 'V9_genui_timeline_and_quote_excerpt_cards_340px',
+            suite: 'harness',
+            passed: genScore === 1,
+            score: genScore,
+            latencyMs: tlTurn.elapsedMs + qecTurn.elapsedMs,
+            metrics: {
+              hasTl: genDom.hasTl,
+              hasQec: genDom.hasQec,
+              copiedQuoteOk: /copied/i.test(qecCopyText),
+              safeHttpsHref: genDom.safeHttpsHref,
+              overflowPx: genDom.overflowPx,
+              ttftMs: round(tlTurn.metrics?.ttftMs ?? 0, 1),
+              leakCount: tlTurn.leakedTags.length + qecTurn.leakedTags.length,
+            },
+            ...(genScore < 1 ? { error: `Checks=${JSON.stringify(genChecks)} dom=${JSON.stringify(genDom)} tlAns=${JSON.stringify(tlTurn.answerText.slice(0, 120))} qecAns=${JSON.stringify(qecTurn.answerText.slice(0, 120))}` } : {}),
+          },
+          qecTurn,
+        );
+      } finally {
+        if (origViewportV9Gen) {
+          await sidePanel.setViewportSize(origViewportV9Gen).catch(() => {});
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Case 40 (v9): Post-Abort + Multi-Tab KV Prefix Reuse & Recovery
+      // ------------------------------------------------------------------
+      let v9Alpha = null;
+      let v9Beta = null;
+      try {
+        const errorsBeforeAbortMt = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/home`, { waitUntil: 'domcontentloaded' });
+        v9Alpha = await context.newPage();
+        attachPageDiagnostics(v9Alpha, 'v9Alpha', runtimeErrors);
+        await v9Alpha.goto(`${baseUrl}/spec-alpha`, { waitUntil: 'domcontentloaded' });
+        v9Beta = await context.newPage();
+        attachPageDiagnostics(v9Beta, 'v9Beta', runtimeErrors);
+        await v9Beta.goto(`${baseUrl}/spec-beta`, { waitUntil: 'domcontentloaded' });
+
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', true);
+        await homePage.bringToFront();
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          window.__TINYGPT_UI__.refreshActiveTab();
+          await window.__TINYGPT_UI__.clearChat();
+        });
+        await waitForUiMetrics(
+          sidePanel,
+          (m) => Boolean(m.activePage?.url?.includes('/home')),
+          { timeoutMs: 12000, pollMs: 100 },
+        );
+
+        // Trigger mid-stream abort first
+        await sidePanel.locator('.yui-composer-input').fill('Write a detailed 300-word summary of WebGPU memory ordering.');
+        await sidePanel.locator('.yui-send-btn').click();
+        await waitForUiMetrics(
+          sidePanel,
+          async (m) => {
+            if (!m.isGenerating) return false;
+            const tr = await sidePanel.evaluate(() => window.__TINYGPT_UI__.getTrajectory());
+            return (tr.streamingText || '').length >= 16;
+          },
+          { timeoutMs: 45000, pollMs: 60 },
+        ).catch(async () => {
+          await waitForUiMetrics(sidePanel, (m) => m.isGenerating, { timeoutMs: 25000, pollMs: 50 });
+        });
+        await sidePanel.evaluate(() => window.__TINYGPT_UI__.abortTurn());
+        await waitForUiMetrics(sidePanel, (m) => !m.isGenerating && m.status === 'ready', { timeoutMs: 10000, pollMs: 25 });
+        await sidePanel.evaluate(() => window.__TINYGPT_UI__.clearChat());
+
+        const mtTurn1 = await runUiTurn(
+          sidePanel,
+          'Use list_tabs and read_tab to inspect "Alpha Cluster Spec" and "Beta Cluster Spec" and report both cluster identifiers.',
+          { timeoutMs: 90000 },
+        );
+        const mtTurn2 = await runUiTurn(
+          sidePanel,
+          'From our conversation above (do not call any tools), repeat ONLY the Beta cluster identifier.',
+          { measureInterTurnStartMs: mtTurn1.endMs, timeoutMs: 60000 },
+        );
+
+        const mtChecks = {
+          multiTabSynthesizedAfterAbort:
+            /ALPHA-TOKEN-718/i.test(mtTurn1.answerText) && /BETA-TOKEN-924/i.test(mtTurn1.answerText),
+          followupPrefixReusedAndAccurate:
+            mtTurn2.metrics?.prefixReused === true &&
+            /BETA-TOKEN-924/i.test(mtTurn2.answerText) &&
+            (mtTurn2.metrics?.ttftMs ?? 9999) < 1200,
+          zeroLeaks: mtTurn1.leakedTags.length + mtTurn2.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeAbortMt,
+        };
+        const mtScore = Object.values(mtChecks).filter(Boolean).length / Object.keys(mtChecks).length;
+        recordCase(
+          {
+            id: 'V9_post_abort_multi_tab_kv_prefix_reuse_and_recovery',
+            suite: 'harness',
+            passed: mtScore === 1,
+            score: mtScore,
+            latencyMs: mtTurn1.elapsedMs + mtTurn2.elapsedMs,
+            metrics: {
+              q1TtftMs: round(mtTurn1.metrics?.ttftMs ?? 0, 1),
+              q2TtftMs: round(mtTurn2.metrics?.ttftMs ?? 0, 1),
+              q2PrefixReused: Boolean(mtTurn2.metrics?.prefixReused),
+              leakCount: mtTurn1.leakedTags.length + mtTurn2.leakedTags.length,
+            },
+            ...(mtScore < 1 ? { error: `Checks=${JSON.stringify(mtChecks)} ans1=${JSON.stringify(mtTurn1.answerText.slice(0, 140))} ans2=${JSON.stringify(mtTurn2.answerText.slice(0, 120))}` } : {}),
+          },
+          { q1: mtTurn1, q2: mtTurn2 },
+        );
+      } finally {
+        if (v9Alpha) await v9Alpha.close().catch(() => {});
+        if (v9Beta) await v9Beta.close().catch(() => {});
+        await toggleChip(sidePanel, 'Page', false).catch(() => {});
+      }
+
+      // ------------------------------------------------------------------
       // Case 36 (v8): CodeBlockCard + TopNotch 84px Fade + OnboardingCard Flow
       // ------------------------------------------------------------------
       const origViewportV8Code = sidePanel.viewportSize();
