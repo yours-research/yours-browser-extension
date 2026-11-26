@@ -3065,6 +3065,375 @@ async function main() {
         await toggleChip(sidePanel, 'Web', false).catch(() => {});
         await toggleChip(sidePanel, 'Page', false).catch(() => {});
       }
+
+      // ------------------------------------------------------------------
+      // Case 33 (v8): FloatingComposer `/` Trigger & Live Token Budget @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV8Cmd = sidePanel.viewportSize();
+      try {
+        const errorsBeforeCmd = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/home`, { waitUntil: 'domcontentloaded' });
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', false);
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          await window.__TINYGPT_UI__.clearChat();
+        });
+
+        const budgetBadge = sidePanel.locator('.yui-composer-usage').first();
+        await budgetBadge.waitFor({ state: 'visible', timeout: 5000 });
+        const budgetText = (await budgetBadge.textContent()) ?? '';
+        const slashBtn = sidePanel.locator('.yui-composer-cmd-btn').first();
+        await slashBtn.waitFor({ state: 'visible', timeout: 5000 });
+        await slashBtn.click();
+        await sidePanel.locator('[data-slot="command-palette"]').waitFor({ state: 'visible', timeout: 5000 });
+        const paletteViaButton = await sidePanel.locator('[data-slot="command-palette"]').isVisible();
+        await sidePanel.keyboard.press('Escape');
+        await sidePanel.locator('[data-slot="command-palette"]').waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+
+        // Typing '/' into empty composer opens CommandPalette too
+        const inputEl = sidePanel.locator('.yui-composer-input');
+        await inputEl.click();
+        await inputEl.type('/');
+        await sidePanel.locator('[data-slot="command-palette"]').waitFor({ state: 'visible', timeout: 5000 });
+        const paletteInput = sidePanel.locator('[data-slot="command-palette"] .yui-palette-input');
+        await paletteInput.fill('Shortcuts');
+        await paletteInput.press('Enter');
+        await sidePanel.locator('[data-slot="shortcut-sheet"]').waitFor({ state: 'visible', timeout: 5000 });
+        const navigatedShortcutViaSlash = await sidePanel.locator('[data-slot="shortcut-sheet"]').isVisible();
+        await sidePanel.locator('button.yui-notch-btn[aria-label="Lab"]').click();
+
+        const composerCheck = await sidePanel.evaluate(() => {
+          const badge = document.querySelector('.yui-composer-usage');
+          const cmd = document.querySelector('.yui-composer-cmd-btn');
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          return {
+            overflowPx,
+            zeroInlineStyles: Boolean(badge && !badge.getAttribute('style') && cmd && !cmd.getAttribute('style')),
+          };
+        });
+
+        const cmdChecks = {
+          budgetBadgeVisible: /\d.*\/.*\d/.test(budgetText),
+          paletteViaButton,
+          navigatedShortcutViaSlash,
+          zeroOverflowAt340px: composerCheck.overflowPx === 0,
+          zeroInlineStyles: composerCheck.zeroInlineStyles,
+          zeroErrors: runtimeErrors.length === errorsBeforeCmd,
+        };
+        const cmdScore =
+          Object.values(cmdChecks).filter(Boolean).length / Object.keys(cmdChecks).length;
+        recordCase({
+          id: 'V8_composer_slash_commands_and_token_budget_340px',
+          suite: 'harness',
+          passed: cmdScore === 1,
+          score: cmdScore,
+          latencyMs: 0,
+          metrics: {
+            budgetBadgeVisible: cmdChecks.budgetBadgeVisible,
+            paletteViaButton,
+            navigatedShortcutViaSlash,
+            overflowPx: composerCheck.overflowPx,
+            leakCount: 0,
+          },
+          ...(cmdScore < 1 ? { error: `Checks=${JSON.stringify(cmdChecks)} budgetText=${JSON.stringify(budgetText)}` } : {}),
+        });
+      } finally {
+        if (origViewportV8Cmd) {
+          await sidePanel.setViewportSize(origViewportV8Cmd).catch(() => {});
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Case 34 (v8): ErrorRecoveryCard + InlineNotice Retry & Qwen Recovery
+      // ------------------------------------------------------------------
+      try {
+        const errorsBeforeRec = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/home`, { waitUntil: 'domcontentloaded' });
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', false);
+        await sidePanel.evaluate(async () => {
+          await window.__TINYGPT_UI__.clearChat();
+          window.__TINYGPT_UI__.injectRecoverableError(
+            'Simulated WebGPU compute buffer pressure on chunk 4',
+            'KV checkpoint notice: recovered safely without losing session prefix.',
+          );
+        });
+
+        const errCard = sidePanel.locator('[data-slot="error-recovery-card"]').first();
+        const noticeCard = sidePanel.locator('[data-slot="inline-notice"]').first();
+        await errCard.waitFor({ state: 'visible', timeout: 5000 });
+        await noticeCard.waitFor({ state: 'visible', timeout: 5000 });
+        const cardDetails = await sidePanel.evaluate(() => {
+          const card = document.querySelector('[data-slot="error-recovery-card"]');
+          const notice = document.querySelector('[data-slot="inline-notice"]');
+          return {
+            hasCard: Boolean(card),
+            hasNotice: Boolean(notice),
+            diagnosisText: card?.querySelector('.yui-recovery-diagnosis')?.textContent?.trim() ?? '',
+            noticeText: notice?.querySelector('.yui-notice-text')?.textContent?.trim() ?? '',
+            zeroInlineStyles:
+              Boolean(card && !card.getAttribute('style') && notice && !notice.getAttribute('style')),
+          };
+        });
+
+        // Toggle diagnostics trace if present & click Retry
+        const diagBtn = errCard.locator('.yui-recovery-toggle').first();
+        if (await diagBtn.isVisible().catch(() => false)) {
+          await diagBtn.click();
+        }
+        await errCard.locator('.yui-recovery-retry').click();
+        await errCard.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+        const dismissedOnRetry = (await sidePanel.locator('[data-slot="error-recovery-card"]').count()) === 0;
+
+        const postErrTurn = await runUiTurn(
+          sidePanel,
+          'Reply with the exact token V8-RECOVERED-OK.',
+          { timeoutMs: 60000 },
+        );
+
+        const recChecks = {
+          renderedErrorRecoveryCard:
+            cardDetails.hasCard && /buffer pressure/i.test(cardDetails.diagnosisText),
+          renderedInlineNotice:
+            cardDetails.hasNotice && /checkpoint notice/i.test(cardDetails.noticeText),
+          zeroInlineStyles: cardDetails.zeroInlineStyles,
+          dismissedOnRetry,
+          qwenRecoveredTurn: /V8-RECOVERED-OK/.test(postErrTurn.answerText),
+          zeroLeaks: postErrTurn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeRec,
+        };
+        const recScore =
+          Object.values(recChecks).filter(Boolean).length / Object.keys(recChecks).length;
+        recordCase(
+          {
+            id: 'V8_error_recovery_card_and_inline_notice_live',
+            suite: 'harness',
+            passed: recScore === 1,
+            score: recScore,
+            latencyMs: postErrTurn.elapsedMs,
+            metrics: {
+              renderedErrorRecoveryCard: recChecks.renderedErrorRecoveryCard,
+              renderedInlineNotice: recChecks.renderedInlineNotice,
+              dismissedOnRetry,
+              qwenRecoveredTurn: recChecks.qwenRecoveredTurn,
+              ttftMs: round(postErrTurn.metrics?.ttftMs ?? 0, 1),
+              leakCount: postErrTurn.leakedTags.length,
+            },
+            ...(recScore < 1 ? { error: `Checks=${JSON.stringify(recChecks)} details=${JSON.stringify(cardDetails)} ans=${JSON.stringify(postErrTurn.answerText.slice(0, 140))}` } : {}),
+          },
+          postErrTurn,
+        );
+      } finally {
+        await sidePanel.evaluate(() => window.__TINYGPT_UI__.injectRecoverableError(null, null)).catch(() => {});
+      }
+
+      // ------------------------------------------------------------------
+      // Case 35 (v8): VoiceSessionCard + AudioLevelMeter -> Live Qwen Turn @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV8Voice = sidePanel.viewportSize();
+      try {
+        const errorsBeforeVoice = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/home`, { waitUntil: 'domcontentloaded' });
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', false);
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          await window.__TINYGPT_UI__.clearChat();
+          window.__TINYGPT_UI__.voice.startMockSession({
+            level: 0.25,
+            interimTranscript: 'Calculating total...',
+          });
+        });
+
+        const voiceCard = sidePanel.locator('[data-slot="voice-session-card"]');
+        await voiceCard.waitFor({ state: 'visible', timeout: 5000 });
+        await sidePanel.evaluate(() => {
+          window.__TINYGPT_UI__.voice.pushMockInput({
+            level: 0.85,
+            interimTranscript: '',
+            transcript: 'What is 19 + 23? Answer briefly.',
+          });
+        });
+
+        const voiceDom = await sidePanel.evaluate(() => {
+          const card = document.querySelector('[data-slot="voice-session-card"]');
+          const meter = card?.querySelector('[data-slot="audio-level-meter"]');
+          const styledNodes = card
+            ? Array.from(card.querySelectorAll('[style]')).length + (card.getAttribute('style') ? 1 : 0)
+            : -1;
+          const committed = card?.querySelector('.yui-voice-committed')?.textContent?.trim() ?? '';
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          return {
+            hasCard: Boolean(card),
+            hasMeter: Boolean(meter),
+            styledNodes,
+            committed,
+            overflowPx,
+          };
+        });
+
+        await voiceCard.locator('.yui-voice-end-btn').click();
+        await voiceCard.waitFor({ state: 'hidden', timeout: 5000 });
+        await sidePanel.waitForFunction(
+          () => (document.querySelector('.yui-composer-input')?.value || '').includes('19 + 23'),
+          null,
+          { timeout: 3000 },
+        );
+        const committedToComposer = await sidePanel.locator('.yui-composer-input').inputValue();
+        await sidePanel.locator('.yui-send-btn').click();
+
+        const voiceTurnStart = Date.now();
+        await waitForUiMetrics(
+          sidePanel,
+          (m) => m.turnState === 'idle' && !m.isGenerating && m.lastAssistantText.length > 0,
+          { timeoutMs: 60000, pollMs: 120 },
+        );
+        const voiceMetrics = await sidePanel.evaluate(() => window.__TINYGPT_UI__.getMetrics());
+        const voiceAns = voiceMetrics?.lastAssistantText ?? '';
+        const voiceLeaks = findLeakedPatterns(voiceAns);
+
+        const voiceChecks = {
+          voiceUiMountedCleanly: voiceDom.hasCard && voiceDom.hasMeter && voiceDom.styledNodes === 0,
+          committedTranscriptVisible: /19 \+ 23/.test(voiceDom.committed) && /19 \+ 23/.test(committedToComposer),
+          zeroOverflowAt340px: voiceDom.overflowPx === 0,
+          closedAndExecutedQwenTurn: /\b42\b/.test(voiceAns),
+          zeroLeaks: voiceLeaks.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeVoice,
+        };
+        const voiceScore =
+          Object.values(voiceChecks).filter(Boolean).length / Object.keys(voiceChecks).length;
+        recordCase({
+          id: 'V8_voice_session_card_audio_meter_and_qwen_turn_340px',
+          suite: 'harness',
+          passed: voiceScore === 1,
+          score: voiceScore,
+          latencyMs: Date.now() - voiceTurnStart,
+          metrics: {
+            styledNodes: voiceDom.styledNodes,
+            overflowPx: voiceDom.overflowPx,
+            ttftMs: round(voiceMetrics?.ttftMs ?? 0, 1),
+            leakCount: voiceLeaks.length,
+          },
+          ...(voiceScore < 1 ? { error: `Checks=${JSON.stringify(voiceChecks)} dom=${JSON.stringify(voiceDom)} ans=${JSON.stringify(voiceAns.slice(0, 140))}` } : {}),
+        });
+      } finally {
+        if (origViewportV8Voice) {
+          await sidePanel.setViewportSize(origViewportV8Voice).catch(() => {});
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Case 36 (v8): CodeBlockCard + TopNotch 84px Fade + OnboardingCard Flow
+      // ------------------------------------------------------------------
+      const origViewportV8Code = sidePanel.viewportSize();
+      try {
+        const errorsBeforeCode = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/home`, { waitUntil: 'domcontentloaded' });
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', false);
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          await window.__TINYGPT_UI__.clearChat();
+        });
+
+        const codeTurn = await runUiTurn(
+          sidePanel,
+          'Write a single fenced typescript block with function add(a: number, b: number) { return a + b; } plus 3 short bullet explanations below.',
+          { timeoutMs: 90000 },
+        );
+
+        const codeCard = sidePanel.locator('[data-slot="code-block-card"]').first();
+        await codeCard.waitFor({ state: 'visible', timeout: 8000 });
+        await codeCard.locator('.yui-sr-code-copy').click();
+        const copiedLabel = (await codeCard.locator('.yui-sr-code-copy').textContent()) ?? '';
+
+        const layoutV8 = await sidePanel.evaluate(() => {
+          const card = document.querySelector('[data-slot="code-block-card"]');
+          const scrollEl = document.querySelector('.yui-scroll-stage');
+          const wrapEl = document.querySelector('.yui-scroll-wrap--fade');
+          const beforeHeight = wrapEl ? getComputedStyle(wrapEl, '::before').height : '';
+          if (scrollEl) {
+            scrollEl.scrollTop = Math.min(40, Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight));
+          }
+          const styledInCodeCard = card
+            ? Array.from(card.querySelectorAll('[style]')).length + (card.getAttribute('style') ? 1 : 0)
+            : -1;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          return {
+            hasCodeCard: Boolean(card),
+            styledInCodeCard,
+            beforeHeight,
+            overflowPx,
+          };
+        });
+
+        // Transition into real unloaded state to verify OnboardingCard + click Initialize
+        await sidePanel.evaluate(async () => {
+          await window.__TINYGPT_UI__.clearChat();
+          await window.__TINYGPT_UI__.unloadModel();
+        });
+        const onboardingCard = sidePanel.locator('[data-slot="onboarding-card"]');
+        await onboardingCard.waitFor({ state: 'visible', timeout: 10000 });
+        const onboardingDom = await sidePanel.evaluate(() => {
+          const onb = document.querySelector('[data-slot="onboarding-card"]');
+          const styledNodes = onb
+            ? Array.from(onb.querySelectorAll('[style]')).length + (onb.getAttribute('style') ? 1 : 0)
+            : -1;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          return {
+            visible: Boolean(onb),
+            styledNodes,
+            overflowPx,
+          };
+        });
+        await onboardingCard.locator('.yui-onb-cta').click();
+        await waitForUiMetrics(
+          sidePanel,
+          (m) => m.status !== 'unloaded',
+          { timeoutMs: 15000, pollMs: 100 },
+        );
+
+        const codeOnbChecks = {
+          codeBlockCardRenderedAndCopied:
+            layoutV8.hasCodeCard && /copied/i.test(copiedLabel) && layoutV8.styledInCodeCard === 0,
+          notch84pxSolidCap: layoutV8.beforeHeight === '84px',
+          onboardingCardCleanAndTriggered:
+            onboardingDom.visible && onboardingDom.styledNodes === 0 && onboardingDom.overflowPx === 0,
+          zeroOverflowAt340px: layoutV8.overflowPx === 0,
+          zeroLeaks: codeTurn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeCode,
+        };
+        const codeOnbScore =
+          Object.values(codeOnbChecks).filter(Boolean).length / Object.keys(codeOnbChecks).length;
+        recordCase(
+          {
+            id: 'V8_code_block_card_onboarding_and_notch_clearance_live',
+            suite: 'harness',
+            passed: codeOnbScore === 1,
+            score: codeOnbScore,
+            latencyMs: codeTurn.elapsedMs,
+            metrics: {
+              hasCodeCard: layoutV8.hasCodeCard,
+              copiedBtnOk: /copied/i.test(copiedLabel),
+              notchCapHeight: layoutV8.beforeHeight,
+              onboardingVisible: onboardingDom.visible,
+              overflowPx: Math.max(layoutV8.overflowPx, onboardingDom.overflowPx),
+              ttftMs: round(codeTurn.metrics?.ttftMs ?? 0, 1),
+              leakCount: codeTurn.leakedTags.length,
+            },
+            ...(codeOnbScore < 1 ? { error: `Checks=${JSON.stringify(codeOnbChecks)} layout=${JSON.stringify(layoutV8)} onb=${JSON.stringify(onboardingDom)} ans=${JSON.stringify(codeTurn.answerText.slice(0, 140))}` } : {}),
+          },
+          codeTurn,
+        );
+      } finally {
+        if (origViewportV8Code) {
+          await sidePanel.setViewportSize(origViewportV8Code).catch(() => {});
+        }
+      }
     } catch (caseErr) {
       recordCase({
         id: `FATAL_REMAINING_CASES_${caseResults.length + 1}`,
