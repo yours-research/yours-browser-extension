@@ -1661,6 +1661,10 @@ export class WgslQwen35Engine {
     if (slot.kvPacked1) this.untrackAndDestroy(slot.kvPacked1);
   }
 
+  hasGpuPrefixSlot(slotId: string): boolean {
+    return this.gpuPrefixSlots.has(slotId);
+  }
+
   /**
    * Snapshots active DeltaNet state and `[0..seqPos)` KV cache slices directly
    * into dedicated GPU buffers inside a single command encoder (zero `mapAsync`).

@@ -245,7 +245,7 @@ body,
 
 .ext-md-list {
   margin: 0;
-  padding-left: 18px;
+  padding-inline-start: 18px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -438,7 +438,7 @@ body,
 
 .bench-table th,
 .bench-table td {
-  text-align: left;
+  text-align: start;
   padding: 4px 6px;
   border-bottom: 1px solid var(--yui-hairline);
 }
@@ -470,7 +470,7 @@ body,
 
 .log-meta {
   color: var(--yui-muted);
-  margin-right: 6px;
+  margin-inline-end: 6px;
 }
 
 .ext-sources-group {

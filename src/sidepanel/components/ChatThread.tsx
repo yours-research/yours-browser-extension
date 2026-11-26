@@ -18,6 +18,7 @@ import {
   InlineNotice,
   MessageSkeleton,
   OnboardingCard,
+  AgentHandoffCard,
   PermissionCard,
   ReasoningTrace,
   SourcesDrawer,
@@ -69,6 +70,16 @@ export interface ChatThreadProps {
   onSwitchBranch: (branchNodeId: string) => void;
   onApproveTool: () => void;
   onDenyTool: () => void;
+  agentHandoff?: {
+    title: string;
+    reason: string;
+    origin: string;
+    progressLabel?: string;
+    state: 'waiting' | 'user-active';
+  } | null;
+  onHandoffTakeOver?: () => void;
+  onHandoffResume?: () => void;
+  onHandoffCancel?: () => void;
   onCopyText: (text: string) => void;
   onSpeakText: (text: string) => void;
   onSaveMemory: (text: string) => void;
@@ -182,6 +193,10 @@ export function ChatThread({
   onSwitchBranch,
   onApproveTool,
   onDenyTool,
+  agentHandoff,
+  onHandoffTakeOver,
+  onHandoffResume,
+  onHandoffCancel,
   onCopyText,
   onSpeakText,
   onSaveMemory,
@@ -462,6 +477,19 @@ export function ChatThread({
         }
         return rendered;
       })()}
+
+      {agentHandoff ? (
+        <AgentHandoffCard
+          title={agentHandoff.title}
+          reason={agentHandoff.reason}
+          origin={agentHandoff.origin}
+          progressLabel={agentHandoff.progressLabel}
+          state={agentHandoff.state}
+          onTakeOver={onHandoffTakeOver}
+          onResume={onHandoffResume}
+          onCancel={onHandoffCancel}
+        />
+      ) : null}
 
       {pendingApproval ? (
         <PermissionCard

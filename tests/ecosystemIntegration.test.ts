@@ -5,6 +5,7 @@ import { StreamOutputParser } from '@yours/harness/engine';
 import { selectComputeTier } from '@yours/models/hardware';
 import { toPragmaToolBundle, toQwenToolSchemas } from '@yours/tools/schemas';
 import {
+  AgentHandoffCard,
   AudioLevelMeter,
   CodeBlockCard,
   CommandPalette,
@@ -16,6 +17,7 @@ import {
   NetworkAuditCard,
   OnboardingCard,
   PromptTemplateList,
+  SitePermissionsList,
   StorageQuotaCard,
   StreamingResponse,
   ThreadHistoryList,
@@ -30,6 +32,7 @@ import {
 } from '../src/memory/memoryClient.ts';
 import { ModelDeliveryService } from '../src/offscreen/modelDelivery.ts';
 import { decodeGeneratedText } from '../src/offscreen/inferenceEngine.ts';
+import { PrefixCacheManager } from '../src/offscreen/prefixCacheManager.ts';
 import { BUNDLED_MODEL_IDS } from '../src/shared/protocol.ts';
 import {
   extractReasoningAndBody,
@@ -43,6 +46,12 @@ import {
   createExtensionGuardEngine,
   sanitizeUntrustedText,
 } from '../src/tools/guardBridge.ts';
+import {
+  clampPermissionMode,
+  createSitePermissionEntry,
+  resolveSiteLockReason,
+  sanitizeStoredPermissions,
+} from '../src/tools/sitePermissions.ts';
 import { createExtensionToolRuntime } from '../src/tools/yoursToolRuntime.ts';
 
 const ROOT_DIR = path.resolve(import.meta.dirname, '..');
@@ -376,6 +385,8 @@ describe('@yours/* Ecosystem Integrations & Strict MV3 CSP', () => {
     expect(typeof StorageQuotaCard).toBe('function');
     expect(typeof ModelParametersCard).toBe('function');
     expect(typeof NetworkAuditCard).toBe('function');
+    expect(typeof SitePermissionsList).toBe('function');
+    expect(typeof AgentHandoffCard).toBe('function');
     expect(typeof TimelineCard).toBe('function');
     expect(typeof QuoteExcerptCard).toBe('function');
     expect(countQueryOccurrences(['Quantum Anchor ALPHA', 'alpha node'], 'alpha', false)).toBe(2);
@@ -387,5 +398,60 @@ describe('@yours/* Ecosystem Integrations & Strict MV3 CSP', () => {
     );
     expect(genUiSource).toContain('StreamingResponse');
     expect(genUiSource).toContain('parseAssistantSegments');
+  });
+
+  it('enforces @yours/guard sensitive-origin locks and RTL logical CSS', async () => {
+    const bankLock = resolveSiteLockReason('https://bank.chase.com/accounts');
+    expect(bankLock).toBeTruthy();
+    const checkoutLock = resolveSiteLockReason('https://shop.example.com/checkout-2fa');
+    expect(checkoutLock).toBeTruthy();
+    const benignLock = resolveSiteLockReason('https://docs.example.org/guide');
+    expect(benignLock).toBeUndefined();
+
+    expect(clampPermissionMode('site', bankLock)).toBe('once');
+    expect(clampPermissionMode('site', undefined)).toBe('site');
+
+    const lockedEntry = createSitePermissionEntry('https://bank.chase.com/accounts', {
+      mode: 'site',
+    });
+    expect(lockedEntry?.origin).toBe('https://bank.chase.com');
+    expect(lockedEntry?.mode).toBe('once');
+    expect(lockedEntry?.lockedReason).toBeTruthy();
+
+    const restored = sanitizeStoredPermissions([
+      {
+        origin: 'https://shop.example.com/checkout',
+        mode: 'site',
+        scope: 'Page read',
+      },
+      {
+        origin: 'https://docs.example.org/spec',
+        mode: 'site',
+        scope: 'Page read',
+      },
+    ]);
+    expect(restored.find((r) => r.origin === 'https://shop.example.com')?.mode).toBe('once');
+    expect(restored.find((r) => r.origin === 'https://docs.example.org')?.mode).toBe('site');
+
+    const css = fs.readFileSync(path.join(ROOT_DIR, 'src', 'sidepanel', 'styles.css'), 'utf8');
+    expect(css).toContain('padding-inline-start: 18px');
+    expect(css).toContain('margin-inline-end: 6px');
+    expect(css).not.toMatch(/padding-left:\s*18px/);
+
+    const evictedSlots = new Set<string>(['tab:live']);
+    const mgr = new PrefixCacheManager({
+      activeSeqPos: 4,
+      hasGpuPrefixSlot: (id) => evictedSlots.has(id),
+      saveGpuPrefixSlot: async () => ({ seqPos: 4, byteSize: 64 }),
+      restoreGpuPrefixSlot: async (id) => {
+        if (!evictedSlots.has(id)) throw new Error(`Missing ${id}`);
+        return { seqPos: 4, restoreMs: 1 };
+      },
+      deleteGpuPrefixSlot: (id) => evictedSlots.delete(id),
+      resetState: async () => {},
+    });
+    await mgr.saveTabSlot('tab:live', [1, 2, 3, 4], [{ role: 'user', content: 'hi' }]);
+    evictedSlots.delete('tab:live');
+    expect(mgr.findBestMatch([1, 2, 3, 4, 5], []).source).toBe('none');
   });
 });

@@ -765,9 +765,9 @@ export class InferenceEngine {
     messages: ChatMessage[],
     options?: { isDraft?: boolean; url?: string; contentHash?: string; requestId?: string },
   ): void {
-    // Never let composer typing prefill abort and wipe an in-progress active-tab prefill.
+    // Never let composer typing or base-system warmup abort an in-progress active-tab prefill.
     if (
-      slotKey.startsWith('draft:') &&
+      (slotKey.startsWith('draft:') || slotKey.startsWith('base-system')) &&
       this.bgAbortController !== null &&
       this.activeBgSlotKey?.startsWith('tab:')
     ) {

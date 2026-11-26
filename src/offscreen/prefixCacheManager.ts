@@ -5,6 +5,7 @@ export const TURN_CHECKPOINT_SLOT_ID = 'turn-checkpoint';
 
 export interface GpuPrefixSlotBackend {
   readonly activeSeqPos: number;
+  hasGpuPrefixSlot?(slotId: string): boolean;
   saveGpuPrefixSlot(slotId: string): Promise<{ seqPos: number; byteSize: number }>;
   restoreGpuPrefixSlot(slotId: string): Promise<{ seqPos: number; restoreMs: number }>;
   deleteGpuPrefixSlot(slotId: string): boolean;
@@ -116,7 +117,14 @@ export class PrefixCacheManager {
     let bestSlot: PrefixSlotEntry | undefined;
     let bestSlotMatched = 0;
 
-    for (const record of this.slots.values()) {
+    for (const [slotId, record] of Array.from(this.slots.entries())) {
+      if (
+        typeof this.backend.hasGpuPrefixSlot === 'function' &&
+        !this.backend.hasGpuPrefixSlot(slotId)
+      ) {
+        this.slots.delete(slotId);
+        continue;
+      }
       const { entry } = record;
       if (
         entry.tokenIds.length > bestSlotMatched &&

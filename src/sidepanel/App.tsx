@@ -98,6 +98,21 @@ import {
   SidepanelVoiceController,
   type VoiceStatusSnapshot,
 } from './voiceController.ts';
+import { extractUrlsFromArguments } from '@yours/guard/policy';
+import {
+  SitePermissionsList,
+  type AgentHandoffState,
+  type SitePermissionMode,
+} from '@yours/ui';
+import {
+  createSitePermissionEntry,
+  loadLocalSitePermissions,
+  normalizePermissionOrigin,
+  persistSitePermissions,
+  sanitizeStoredPermissions,
+  SITE_PERMISSIONS_STORAGE_KEY,
+  type StoredSitePermission,
+} from '../tools/sitePermissions.ts';
 
 declare global {
   interface Window {
@@ -208,6 +223,22 @@ declare global {
         }) => void;
         commitAndEnd: () => Promise<string>;
         getSnapshot: () => VoiceStatusSnapshot;
+      };
+      setDirection: (dir: 'ltr' | 'rtl') => void;
+      getDirection: () => 'ltr' | 'rtl';
+      setSitePermission: (
+        urlOrOrigin: string,
+        mode: SitePermissionMode,
+        opts?: { lockedReason?: string; scope?: string },
+      ) => StoredSitePermission | null;
+      revokeSitePermission: (idOrOrigin: string) => void;
+      revokeAllSitePermissions: () => void;
+      getSitePermissions: () => StoredSitePermission[];
+      getHandoffState: () => {
+        active: boolean;
+        state: AgentHandoffState | null;
+        origin: string | null;
+        title: string | null;
       };
     };
   }
@@ -464,11 +495,128 @@ export function App() {
   const recordNetworkAuditRef = useRef<
     (target: string, detail: string, decision: NetworkAuditDecision) => void
   >(() => {});
+  const sitePermissionsRef = useRef<StoredSitePermission[]>(loadLocalSitePermissions());
+  const onConsumeOncePermissionRef = useRef<(origin: string, toolName: string) => void>(() => {});
+  const handoffPausedRef = useRef(false);
+  const handoffResolverRef = useRef<{ resolve: (resumed: boolean) => void } | null>(null);
+  const handoffApprovedTurnRef = useRef(false);
+
   const guardEngine = useMemo<ExtensionGuardEngine>(
     () => ({
       ...rawGuardEngine,
       async evaluateToolCall(context) {
-        const decision = await rawGuardEngine.evaluateToolCall(context);
+        const argUrls = extractUrlsFromArguments(context.arguments);
+        const candidateTargets = [...argUrls];
+        if (context.tool.name === 'read_active_tab' || context.tool.name === 'interact_page') {
+          let activeTarget = context.activeOrigin ?? null;
+          if (typeof chrome !== 'undefined' && chrome.tabs?.query) {
+            try {
+              const activeTabs = await chrome.tabs.query({
+                active: true,
+                lastFocusedWindow: true,
+              });
+              const liveTab = activeTabs.find(
+                (t) => t.url && !t.url.startsWith('chrome-extension://'),
+              );
+              if (liveTab?.url) {
+                activeTarget = liveTab.url;
+              }
+            } catch {
+              // Ignore active tab lookup failures
+            }
+          }
+          if (activeTarget) {
+            candidateTargets.push(activeTarget);
+          }
+        }
+        if (
+          context.tool.name === 'read_tab' &&
+          typeof chrome !== 'undefined' &&
+          chrome.tabs
+        ) {
+          const rawTabId = context.arguments?.tab_id ?? context.arguments?.tabId;
+          const numericTabId =
+            typeof rawTabId === 'number'
+              ? rawTabId
+              : typeof rawTabId === 'string' && /^\d+$/.test(rawTabId.trim())
+                ? Number(rawTabId.trim())
+                : null;
+          if (numericTabId !== null && chrome.tabs.get) {
+            try {
+              const tab = await chrome.tabs.get(numericTabId);
+              if (tab?.url) {
+                candidateTargets.push(tab.url);
+              }
+            } catch {
+              // Ignore tab lookup failures
+            }
+          } else if (typeof context.arguments?.title === 'string' && chrome.tabs.query) {
+            try {
+              const titleNeedle = context.arguments.title.trim().toLowerCase();
+              const tabs = await chrome.tabs.query({});
+              const matched = tabs.find((t) =>
+                (t.title ?? '').toLowerCase().includes(titleNeedle),
+              );
+              if (matched?.url) {
+                candidateTargets.push(matched.url);
+              }
+            } catch {
+              // Ignore tab title query failures
+            }
+          }
+        }
+
+        const ledger = sitePermissionsRef.current;
+        for (const rawTarget of candidateTargets) {
+          const normOrigin = normalizePermissionOrigin(rawTarget);
+          if (!normOrigin) continue;
+          const entry = ledger.find((item) => item.origin === normOrigin);
+          if (entry && entry.mode === 'off') {
+            recordNetworkAuditRef.current(
+              entry.origin,
+              `Blocked ${context.tool.name} (Site permission is set to Off)`,
+              'blocked',
+            );
+            return {
+              verdict: 'deny',
+              reason: `Site permission is set to Off for ${entry.origin}. Change access in Lab -> Site Permissions.`,
+              triggeredRule: 'site-permission-off',
+              lethalTrifectaRisk: false,
+            };
+          }
+        }
+
+        const onceOriginsToConsume = new Set<string>();
+        const approvedFromLedger: string[] = [];
+        for (const entry of ledger) {
+          if (entry.mode === 'site' && !entry.lockedReason) {
+            approvedFromLedger.push(entry.origin);
+          } else if (entry.mode === 'once') {
+            approvedFromLedger.push(entry.origin);
+            onceOriginsToConsume.add(entry.origin);
+          }
+        }
+
+        const effectiveContext =
+          approvedFromLedger.length > 0
+            ? {
+                ...context,
+                explicitlyApprovedOrigins: Array.from(
+                  new Set([...(context.explicitlyApprovedOrigins ?? []), ...approvedFromLedger]),
+                ),
+              }
+            : context;
+
+        const decision = await rawGuardEngine.evaluateToolCall(effectiveContext);
+
+        if (decision.verdict === 'allow' && onceOriginsToConsume.size > 0) {
+          for (const rawTarget of candidateTargets) {
+            const normOrigin = normalizePermissionOrigin(rawTarget);
+            if (normOrigin && onceOriginsToConsume.has(normOrigin)) {
+              onConsumeOncePermissionRef.current(normOrigin, context.tool.name);
+            }
+          }
+        }
         if (decision.verdict === 'deny') {
           recordNetworkAuditRef.current(
             String(context.tool?.name ?? 'tool_call'),
@@ -525,6 +673,27 @@ export function App() {
       // Ignore storage access errors
     }
   }, [theme]);
+
+  const [dir, setDir] = useState<'ltr' | 'rtl'>(() => {
+    try {
+      const qDir = new URLSearchParams(window.location.search).get('dir');
+      if (qDir === 'rtl' || qDir === 'ltr') return qDir;
+      const saved = window.localStorage.getItem('yours-dir');
+      if (saved === 'rtl' || saved === 'ltr') return saved;
+    } catch {
+      // Ignore storage access errors
+    }
+    return 'ltr';
+  });
+
+  useEffect(() => {
+    document.documentElement.dir = dir;
+    try {
+      window.localStorage.setItem('yours-dir', dir);
+    } catch {
+      // Ignore storage access errors
+    }
+  }, [dir]);
 
   const [expandedNotchId, setExpandedNotchId] = useState<string | null>(null);
   const [composerText, setComposerText] = useState('');
@@ -659,6 +828,121 @@ export function App() {
       maxTokens: DEFAULT_ENGINE_CONFIG.maxNewTokens,
     };
   });
+  const [sitePermissions, setSitePermissions] = useState<StoredSitePermission[]>(() => {
+    const initial = loadLocalSitePermissions();
+    sitePermissionsRef.current = initial;
+    return initial;
+  });
+  sitePermissionsRef.current = sitePermissions;
+
+  const updateAndPersistSitePermissions = useCallback(
+    (updater: (prev: StoredSitePermission[]) => StoredSitePermission[]) => {
+      setSitePermissions((prev) => {
+        const next = sanitizeStoredPermissions(updater(prev));
+        sitePermissionsRef.current = next;
+        persistSitePermissions(next);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const [agentHandoff, setAgentHandoff] = useState<{
+    title: string;
+    reason: string;
+    origin: string;
+    progressLabel?: string;
+    state: AgentHandoffState;
+    tabId?: number;
+  } | null>(null);
+
+  const setSitePermissionForOrigin = useCallback(
+    (
+      urlOrOrigin: string,
+      mode: SitePermissionMode,
+      opts?: { lockedReason?: string; scope?: string },
+    ): StoredSitePermission | null => {
+      const origin = normalizePermissionOrigin(urlOrOrigin);
+      if (!origin) return null;
+      const existing = sitePermissionsRef.current.find((p) => p.origin === origin);
+      const nextEntry = createSitePermissionEntry(urlOrOrigin, {
+        mode,
+        scope: opts?.scope ?? existing?.scope ?? 'Page read & tab tools',
+        lockedReason: opts?.lockedReason ?? existing?.lockedReason,
+        lastUsedLabel: 'Just now',
+      });
+      if (!nextEntry) return null;
+      updateAndPersistSitePermissions((prev) => [
+        nextEntry,
+        ...prev.filter((item) => item.origin !== nextEntry.origin),
+      ]);
+      recordNetworkAuditRef.current(
+        nextEntry.origin,
+        `Site permission updated to ${nextEntry.mode}${nextEntry.lockedReason ? ' (sensitive origin locked)' : ''}`,
+        nextEntry.mode === 'off' ? 'blocked' : 'local',
+      );
+      return nextEntry;
+    },
+    [updateAndPersistSitePermissions],
+  );
+
+  const updateSitePermissionMode = useCallback(
+    (id: string, requestedMode: SitePermissionMode) => {
+      const current = sitePermissionsRef.current.find((p) => p.id === id);
+      if (!current) return;
+      setSitePermissionForOrigin(current.origin, requestedMode, {
+        lockedReason: current.lockedReason,
+        scope: current.scope,
+      });
+    },
+    [setSitePermissionForOrigin],
+  );
+
+  const revokeSitePermissionById = useCallback(
+    (idOrOrigin: string) => {
+      const targetOrigin = normalizePermissionOrigin(idOrOrigin) ?? idOrOrigin;
+      const removed = sitePermissionsRef.current.find(
+        (p) => p.id === idOrOrigin || p.origin === targetOrigin,
+      );
+      updateAndPersistSitePermissions((prev) =>
+        prev.filter((item) => item.id !== idOrOrigin && item.origin !== targetOrigin),
+      );
+      recordNetworkAuditRef.current(
+        removed?.origin ?? targetOrigin,
+        'Revoked site permission',
+        'blocked',
+      );
+    },
+    [updateAndPersistSitePermissions],
+  );
+
+  const revokeAllSitePermissions = useCallback(() => {
+    const count = sitePermissionsRef.current.length;
+    updateAndPersistSitePermissions(() => []);
+    if (count > 0) {
+      recordNetworkAuditRef.current(
+        'All Origins',
+        `Revoked all ${count} site permission(s)`,
+        'blocked',
+      );
+    }
+  }, [updateAndPersistSitePermissions]);
+
+  onConsumeOncePermissionRef.current = (origin: string, toolName: string) => {
+    updateAndPersistSitePermissions((prev) =>
+      prev.map((item) =>
+        item.origin === origin && item.mode === 'once'
+          ? { ...item, mode: 'off', lastUsedLabel: 'Once used', updatedAt: Date.now() }
+          : item,
+      ),
+    );
+    recordNetworkAuditRef.current(
+      origin,
+      `Allowed once for ${toolName}; reset to Off`,
+      'allowed-once',
+    );
+  };
+
   const [networkAuditEvents, setNetworkAuditEvents] = useState<NetworkAuditEvent[]>(() => [
     {
       id: 'audit-init-local',
@@ -758,6 +1042,20 @@ export function App() {
 
   const activePageContextMessages = useMemo<HarnessMessage[]>(() => {
     if (!hasAttachedPage || !activePage) {
+      return [];
+    }
+    const activePermOrigin = normalizePermissionOrigin(activePage.url);
+    if (
+      activePermOrigin &&
+      sitePermissions.some((item) => item.origin === activePermOrigin && item.mode === 'off')
+    ) {
+      return [];
+    }
+    if (
+      /\/(?:checkout(?:-[^/?#]*)?|2fa|mfa|verify-human|captcha)(?:[/?#]|$)/i.test(
+        activePage.url,
+      )
+    ) {
       return [];
     }
     const spotlighted = sanitizeUntrustedText(activePage.content, activePage.url);
@@ -916,6 +1214,268 @@ export function App() {
     [delegatingAdapter],
   );
 
+  const requestAgentHandoff = useCallback(
+    async (opts: { origin: string; reason: string; stepLabel: string; tabId?: number }) => {
+      handoffPausedRef.current = true;
+      setAgentHandoff({
+        title: opts.stepLabel,
+        reason: opts.reason,
+        origin: opts.origin,
+        progressLabel: 'Paused — click Take over tab to complete step manually.',
+        state: 'waiting',
+        ...(typeof opts.tabId === 'number' ? { tabId: opts.tabId } : {}),
+      });
+      recordNetworkAuditRef.current(opts.origin, opts.reason, 'local');
+      return new Promise<boolean>((resolve) => {
+        handoffResolverRef.current = { resolve };
+      });
+    },
+    [],
+  );
+
+  const handleHandoffTakeOver = useCallback(() => {
+    setAgentHandoff((prev) => {
+      if (!prev) return prev;
+      if (typeof chrome !== 'undefined' && chrome.tabs) {
+        if (typeof prev.tabId === 'number') {
+          void chrome.tabs.update(prev.tabId, { active: true }).catch(() => {});
+        } else if (prev.origin) {
+          void chrome.tabs
+            .query({ lastFocusedWindow: true })
+            .then((tabs) => {
+              const target = tabs.find(
+                (t) =>
+                  t.id !== undefined && t.url && normalizePermissionOrigin(t.url) === prev.origin,
+              );
+              if (target?.id !== undefined) {
+                void chrome.tabs.update(target.id, { active: true }).catch(() => {});
+              }
+            })
+            .catch(() => {});
+        }
+      }
+      return {
+        ...prev,
+        state: 'user-active',
+        progressLabel: 'You have control of the tab — click Resume once finished.',
+      };
+    });
+  }, []);
+
+  const handleHandoffResume = useCallback(() => {
+    handoffPausedRef.current = false;
+    setAgentHandoff((prev) => {
+      if (prev) {
+        recordNetworkAuditRef.current(prev.origin, 'Resumed after manual handoff', 'allowed-once');
+      }
+      return null;
+    });
+    const resolver = handoffResolverRef.current;
+    handoffResolverRef.current = null;
+    resolver?.resolve(true);
+  }, []);
+
+  const handleHandoffCancel = useCallback(() => {
+    handoffPausedRef.current = false;
+    setAgentHandoff((prev) => {
+      if (prev) {
+        recordNetworkAuditRef.current(prev.origin, 'Cancelled during manual handoff', 'blocked');
+      }
+      return null;
+    });
+    const resolver = handoffResolverRef.current;
+    handoffResolverRef.current = null;
+    resolver?.resolve(false);
+    chatRef.current.abort();
+  }, []);
+
+  const gatedToolExecutor = useMemo(() => {
+    type Executor = NonNullable<Parameters<typeof useYoursChat>[0]['toolExecutor']>;
+    const isCheckpointUrl = (rawUrl?: string | null): string | null => {
+      if (!rawUrl) return null;
+      if (
+        /\/(?:checkout(?:-[^/?#]*)?|2fa|mfa|verify-human|captcha)(?:[/?#]|$)/i.test(rawUrl)
+      ) {
+        return 'Manual verification / checkout / 2FA checkpoint requires user handoff before page access.';
+      }
+      return null;
+    };
+
+    const wrapped: Executor = {
+      listTools: () => stableToolExecutor.listTools?.() ?? [],
+      getTool: (name) => stableToolExecutor.getTool?.(name),
+      async execute(name, args, ctx) {
+        if (handoffPausedRef.current) {
+          return {
+            ok: false,
+            toolName: name,
+            formatted: 'Execution paused for manual agent handoff.',
+            tainted: false,
+            error: 'Execution paused for manual agent handoff.',
+          };
+        }
+
+        if (!handoffApprovedTurnRef.current) {
+          let targetTabId: number | undefined;
+          let checkpointUrl: string | null = null;
+          let checkpointReason: string | null = null;
+
+          const argUrls = extractUrlsFromArguments(args);
+          for (const candidate of argUrls) {
+            const reason = isCheckpointUrl(candidate);
+            if (reason) {
+              checkpointUrl = candidate;
+              checkpointReason = reason;
+              break;
+            }
+          }
+
+          if (
+            !checkpointUrl &&
+            (name === 'read_active_tab' || name === 'interact_page')
+          ) {
+            let activeUrl = activePageRef.current?.url ?? null;
+            if (typeof chrome !== 'undefined' && chrome.tabs?.query) {
+              try {
+                const activeTabs = await chrome.tabs.query({
+                  active: true,
+                  lastFocusedWindow: true,
+                });
+                const liveTab = activeTabs.find(
+                  (t) => t.url && !t.url.startsWith('chrome-extension://'),
+                );
+                if (liveTab?.url) {
+                  activeUrl = liveTab.url;
+                  if (typeof liveTab.id === 'number') targetTabId = liveTab.id;
+                }
+              } catch {
+                // Ignore active tab lookup failures
+              }
+            }
+            if (activeUrl) {
+              const reason = isCheckpointUrl(activeUrl);
+              if (reason) {
+                checkpointUrl = activeUrl;
+                checkpointReason = reason;
+              }
+            }
+          }
+
+          if (
+            !checkpointUrl &&
+            name === 'read_tab' &&
+            typeof chrome !== 'undefined' &&
+            chrome.tabs
+          ) {
+            const rawTabId = args?.tab_id ?? args?.tabId;
+            const numericTabId =
+              typeof rawTabId === 'number'
+                ? rawTabId
+                : typeof rawTabId === 'string' && /^\d+$/.test(rawTabId.trim())
+                  ? Number(rawTabId.trim())
+                  : null;
+            if (numericTabId !== null && chrome.tabs.get) {
+              targetTabId = numericTabId;
+              try {
+                const tabInfo = await chrome.tabs.get(targetTabId);
+                if (tabInfo?.url) {
+                  const reason = isCheckpointUrl(tabInfo.url);
+                  if (reason) {
+                    checkpointUrl = tabInfo.url;
+                    checkpointReason = reason;
+                  }
+                }
+              } catch {
+                // Ignore tab lookup failures
+              }
+            } else if (typeof args?.title === 'string' && chrome.tabs.query) {
+              try {
+                const titleNeedle = args.title.trim().toLowerCase();
+                const tabs = await chrome.tabs.query({});
+                const matched = tabs.find((t) =>
+                  (t.title ?? '').toLowerCase().includes(titleNeedle),
+                );
+                if (matched?.url) {
+                  if (typeof matched.id === 'number') targetTabId = matched.id;
+                  const reason = isCheckpointUrl(matched.url);
+                  if (reason) {
+                    checkpointUrl = matched.url;
+                    checkpointReason = reason;
+                  }
+                }
+              } catch {
+                // Ignore tab title lookup failures
+              }
+            }
+          }
+
+          if (checkpointUrl && checkpointReason) {
+            const origin = normalizePermissionOrigin(checkpointUrl) ?? checkpointUrl;
+            const resumed = await requestAgentHandoff({
+              origin,
+              reason: checkpointReason,
+              stepLabel: `Complete checkpoint on ${origin} (${name})`,
+              tabId: targetTabId,
+            });
+            if (!resumed) {
+              return {
+                ok: false,
+                toolName: name,
+                formatted: 'Manual handoff cancelled by user before page access.',
+                tainted: false,
+                error: 'Manual handoff cancelled by user.',
+              };
+            }
+            handoffApprovedTurnRef.current = true;
+          }
+        }
+
+        const result = await stableToolExecutor.execute(name, args, ctx);
+        if (
+          result &&
+          (result.blockedByCaptcha ||
+            /CAPTCHA verification required/i.test(result.formatted ?? ''))
+        ) {
+          const origin =
+            normalizePermissionOrigin(result.manualUrl ?? result.sourceOrigin ?? '') ??
+            result.sourceOrigin ??
+            'unknown';
+          const resumed = await requestAgentHandoff({
+            origin,
+            reason: 'Verification / CAPTCHA challenge requires human completion.',
+            stepLabel: `Manual verification required (${name})`,
+          });
+          if (!resumed) {
+            return {
+              ok: false,
+              toolName: name,
+              formatted: 'Manual verification cancelled by user.',
+              tainted: false,
+              error: 'Manual verification cancelled by user.',
+            };
+          }
+          handoffApprovedTurnRef.current = true;
+          return stableToolExecutor.execute(name, args, ctx);
+        }
+
+        if (result && result.ok && name !== 'list_tabs' && result.sourceOrigin) {
+          const resultOrigin = normalizePermissionOrigin(result.sourceOrigin);
+          if (
+            resultOrigin &&
+            sitePermissionsRef.current.some(
+              (item) => item.origin === resultOrigin && item.mode === 'once',
+            )
+          ) {
+            onConsumeOncePermissionRef.current(resultOrigin, name);
+          }
+        }
+
+        return result;
+      },
+    };
+    return wrapped;
+  }, [stableToolExecutor, requestAgentHandoff]);
+
   const chat = useYoursChat({
     adapter: delegatingAdapter,
     store: harnessStore,
@@ -925,7 +1485,7 @@ export function App() {
     tools: enabledTools as unknown as NonNullable<
       Parameters<typeof useYoursChat>[0]['tools']
     >,
-    toolExecutor: stableToolExecutor,
+    toolExecutor: gatedToolExecutor,
     guard: guardEngine,
     memory: memoryClient,
     compactor: dynamicCompactor,
@@ -941,6 +1501,105 @@ export function App() {
   const chatRef = useRef(chat);
   chatRef.current = chat;
   const modelParamsHydratedRef = useRef(false);
+  const prewarmedThreadKeyRef = useRef('');
+  const liveGeneratedThreadIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (chat.isGenerating && chat.thread?.id) {
+      liveGeneratedThreadIdRef.current = chat.thread.id;
+    } else if (!chat.thread?.id) {
+      liveGeneratedThreadIdRef.current = null;
+    }
+  }, [chat.isGenerating, chat.thread?.id]);
+
+  // Hydrate persisted site permissions from chrome.storage.local when available
+  useEffect(() => {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      try {
+        chrome.storage.local.get([SITE_PERMISSIONS_STORAGE_KEY], (res) => {
+          const raw = res?.[SITE_PERMISSIONS_STORAGE_KEY];
+          if (Array.isArray(raw)) {
+            const clean = sanitizeStoredPermissions(raw);
+            sitePermissionsRef.current = clean;
+            setSitePermissions(clean);
+          }
+        });
+      } catch {
+        // Ignore storage read errors
+      }
+    }
+  }, []);
+
+  // Prewarm WGSL prefix KV state immediately when restoring a saved multi-turn thread (e.g. after reload)
+  useEffect(() => {
+    if (
+      !chat.thread?.id ||
+      chat.isGenerating ||
+      chat.messages.length === 0 ||
+      backendKind !== 'wgsl' ||
+      engineSnapshot.telemetry.status !== 'ready' ||
+      handoffPausedRef.current ||
+      liveGeneratedThreadIdRef.current === chat.thread.id
+    ) {
+      return;
+    }
+    const lastMsg = chat.messages[chat.messages.length - 1];
+    if (!lastMsg || lastMsg.role !== 'assistant') {
+      return;
+    }
+    const cacheKey = `${chat.thread.id}:${chat.messages.length}:${lastMsg.id}:${pageEnabled ? activePage?.contentHash ?? 'no-page' : 'page-off'}`;
+    if (prewarmedThreadKeyRef.current === cacheKey) {
+      return;
+    }
+    prewarmedThreadKeyRef.current = cacheKey;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const profileMemories =
+          profileMemoriesRef.current.length > 0
+            ? profileMemoriesRef.current
+            : await memoryClient.inspect({ tier: 'profile', limit: 16 }).catch(() => []);
+        if (cancelled) return;
+        profileMemoriesRef.current = profileMemories;
+        const plan = await dynamicCompactor.compact({
+          systemPrompt: modeSystemPrompt,
+          tools: enabledTools as unknown as CompactionInput['tools'],
+          profileMemories,
+          contextMessages: activePageContextMessages,
+          messages: chat.messages,
+        });
+        if (cancelled || handoffPausedRef.current) return;
+        client.prefillBackground(
+          `thread:${chat.thread!.id}`,
+          plan.compiledMessages.map((m) => ({
+            role: m.role,
+            content: m.content,
+            ...(m.toolName ? { toolName: m.toolName } : {}),
+          })),
+          { isDraft: false },
+        );
+      } catch {
+        // Ignore speculative thread prewarm errors
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    chat.thread?.id,
+    chat.isGenerating,
+    chat.messages,
+    backendKind,
+    engineSnapshot.telemetry.status,
+    modeSystemPrompt,
+    activePageContextMessages,
+    pageEnabled,
+    activePage?.contentHash,
+    enabledTools,
+    dynamicCompactor,
+    memoryClient,
+    client,
+  ]);
 
   // Connect offscreen engine, initialize local memory, check Chrome AI & permissions
   useEffect(() => {
@@ -1011,11 +1670,21 @@ export function App() {
       new ActiveTabSpeculativePrefillController({
         debounceMs: 60,
         extractActiveTab: async () => {
-          if (!pageEnabledRef.current) {
+          if (!pageEnabledRef.current || handoffPausedRef.current) {
             return null;
           }
           const page = await client.extractActiveTabPreview();
           if (!page || page.content.trim().length === 0 || page.error) {
+            return null;
+          }
+          const pageOrigin = normalizePermissionOrigin(page.url);
+          if (
+            (pageOrigin &&
+              sitePermissionsRef.current.some(
+                (item) => item.origin === pageOrigin && item.mode === 'off',
+              )) ||
+            /\/(?:checkout(?:-[^/?#]*)?|2fa|mfa|verify-human|captcha)(?:[/?#]|$)/i.test(page.url)
+          ) {
             return null;
           }
           lastExtractedTruncatedRef.current = Boolean(page.truncated);
@@ -1054,8 +1723,9 @@ export function App() {
           pageEnabledRef.current &&
           backendKindRef.current === 'wgsl' &&
           statusRef.current === 'ready' &&
-          bgStateRef.current !== 'prefilling',
-        onPrefill: async (slotKey, messages, meta, signal) => {
+          !chatRef.current.isGenerating &&
+          !handoffPausedRef.current,
+        onPrefill: async (slotKey, messages, meta, signal?: AbortSignal) => {
           const tabTools = computeEnabledTools({
             pageEnabled: true,
             researchEnabled: researchEnabledRef.current,
@@ -1071,7 +1741,7 @@ export function App() {
             >,
             profileMemories: profileMemoriesRef.current,
           });
-          if (signal.aborted) {
+          if (signal?.aborted) {
             return;
           }
           client.prefillBackground(
@@ -1562,8 +2232,9 @@ export function App() {
   const handleSendText = useCallback(
     async (rawText: string) => {
       const trimmed = rawText.trim();
-      if (!trimmed || chat.isGenerating) return;
+      if (!trimmed || chat.isGenerating || handoffPausedRef.current) return;
 
+      handoffApprovedTurnRef.current = false;
       tabCtrl.cancelForSubmit();
       setRecoverableError(null);
       setInlineNotice(null);
@@ -1706,11 +2377,73 @@ export function App() {
       clearChat: async () => {
         setRecoverableError(null);
         setInlineNotice(null);
+        handoffPausedRef.current = false;
+        handoffApprovedTurnRef.current = false;
+        setAgentHandoff(null);
+        const resolver = handoffResolverRef.current;
+        handoffResolverRef.current = null;
+        resolver?.resolve(false);
         await Promise.all([
           chat.createThread({ systemPrompt: modeSystemPrompt }),
           client.resetContext(true),
         ]);
         setSources([]);
+        if (pageEnabledRef.current) {
+          const curPage = activePageRef.current;
+          const curOrigin = curPage?.url ? normalizePermissionOrigin(curPage.url) : null;
+          const blockedOrigin =
+            Boolean(curOrigin) &&
+            sitePermissionsRef.current.some(
+              (item) => item.origin === curOrigin && item.mode === 'off',
+            );
+          const checkpointOrigin = Boolean(
+            curPage?.url &&
+              /\/(?:checkout(?:-[^/?#]*)?|2fa|mfa|verify-human|captcha)(?:[/?#]|$)/i.test(
+                curPage.url,
+              ),
+          );
+          if (curPage && curPage.content.trim().length > 0 && !blockedOrigin && !checkpointOrigin) {
+            void (async () => {
+              try {
+                const tabTools = computeEnabledTools({
+                  pageEnabled: true,
+                  researchEnabled: researchEnabledRef.current,
+                });
+                const slot0 = await buildSlot0Envelope({
+                  systemPrompt: buildHarnessSystemPrompt({
+                    pageEnabled: true,
+                    pageAttached: false,
+                    researchEnabled: researchEnabledRef.current,
+                  }),
+                  tools: tabTools as unknown as NonNullable<
+                    NonNullable<Parameters<typeof buildSlot0Envelope>[0]>['tools']
+                  >,
+                  profileMemories: profileMemoriesRef.current,
+                });
+                const spotlighted = sanitizeUntrustedText(curPage.content, curPage.url);
+                const ctxMsg = buildActivePageContextMessage({
+                  title: curPage.title,
+                  url: curPage.url,
+                  mode: curPage.mode ?? 'auto',
+                  truncated: Boolean(curPage.truncated),
+                  content: spotlighted.spotlightedPromptBlock,
+                });
+                client.prefillBackground(
+                  `tab:${curPage.contentHash}`,
+                  [
+                    { role: 'system', content: slot0.messages[0]!.content },
+                    { role: 'system', content: ctxMsg.content },
+                  ],
+                  { isDraft: false, url: curPage.url, contentHash: curPage.contentHash },
+                );
+              } catch {
+                tabCtrl.notifyTabChanged(true);
+              }
+            })();
+          } else {
+            tabCtrl.notifyTabChanged(true);
+          }
+        }
       },
       injectRecoverableError: (msg: string | null, notice?: string | null) => {
         setRecoverableError(msg);
@@ -1746,6 +2479,22 @@ export function App() {
         },
         getSnapshot: () => voiceController.getSnapshot(),
       },
+      setDirection: (nextDir: 'ltr' | 'rtl') => setDir(nextDir),
+      getDirection: () => dir,
+      setSitePermission: (
+        urlOrOrigin: string,
+        mode: SitePermissionMode,
+        opts?: { lockedReason?: string; scope?: string },
+      ) => setSitePermissionForOrigin(urlOrOrigin, mode, opts),
+      revokeSitePermission: (idOrOrigin: string) => revokeSitePermissionById(idOrOrigin),
+      revokeAllSitePermissions: () => revokeAllSitePermissions(),
+      getSitePermissions: () => sitePermissionsRef.current,
+      getHandoffState: () => ({
+        active: Boolean(agentHandoff),
+        state: agentHandoff?.state ?? null,
+        origin: agentHandoff?.origin ?? null,
+        title: agentHandoff?.title ?? null,
+      }),
     };
   }, [
     client,
@@ -1762,6 +2511,11 @@ export function App() {
     activePage,
     handleSendText,
     selectedModelId,
+    dir,
+    setSitePermissionForOrigin,
+    revokeSitePermissionById,
+    revokeAllSitePermissions,
+    agentHandoff,
     voiceController,
   ]);
 
@@ -2633,6 +3387,19 @@ export function App() {
       const localCount = networkAuditEvents.filter((e) => e.decision === 'local').length;
       return (
         <div className="ext-drawer-panel">
+          <SitePermissionsList
+            title="Site permissions"
+            subtitle="Per-origin access policy enforced locally before page or tab reads."
+            badge={`${sitePermissions.length} origin${sitePermissions.length === 1 ? '' : 's'}`}
+            items={sitePermissions}
+            onModeChange={(id, mode) => updateSitePermissionMode(id, mode)}
+            onRevoke={(id) => revokeSitePermissionById(id)}
+            onRevokeAll={() => revokeAllSitePermissions()}
+            emptyLabel="No site overrides saved yet. Default @yours/guard policy governs origins."
+            revokeLabel="Revoke"
+            revokeAllLabel="Revoke all"
+            privacyNote="Sensitive banking, auth, and checkout origins lock out persistent Site access."
+          />
           <NetworkAuditCard
             badge={blockedCount > 0 ? `${blockedCount} Blocked` : 'Isolated'}
             metrics={[
@@ -2763,6 +3530,10 @@ export function App() {
     recordNetworkAuditEvent,
     refreshStorageEstimate,
     networkAuditEvents,
+    sitePermissions,
+    updateSitePermissionMode,
+    revokeSitePermissionById,
+    revokeAllSitePermissions,
   ]);
 
   const composerTopSlot = useMemo(() => {
@@ -2919,6 +3690,18 @@ export function App() {
         onSelect: () => setExpandedNotchId('history'),
       },
       {
+        id: 'open-site-permissions',
+        group: 'Navigation',
+        label: 'Open Site Permissions',
+        description: 'Inspect or revoke per-origin Off / Once / Site access rules',
+        keywords: ['permissions', 'sites', 'origin', 'revoke', 'security', 'lab'],
+        onSelect: () => {
+          setLabRequestedTab('config');
+          setLabTabNonce((n) => n + 1);
+          setExpandedNotchId('lab');
+        },
+      },
+      {
         id: 'open-audit',
         group: 'Navigation',
         label: 'Open Network & Privacy Audit',
@@ -2960,7 +3743,7 @@ export function App() {
     : 'Ask locally...';
 
   return (
-    <div className="ext-root">
+    <div className="ext-root" dir={dir}>
       <SidePanelShell
         theme={theme}
         bleed
@@ -3170,6 +3953,10 @@ export function App() {
           streamingReasoning={chat.streamingReasoning}
           pendingToolCalls={chat.pendingToolCalls}
           pendingApproval={chat.pendingApproval}
+          agentHandoff={agentHandoff}
+          onHandoffTakeOver={handleHandoffTakeOver}
+          onHandoffResume={handleHandoffResume}
+          onHandoffCancel={handleHandoffCancel}
           turnTelemetry={chat.telemetry}
           engineTelemetry={engineSnapshot.telemetry}
           error={chat.error || recoverableError}
