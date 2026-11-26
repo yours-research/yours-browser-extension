@@ -1,5 +1,6 @@
 import type { ChatMessage, ModelLoadStatus } from '../shared/protocol.ts';
 import { buildToolResultFollowup, hashStringFnv1a } from '../shared/systemPrompt.ts';
+import { formatToolActivityLabel as formatRichToolActivityLabel } from './toolPresentation.ts';
 
 export function shouldAutoPreloadModel(status: ModelLoadStatus): boolean {
   return status === 'unloaded';
@@ -425,23 +426,11 @@ export function createDefaultToolParser(): ToolParserAdapter {
   };
 }
 
-export function formatToolActivityLabel(toolName: string): string {
-  switch (toolName) {
-    case 'read_active_page':
-      return 'Reading active page...';
-    case 'web_search':
-      return 'Searching...';
-    case 'fetch_and_read_url':
-      return 'Reading web sources...';
-    case 'list_open_tabs':
-      return 'Listing open tabs...';
-    case 'read_tab':
-      return 'Reading tab...';
-    case 'js_calc':
-      return 'Calculating...';
-    default:
-      return `Running ${toolName}...`;
-  }
+export function formatToolActivityLabel(
+  toolName: string,
+  args?: Record<string, unknown>,
+): string {
+  return formatRichToolActivityLabel(toolName, args);
 }
 
 export interface RunAgentTurnParams {
@@ -600,7 +589,7 @@ export async function runAgentTurn(params: RunAgentTurnParams): Promise<RunAgent
       step,
       phase: 'running',
       toolName: call.name,
-      label: formatToolActivityLabel(call.name),
+      label: formatToolActivityLabel(call.name, call.arguments),
       arguments: call.arguments,
     });
 

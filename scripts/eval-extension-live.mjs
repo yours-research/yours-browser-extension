@@ -5268,6 +5268,258 @@ async function main() {
           await sidePanel.setViewportSize(origViewportV12Motion).catch(() => {});
         }
       }
+
+      // ------------------------------------------------------------------
+      // Case 53 (v13): Unified Inline Rotating Tool Shimmer Chain @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV13Chain = sidePanel.viewportSize();
+      let v13HomePage = null;
+      let v13AlphaPage = null;
+      let v13BetaPage = null;
+      try {
+        const errorsBeforeV13 = runtimeErrors.length;
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        v13AlphaPage = await context.newPage();
+        attachPageDiagnostics(v13AlphaPage, 'v13AlphaPage', runtimeErrors);
+        await v13AlphaPage.goto(`${baseUrl}/spec-alpha`, { waitUntil: 'domcontentloaded' });
+
+        v13BetaPage = await context.newPage();
+        attachPageDiagnostics(v13BetaPage, 'v13BetaPage', runtimeErrors);
+        await v13BetaPage.goto(`${baseUrl}/spec-beta`, { waitUntil: 'domcontentloaded' });
+
+        v13HomePage = await context.newPage();
+        attachPageDiagnostics(v13HomePage, 'v13HomePage', runtimeErrors);
+        await v13HomePage.goto(`${baseUrl}/home`, { waitUntil: 'domcontentloaded' });
+
+        await v13HomePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', true);
+        await v13HomePage.bringToFront();
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          window.__TINYGPT_UI__.refreshActiveTab();
+          await window.__TINYGPT_UI__.clearChat();
+        });
+        await waitForUiMetrics(
+          sidePanel,
+          (m) => Boolean(m.activePage?.url?.includes('/home')),
+          { timeoutMs: 12000, pollMs: 100 },
+        );
+
+        await sidePanel.evaluate(() => {
+          const stream = document.querySelector('.ext-stream');
+          const obsState = {
+            sawShimmerText: false,
+            sawActiveShimmer: false,
+            sawInlineToolStatus: false,
+            states: new Set(),
+            labels: new Set(),
+            forbiddenLabels: [],
+            maxSimultaneousToolChains: 0,
+            maxSimultaneousActiveIndicators: 0,
+          };
+          const forbiddenRe =
+            /Executing local MV3 tool|Local Tool Trace|Active Tool Call|\b(?:read_active_tab|read_active_page|list_tabs|list_open_tabs|read_tab|run_sandbox|js_calc|search_web_tab|web_search|fetch_background_tab|fetch_and_read_url|memory_recall|memory_save)\b/i;
+
+          const sample = () => {
+            if (document.querySelector('[data-slot="shimmer-text"]')) {
+              obsState.sawShimmerText = true;
+            }
+            if (document.querySelector('[data-slot="shimmer-text"][data-shimmer="active"]')) {
+              obsState.sawActiveShimmer = true;
+            }
+            const statuses = Array.from(document.querySelectorAll('[data-slot="inline-tool-status"]'));
+            if (statuses.length > 0) {
+              obsState.sawInlineToolStatus = true;
+            }
+            for (const st of statuses) {
+              const s = st.getAttribute('data-state');
+              if (s) obsState.states.add(s);
+              const lbl = st.querySelector('.yui-its-label')?.textContent?.trim();
+              if (lbl) {
+                obsState.labels.add(lbl);
+                if (forbiddenRe.test(lbl) && !obsState.forbiddenLabels.includes(lbl)) {
+                  obsState.forbiddenLabels.push(lbl);
+                }
+              }
+            }
+            const traces = document.querySelectorAll('[data-slot="tool-trace-list"]');
+            obsState.maxSimultaneousToolChains = Math.max(
+              obsState.maxSimultaneousToolChains,
+              traces.length,
+            );
+            const activeIndicators = document.querySelectorAll(
+              '.ext-tool-group [data-slot="inline-tool-status"]:not(.is-done):not(.is-blocked):not(.is-error), .ext-tool-group .yui-matrix-orb.is-thinking',
+            ).length;
+            obsState.maxSimultaneousActiveIndicators = Math.max(
+              obsState.maxSimultaneousActiveIndicators,
+              activeIndicators,
+            );
+          };
+
+          const observer = new MutationObserver(sample);
+          if (stream) {
+            observer.observe(stream, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              characterData: true,
+            });
+          }
+          sample();
+          window.__V13_CHAIN_OBS__ = { observer, obsState, sample };
+        });
+
+        const v13Turn = await runUiTurn(
+          sidePanel,
+          'Use list_tabs and read_tab to inspect "Alpha Cluster Spec" and "Beta Cluster Spec", then use run_sandbox to compute Alpha req/s + Beta req/s and state ONLY the exact sum.',
+          { timeoutMs: 120000 },
+        );
+
+        const liveChainTelemetry = await sidePanel.evaluate(() => {
+          const handle = window.__V13_CHAIN_OBS__;
+          if (!handle) return null;
+          handle.sample();
+          handle.observer.disconnect();
+          return {
+            sawShimmerText: handle.obsState.sawShimmerText,
+            sawActiveShimmer: handle.obsState.sawActiveShimmer,
+            sawInlineToolStatus: handle.obsState.sawInlineToolStatus,
+            states: Array.from(handle.obsState.states),
+            labels: Array.from(handle.obsState.labels),
+            forbiddenLabels: handle.obsState.forbiddenLabels,
+            maxSimultaneousToolChains: handle.obsState.maxSimultaneousToolChains,
+            maxSimultaneousActiveIndicators: handle.obsState.maxSimultaneousActiveIndicators,
+          };
+        });
+
+        const settledBeforeExpand = await sidePanel.evaluate(() => {
+          const traces = Array.from(document.querySelectorAll('[data-slot="tool-trace-list"]'));
+          const lastTrace = traces[traces.length - 1] ?? null;
+          const head = lastTrace?.querySelector('button.yui-trace-head');
+          const disclosure = lastTrace?.querySelector(':scope > .yui-disclosure');
+          return {
+            traceCount: traces.length,
+            variant: lastTrace?.getAttribute('data-variant') ?? null,
+            headExpanded: head?.getAttribute('aria-expanded') ?? null,
+            disclosureOpen: disclosure?.classList.contains('is-open') ?? null,
+            headText: head?.textContent?.trim() ?? '',
+            elapsedText: lastTrace?.querySelector('.yui-its-elapsed')?.textContent?.trim() ?? '',
+          };
+        });
+
+        const lastHead = sidePanel.locator('[data-slot="tool-trace-list"] button.yui-trace-head').last();
+        await lastHead.click();
+
+        const firstRowTrigger = sidePanel
+          .locator('[data-slot="tool-trace-list"]')
+          .last()
+          .locator('ul.yui-trace-rail-list .yui-trace-trigger')
+          .first();
+        await firstRowTrigger.waitFor({ state: 'visible', timeout: 4000 });
+        await firstRowTrigger.click();
+
+        await sidePanel.emulateMedia({ reducedMotion: 'reduce' });
+        const afterExpandAndReduced = await sidePanel.evaluate(() => {
+          const traces = Array.from(document.querySelectorAll('[data-slot="tool-trace-list"]'));
+          const lastTrace = traces[traces.length - 1] ?? null;
+          const head = lastTrace?.querySelector('button.yui-trace-head');
+          const rail = lastTrace?.querySelector('ul.yui-trace-rail-list');
+          const rows = rail ? Array.from(rail.querySelectorAll('.yui-trace-row')) : [];
+          const rowActions = rows.map(
+            (row) => row.querySelector('.yui-trace-action, .yui-trace-tool')?.textContent?.trim() ?? '',
+          );
+          const firstTrigger = lastTrace?.querySelector('ul.yui-trace-rail-list .yui-trace-trigger');
+          const detailBlock = lastTrace?.querySelector('.yui-trace-row .yui-disclosure.is-open .yui-trace-detail');
+          const styledNodes = lastTrace
+            ? Array.from(lastTrace.querySelectorAll('[style]')).length +
+              (lastTrace.getAttribute('style') ? 1 : 0)
+            : -1;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          const shimmerEl = lastTrace?.querySelector('[data-slot="shimmer-text"]');
+          const shimmerAnim = shimmerEl ? getComputedStyle(shimmerEl).animationName : '';
+          return {
+            headExpanded: head?.getAttribute('aria-expanded') ?? null,
+            hasRailList: Boolean(rail),
+            rowCount: rows.length,
+            rowActions,
+            firstRowExpanded: firstTrigger?.getAttribute('aria-expanded') ?? null,
+            detailVisibleText: detailBlock?.textContent?.trim()?.slice(0, 120) ?? '',
+            styledNodes,
+            overflowPx,
+            reducedMotionMatched: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+            shimmerAnim,
+          };
+        });
+
+        const forbiddenActionRe =
+          /Executing local MV3 tool|\b(?:read_active_tab|read_active_page|list_tabs|list_open_tabs|read_tab|run_sandbox|js_calc|search_web_tab|web_search|fetch_background_tab|fetch_and_read_url|memory_recall|memory_save)\b/i;
+        const v13Checks = {
+          liveShimmerAndInlineStatusObserved:
+            Boolean(liveChainTelemetry?.sawShimmerText) &&
+            Boolean(liveChainTelemetry?.sawActiveShimmer) &&
+            Boolean(liveChainTelemetry?.sawInlineToolStatus),
+          singleUnifiedChainNoDuplicateSpinners:
+            liveChainTelemetry?.maxSimultaneousToolChains === 1 &&
+            (liveChainTelemetry?.maxSimultaneousActiveIndicators ?? 99) <= 1,
+          humanReadableVerbsZeroLegacyBoilerplate:
+            (liveChainTelemetry?.labels?.length ?? 0) >= 1 &&
+            (liveChainTelemetry?.forbiddenLabels?.length ?? 1) === 0 &&
+            afterExpandAndReduced.rowActions.length >= 2 &&
+            afterExpandAndReduced.rowActions.every((lbl) => lbl.length > 0 && !forbiddenActionRe.test(lbl)),
+          settledCollapsedThenClickExpandsRailAndIoDrawer:
+            settledBeforeExpand.traceCount === 1 &&
+            settledBeforeExpand.variant === 'inline' &&
+            settledBeforeExpand.headExpanded === 'false' &&
+            settledBeforeExpand.disclosureOpen === false &&
+            afterExpandAndReduced.headExpanded === 'true' &&
+            afterExpandAndReduced.hasRailList &&
+            afterExpandAndReduced.rowCount >= 2 &&
+            afterExpandAndReduced.firstRowExpanded === 'true' &&
+            afterExpandAndReduced.detailVisibleText.length > 0,
+          zeroInlineStylesAnd340pxFitAndReducedMotion:
+            afterExpandAndReduced.styledNodes === 0 &&
+            afterExpandAndReduced.overflowPx === 0 &&
+            afterExpandAndReduced.reducedMotionMatched &&
+            afterExpandAndReduced.shimmerAnim === 'none',
+          cleanMathAnswerAndZeroLeaks:
+            /1,?050/.test(v13Turn.domState.renderedAnswerText) && v13Turn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeV13,
+        };
+        const v13Score =
+          Object.values(v13Checks).filter(Boolean).length / Object.keys(v13Checks).length;
+        recordCase(
+          {
+            id: 'V13_unified_inline_tool_shimmer_chain_live_340px',
+            suite: 'tools',
+            passed: v13Score === 1,
+            score: v13Score,
+            latencyMs: v13Turn.elapsedMs,
+            metrics: {
+              rowCount: afterExpandAndReduced.rowCount,
+              maxSimultaneousChains: liveChainTelemetry?.maxSimultaneousToolChains ?? 0,
+              maxActiveSpinners: liveChainTelemetry?.maxSimultaneousActiveIndicators ?? 0,
+              styledNodes: afterExpandAndReduced.styledNodes,
+              overflowPx: afterExpandAndReduced.overflowPx,
+              ttftMs: round(v13Turn.metrics?.ttftMs ?? 0, 1),
+              leakCount: v13Turn.leakedTags.length,
+            },
+            ...(v13Score < 1
+              ? {
+                  error: `Checks=${JSON.stringify(v13Checks)} live=${JSON.stringify(liveChainTelemetry)} settled=${JSON.stringify(settledBeforeExpand)} expanded=${JSON.stringify(afterExpandAndReduced)} ans=${JSON.stringify(v13Turn.domState.renderedAnswerText.slice(0, 160))}`,
+                }
+              : {}),
+          },
+          v13Turn,
+        );
+      } finally {
+        await sidePanel.emulateMedia({ reducedMotion: 'no-preference' }).catch(() => {});
+        if (origViewportV13Chain) {
+          await sidePanel.setViewportSize(origViewportV13Chain).catch(() => {});
+        }
+        await v13HomePage?.close().catch(() => {});
+        await v13AlphaPage?.close().catch(() => {});
+        await v13BetaPage?.close().catch(() => {});
+      }
     } catch (caseErr) {
       recordCase({
         id: `FATAL_REMAINING_CASES_${caseResults.length + 1}`,

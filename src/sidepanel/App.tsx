@@ -3,7 +3,8 @@ import type { GenerateRequest, HarnessMessage, MemoryRecord, RuntimeAdapter, Too
 import { buildSlot0Envelope, ContextCompactor, type CompactionInput } from '@yours/harness/compaction';
 import { ActiveTabSpeculativePrefillController } from '@yours/harness/engine';
 import { useYoursChat } from '@yours/harness/react';
-import { IndexedDbStore, InMemoryStore, type HarnessStore } from '@yours/harness/storage';
+import { IndexedDbStore, InMemoryStore, type HarnessStore, type ToolTraceRecord } from '@yours/harness/storage';
+import { type ToolExecutionTelemetry } from './toolPresentation.ts';
 import { CANONICAL_TOOL_DEFINITIONS } from '@yours/tools/schemas';
 import type { FetchedSourceResult } from '@yours/tools';
 import {
@@ -1382,6 +1383,62 @@ export function App() {
           };
         }
 
+        if (!wasGeneratingForToolsRef.current) {
+          wasGeneratingForToolsRef.current = true;
+          liveToolExecutionsRef.current = [];
+        }
+        const execSeq = liveToolExecutionsRef.current.length;
+        const perfStartedAt = performance.now();
+        liveToolExecutionsRef.current = [
+          ...liveToolExecutionsRef.current,
+          {
+            sequence: execSeq,
+            name,
+            args,
+            status: 'running',
+            startedAtMs: Date.now(),
+          },
+        ];
+        setLiveToolExecutions(liveToolExecutionsRef.current);
+
+        const finalizeExecution = <
+          T extends {
+            ok: boolean;
+            formatted?: string;
+            data?: unknown;
+            sourceOrigin?: string;
+            error?: string;
+          },
+        >(
+          res: T,
+          forceBlocked = false,
+        ): T => {
+          const durationMs = Math.max(1, Math.round(performance.now() - perfStartedAt));
+          const status: ToolExecutionTelemetry['status'] =
+            forceBlocked || (res.error && /blocked|denied|cancelled/i.test(res.error))
+              ? 'blocked'
+              : res.ok
+                ? 'done'
+                : 'error';
+          liveToolExecutionsRef.current = liveToolExecutionsRef.current.map((item) =>
+            item.sequence === execSeq
+              ? {
+                  ...item,
+                  status,
+                  durationMs,
+                  output: res.formatted,
+                  data: res.data,
+                  sourceOrigin: res.sourceOrigin,
+                  error: res.error,
+                }
+              : item,
+          );
+          setLiveToolExecutions(liveToolExecutionsRef.current);
+          return res;
+        };
+
+        try {
+
         if (!handoffApprovedTurnRef.current) {
           let targetTabId: number | undefined;
           let checkpointUrl: string | null = null;
@@ -1485,13 +1542,16 @@ export function App() {
               tabId: targetTabId,
             });
             if (!resumed) {
-              return {
-                ok: false,
-                toolName: name,
-                formatted: 'Manual handoff cancelled by user before page access.',
-                tainted: false,
-                error: 'Manual handoff cancelled by user.',
-              };
+              return finalizeExecution(
+                {
+                  ok: false,
+                  toolName: name,
+                  formatted: 'Manual handoff cancelled by user before page access.',
+                  tainted: false,
+                  error: 'Manual handoff cancelled by user.',
+                },
+                true,
+              );
             }
             handoffApprovedTurnRef.current = true;
           }
@@ -1513,16 +1573,19 @@ export function App() {
             stepLabel: `Manual verification required (${name})`,
           });
           if (!resumed) {
-            return {
-              ok: false,
-              toolName: name,
-              formatted: 'Manual verification cancelled by user.',
-              tainted: false,
-              error: 'Manual verification cancelled by user.',
-            };
+            return finalizeExecution(
+              {
+                ok: false,
+                toolName: name,
+                formatted: 'Manual verification cancelled by user.',
+                tainted: false,
+                error: 'Manual verification cancelled by user.',
+              },
+              true,
+            );
           }
           handoffApprovedTurnRef.current = true;
-          return stableToolExecutor.execute(name, args, ctx);
+          return finalizeExecution(await stableToolExecutor.execute(name, args, ctx));
         }
 
         if (result && result.ok && name !== 'list_tabs' && result.sourceOrigin) {
@@ -1537,7 +1600,18 @@ export function App() {
           }
         }
 
-        return result;
+        return finalizeExecution(result);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          finalizeExecution({
+            ok: false,
+            toolName: name,
+            formatted: `Error: ${errMsg}`,
+            tainted: false,
+            error: errMsg,
+          });
+          throw err;
+        }
       },
     };
     return wrapped;
@@ -1570,6 +1644,44 @@ export function App() {
   const modelParamsHydratedRef = useRef(false);
   const prewarmedThreadKeyRef = useRef('');
   const liveGeneratedThreadIdRef = useRef<string | null>(null);
+  const liveToolExecutionsRef = useRef<ToolExecutionTelemetry[]>([]);
+  const [liveToolExecutions, setLiveToolExecutions] = useState<ToolExecutionTelemetry[]>([]);
+  const [persistedToolTraces, setPersistedToolTraces] = useState<ToolTraceRecord[]>([]);
+  const wasGeneratingForToolsRef = useRef(false);
+
+  useEffect(() => {
+    const wasGenerating = wasGeneratingForToolsRef.current;
+    wasGeneratingForToolsRef.current = chat.isGenerating;
+    if (!wasGenerating && chat.isGenerating) {
+      liveToolExecutionsRef.current = [];
+      setLiveToolExecutions([]);
+      return;
+    }
+    if (wasGenerating && !chat.isGenerating) {
+      liveToolExecutionsRef.current = [];
+      setLiveToolExecutions([]);
+    }
+  }, [chat.isGenerating]);
+
+  useEffect(() => {
+    const threadId = chat.thread?.id;
+    if (!threadId) {
+      setPersistedToolTraces([]);
+      return;
+    }
+    let cancelled = false;
+    void harnessStore
+      .listToolTraces(threadId)
+      .then((traces) => {
+        if (!cancelled) {
+          setPersistedToolTraces(traces);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [chat.thread?.id, chat.isGenerating, chat.nodes.length, harnessStore]);
 
   useEffect(() => {
     if (chat.isGenerating && chat.thread?.id) {
@@ -4322,6 +4434,9 @@ export function App() {
           streamingText={chat.streamingText}
           streamingReasoning={chat.streamingReasoning}
           pendingToolCalls={chat.pendingToolCalls}
+          liveToolExecutions={liveToolExecutions}
+          persistedToolTraces={persistedToolTraces}
+          activePageHint={{ title: activePage?.title, url: activePage?.url }}
           pendingApproval={chat.pendingApproval}
           agentHandoff={agentHandoff}
           onHandoffTakeOver={handleHandoffTakeOver}

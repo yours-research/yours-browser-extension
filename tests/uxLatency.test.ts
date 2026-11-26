@@ -538,9 +538,9 @@ describe('runAgentTurn', () => {
     );
 
     // Pending chip was emitted immediately during streaming
-    expect(statuses.some((s) => s.phase === 'pending_call' && s.label === 'Searching...')).toBe(
-      true,
-    );
+    expect(
+      statuses.some((s) => s.phase === 'pending_call' && s.label.startsWith('Searching the web')),
+    ).toBe(true);
     expect(statuses.some((s) => s.phase === 'completed' && s.toolName === 'fetch_and_read_url')).toBe(
       true,
     );

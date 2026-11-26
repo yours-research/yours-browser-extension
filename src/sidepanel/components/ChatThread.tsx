@@ -16,7 +16,7 @@ import {
   ErrorRecoveryCard,
   InlineCitationPopover,
   InlineNotice,
-  MessageSkeleton,
+  InlineToolStatus,
   OnboardingCard,
   AgentHandoffCard,
   PermissionCard,
@@ -29,9 +29,16 @@ import {
   type InlineNoticeTone,
   type PromptStarterItem,
   type SourceCitation,
-  type ToolTraceStep,
 } from '@yours/ui';
 import type { TelemetryState } from '../../shared/protocol.ts';
+import {
+  buildGroupStepsFromToolNodes,
+  formatToolChainSummary,
+  mergeActiveTurnToolSteps,
+  type ActivePageHint,
+  type ToolExecutionTelemetry,
+} from '../toolPresentation.ts';
+import type { ToolTraceRecord } from '@yours/harness/storage';
 import { GenUiRenderer } from './GenUiRenderer.tsx';
 
 export interface ChatThreadProps {
@@ -42,6 +49,9 @@ export interface ChatThreadProps {
   streamingText: string;
   streamingReasoning: string;
   pendingToolCalls: Array<{ id: string; name: string }>;
+  liveToolExecutions?: readonly ToolExecutionTelemetry[];
+  persistedToolTraces?: readonly ToolTraceRecord[];
+  activePageHint?: ActivePageHint;
   pendingApproval: PendingApprovalRequest | null;
   turnTelemetry: TurnTelemetrySnapshot | null;
   engineTelemetry: TelemetryState;
@@ -140,15 +150,6 @@ function toInlineCitationSource(src: SourceCitation, idx: number): InlineCitatio
   };
 }
 
-function getToolIcon(toolName?: string): ToolTraceStep['icon'] {
-  if (!toolName) return 'sliders';
-  if (toolName.includes('search') || toolName.includes('fetch')) return 'globe';
-  if (toolName.includes('tab')) return 'page-scan';
-  if (toolName.includes('memory')) return 'bookmark';
-  if (toolName.includes('sandbox') || toolName.includes('calc')) return 'compare';
-  return 'sliders';
-}
-
 function toCitationFootnoteItem(src: SourceCitation, idx: number): CitationFootnoteItem {
   return {
     id: src.id,
@@ -170,6 +171,9 @@ export function ChatThread({
   streamingText,
   streamingReasoning,
   pendingToolCalls,
+  liveToolExecutions = [],
+  persistedToolTraces = [],
+  activePageHint,
   pendingApproval,
   turnTelemetry,
   engineTelemetry,
@@ -217,6 +221,8 @@ export function ChatThread({
     }
     return null;
   })();
+
+  const activeTurnCompletedSteps: ReturnType<typeof buildGroupStepsFromToolNodes> = [];
 
   if (isEmpty) {
     return (
@@ -348,26 +354,13 @@ export function ChatThread({
           }
 
           if (msg.role === 'tool') {
-            const groupSteps: ToolTraceStep[] = [];
+            const toolNodes: Array<{ node: MessageNode; prevMessage?: HarnessMessage }> = [];
             let j = i;
             while (j < visibleNodes.length) {
               const cand = visibleNodes[j]!;
               if (cand.message.role === 'tool') {
-                const tm = cand.message;
-                const isBlocked = /^blocked|denied/i.test(tm.content);
-                const isErr = !isBlocked && /^error\b|failed/i.test(tm.content);
-                const prevCall = j > 0 ? visibleNodes[j - 1]?.message : undefined;
-                groupSteps.push({
-                  id: cand.id,
-                  tool: tm.toolName ?? 'tool',
-                  icon: getToolIcon(tm.toolName),
-                  status: isBlocked ? 'blocked' : isErr ? 'error' : 'done',
-                  input:
-                    prevCall?.role === 'assistant' && prevCall.toolArgs
-                      ? JSON.stringify(prevCall.toolArgs)
-                      : undefined,
-                  output: tm.content.slice(0, 320),
-                });
+                const prevMessage = j > 0 ? visibleNodes[j - 1]?.message : undefined;
+                toolNodes.push({ node: cand, prevMessage });
                 j += 1;
               } else if (
                 cand.message.role === 'assistant' &&
@@ -379,15 +372,27 @@ export function ChatThread({
                 break;
               }
             }
-            rendered.push(
-              <ToolTraceList
-                key={`trace-${node.id}`}
-                title="Local Tool Trace"
-                summary={`${groupSteps.length} step${groupSteps.length === 1 ? '' : 's'}`}
-                steps={groupSteps}
-                defaultCollapsed={false}
-              />,
-            );
+            const groupSteps = buildGroupStepsFromToolNodes({
+              toolNodes,
+              persistedTraces: persistedToolTraces,
+              activePage: activePageHint,
+            });
+            const isTrailingActiveToolGroup = isGenerating && j >= visibleNodes.length;
+            if (isTrailingActiveToolGroup) {
+              activeTurnCompletedSteps.push(...groupSteps);
+            } else {
+              const { title, summary } = formatToolChainSummary(groupSteps, false);
+              rendered.push(
+                <ToolTraceList
+                  key={`trace-${node.id}`}
+                  variant="inline"
+                  title={title}
+                  summary={summary}
+                  steps={groupSteps}
+                  defaultCollapsed={true}
+                />,
+              );
+            }
             i = j - 1;
             continue;
           }
@@ -511,51 +516,71 @@ export function ChatThread({
         />
       ) : null}
 
-      {isGenerating && (streamingReasoning || streamingText || pendingToolCalls.length > 0) ? (
-        <div className="ext-tool-group">
-          {pendingToolCalls.length > 0 ? (
-            <ToolTraceList
-              title="Active Tool Call"
-              summary={`${pendingToolCalls.length} running`}
-              defaultCollapsed={false}
-              steps={pendingToolCalls.map((tc) => ({
-                id: tc.id,
-                tool: tc.name,
-                icon: getToolIcon(tc.name),
-                status: 'running',
-                label: 'Executing local MV3 tool',
-              }))}
-            />
-          ) : null}
-          {streamingReasoning ? (
-            <ReasoningTrace
-              status={streamingText ? 'done' : 'thinking'}
-              content={streamingReasoning}
-              defaultExpanded={false}
-            />
-          ) : null}
-          {(() => {
-            const liveBody = streamingText ? extractReasoningAndBody(streamingText).body : '';
-            if (liveBody) {
-              return (
-                <AssistantMessage>
-                  <GenUiRenderer
-                    content={liveBody}
-                    status="streaming"
-                    onCopyText={onCopyText}
-                    onSaveText={onSaveMemory}
-                    onSelectChoice={onSelectChoice}
-                  />
-                </AssistantMessage>
-              );
-            }
-            if (turnState === 'prefilling') {
-              return <MessageSkeleton />;
-            }
-            return null;
-          })()}
-        </div>
-      ) : null}
+      {(() => {
+        const unifiedActiveToolSteps = isGenerating
+          ? mergeActiveTurnToolSteps({
+              completedTurnSteps: activeTurnCompletedSteps,
+              pendingToolCalls,
+              liveToolExecutions,
+              activePage: activePageHint,
+            })
+          : [];
+        const liveBody = streamingText ? extractReasoningAndBody(streamingText).body : '';
+        const showPrefillStatus =
+          isGenerating &&
+          unifiedActiveToolSteps.length === 0 &&
+          !streamingReasoning &&
+          !liveBody;
+        const hasLiveBlock =
+          isGenerating &&
+          (streamingReasoning || streamingText || unifiedActiveToolSteps.length > 0 || showPrefillStatus);
+        if (!hasLiveBlock) return null;
+        const activeChainSummary =
+          unifiedActiveToolSteps.length > 0
+            ? formatToolChainSummary(unifiedActiveToolSteps, true)
+            : null;
+        const hasRunningToolStep = unifiedActiveToolSteps.some((step) => step.status === 'running');
+        return (
+          <div className="ext-tool-group">
+            {unifiedActiveToolSteps.length > 0 && activeChainSummary ? (
+              <ToolTraceList
+                variant="inline"
+                timer={hasRunningToolStep}
+                title={activeChainSummary.title}
+                summary={activeChainSummary.summary}
+                defaultCollapsed={false}
+                steps={unifiedActiveToolSteps}
+              />
+            ) : null}
+            {showPrefillStatus ? (
+              <InlineToolStatus
+                state={turnState === 'compacting' ? 'analyzing' : 'thinking'}
+                label={turnState === 'compacting' ? 'Compacting context' : 'Thinking'}
+                timer
+                shimmer
+              />
+            ) : null}
+            {streamingReasoning ? (
+              <ReasoningTrace
+                status={liveBody || hasRunningToolStep ? 'done' : 'thinking'}
+                content={streamingReasoning}
+                defaultExpanded={false}
+              />
+            ) : null}
+            {liveBody ? (
+              <AssistantMessage>
+                <GenUiRenderer
+                  content={liveBody}
+                  status="streaming"
+                  onCopyText={onCopyText}
+                  onSaveText={onSaveMemory}
+                  onSelectChoice={onSelectChoice}
+                />
+              </AssistantMessage>
+            ) : null}
+          </div>
+        );
+      })()}
 
       {sources.length > 0 ? (
         <div className="ext-sources-group">
