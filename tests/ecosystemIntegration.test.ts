@@ -9,6 +9,8 @@ import {
   AudioLevelMeter,
   CodeBlockCard,
   CommandPalette,
+  ConfirmActionCard,
+  DeviceCapabilityCard,
   ErrorRecoveryCard,
   ExportSessionCard,
   FindInThreadBar,
@@ -16,7 +18,9 @@ import {
   ModelParametersCard,
   NetworkAuditCard,
   OnboardingCard,
+  PageSelectionCard,
   PromptTemplateList,
+  SegmentedControl,
   SitePermissionsList,
   StorageQuotaCard,
   StreamingResponse,
@@ -453,5 +457,36 @@ describe('@yours/* Ecosystem Integrations & Strict MV3 CSP', () => {
     await mgr.saveTabSlot('tab:live', [1, 2, 3, 4], [{ role: 'user', content: 'hi' }]);
     evictedSlots.delete('tab:live');
     expect(mgr.findBestMatch([1, 2, 3, 4, 5], []).source).toBe('none');
+  });
+
+  it('wires @yours/ui ConfirmActionCard, PageSelectionCard, DeviceCapabilityCard, and active-tab selection locator cleanly', () => {
+    expect(typeof ConfirmActionCard).toBe('function');
+    expect(typeof PageSelectionCard).toBe('function');
+    expect(typeof DeviceCapabilityCard).toBe('function');
+    expect(typeof SegmentedControl).toBe('function');
+
+    const appSource = fs.readFileSync(
+      path.join(ROOT_DIR, 'src', 'sidepanel', 'App.tsx'),
+      'utf8',
+    );
+    expect(appSource).toContain('ConfirmActionCard');
+    expect(appSource).toContain('PageSelectionCard');
+    expect(appSource).toContain('DeviceCapabilityCard');
+    expect(appSource).toContain('SegmentedControl');
+    expect(appSource).not.toContain('QuotedContextBanner');
+    expect(appSource).not.toMatch(/style=\{\{/);
+
+    const swSource = fs.readFileSync(
+      path.join(ROOT_DIR, 'src', 'background', 'service-worker.ts'),
+      'utf8',
+    );
+    expect(swSource).toContain('HIGHLIGHT_ACTIVE_TAB_SELECTION');
+
+    const browserToolsSource = fs.readFileSync(
+      path.join(ROOT_DIR, 'src', 'tools', 'browserTools.ts'),
+      'utf8',
+    );
+    expect(browserToolsSource).toContain('highlightActiveTabSelection');
+    expect(browserToolsSource).toContain('prefers-reduced-motion: reduce');
   });
 });

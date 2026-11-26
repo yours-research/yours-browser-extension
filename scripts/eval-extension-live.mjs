@@ -1973,7 +1973,7 @@ async function main() {
       });
       const memNotchBtn = sidePanel.locator('button.yui-notch-btn[aria-label="Memory"]');
       await memNotchBtn.click();
-      await sidePanel.locator('.yui-mem-inspector').waitFor({ state: 'visible', timeout: 5000 });
+      await sidePanel.locator('[data-slot="memory-inspector-list"], .yui-mem-inspector').first().waitFor({ state: 'visible', timeout: 5000 });
       const initialCardCount = await sidePanel.locator('.yui-mem-card').count();
       const profileTabBtn = sidePanel
         .locator('.yui-mem-filter button')
@@ -3987,7 +3987,17 @@ async function main() {
           return { foot, vals, styledNodes, overflowPx };
         });
         await modelsBtnP.click();
-        await sidePanel.evaluate(() => {
+        await sidePanel.evaluate(async () => {
+          try {
+            window.localStorage.removeItem('yours-model-params');
+          } catch {
+            // ignore
+          }
+          if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+            await new Promise((resolve) => {
+              chrome.storage.local.remove('yours-model-params', () => resolve());
+            });
+          }
           window.__TINYGPT_UI__.setEnableThinking(false);
           window.__TINYGPT_CLIENT__?.updateConfig({
             temperature: 0,
@@ -4342,7 +4352,7 @@ async function main() {
         const afterOncePerms = await sidePanel.evaluate(() => window.__TINYGPT_UI__.getSitePermissions());
         const localAfterOnce = afterOncePerms.find((p) => p.origin === baseUrl);
 
-        // 3) Switch local server origin to 'site' in UI, revoke 1 row, then revoke all
+        // 3) Switch local server origin to 'site' in UI, revoke 1 row, then revoke all (gated by ConfirmActionCard)
         await sidePanel.locator('button.yui-notch-btn[aria-label="Lab"]').click();
         await spl.waitFor({ state: 'visible', timeout: 5000 });
         await localRow.locator('button:has-text("Site")').click();
@@ -4350,6 +4360,13 @@ async function main() {
         await spl.locator('button[aria-label="Revoke https://bank.chase.com"]').click();
         const countAfterSingleRevoke = await spl.locator('[data-permission-id]').count();
         await spl.locator('button:has-text("Revoke all")').click();
+        const revokeConfirmCard = sidePanel.locator('[data-slot="confirm-action-card"]');
+        await revokeConfirmCard.waitFor({ state: 'visible', timeout: 5000 });
+        const revokeConfirmBtn = revokeConfirmCard.locator('.yui-pill-btn--primary').first();
+        await revokeConfirmBtn.focus();
+        await sidePanel.keyboard.down(' ');
+        await revokeConfirmCard.waitFor({ state: 'hidden', timeout: 4000 });
+        await sidePanel.keyboard.up(' ').catch(() => {});
         const countAfterRevokeAll = await spl.locator('[data-permission-id]').count();
         const storageAfterRevokeAll = await sidePanel.evaluate(() =>
           window.localStorage.getItem('yours-site-permissions'),
@@ -4808,6 +4825,448 @@ async function main() {
         );
       } finally {
         await toggleChip(sidePanel, 'Page', false).catch(() => {});
+      }
+
+      // ------------------------------------------------------------------
+      // Case 49 (v12): ConfirmActionCard Destructive Guard (Cancel focus, Esc, Space hold) @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV12Confirm = sidePanel.viewportSize();
+      try {
+        const errorsBeforeConfirm = runtimeErrors.length;
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await sidePanel.evaluate(async () => {
+          await window.__TINYGPT_UI__.wipeMemory();
+          await window.__TINYGPT_UI__.rememberFact(
+            'Guard confirm test record MEMORY-HOLD-101.',
+            ['guard', 'v12'],
+            'profile',
+          );
+          await window.__TINYGPT_UI__.rememberFact(
+            'Second confirm record MEMORY-HOLD-102.',
+            ['guard', 'v12'],
+            'episodic',
+          );
+        });
+
+        const memBtnV12 = sidePanel.locator('button.yui-notch-btn[aria-label="Memory"]');
+        await memBtnV12.click();
+        await sidePanel.locator('button[role="tab"]:has-text("Inspector")').click();
+        await sidePanel.locator('button:has-text("Wipe All Memory")').click();
+        const confirmCard = sidePanel.locator('[data-slot="confirm-action-card"]');
+        await confirmCard.waitFor({ state: 'visible', timeout: 5000 });
+        await new Promise((r) => setTimeout(r, 50));
+
+        const confirmInspect = await sidePanel.evaluate(() => {
+          const card = document.querySelector('[data-slot="confirm-action-card"]');
+          const styledNodes = card
+            ? Array.from(card.querySelectorAll('[style]')).length + (card.getAttribute('style') ? 1 : 0)
+            : -1;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          const activeText = document.activeElement?.textContent?.trim() ?? '';
+          return {
+            hasCard: Boolean(card),
+            styledNodes,
+            overflowPx,
+            cancelDefaultFocused: /^Cancel$/i.test(activeText),
+          };
+        });
+
+        // Esc must cancel without wiping local memory
+        await sidePanel.keyboard.press('Escape');
+        await confirmCard.waitFor({ state: 'hidden', timeout: 5000 });
+        const afterEscMem = await sidePanel.evaluate(() => window.__TINYGPT_UI__.getMemoryStats());
+        const escPreservedMemory = (afterEscMem?.records?.length ?? 0) === 2;
+
+        // Re-open ConfirmActionCard and hold Space on Confirm button to execute wipe
+        await sidePanel.locator('button:has-text("Wipe All Memory")').click();
+        await confirmCard.waitFor({ state: 'visible', timeout: 5000 });
+        const dangerBtn = confirmCard.locator('.yui-pill-btn--danger').first();
+        await dangerBtn.focus();
+        await sidePanel.keyboard.down(' ');
+        await confirmCard.waitFor({ state: 'hidden', timeout: 4000 });
+        await sidePanel.keyboard.up(' ').catch(() => {});
+        await sidePanel.waitForFunction(
+          async () => {
+            const st = await window.__TINYGPT_UI__.getMemoryStats();
+            return Array.isArray(st?.records) && st.records.length === 0;
+          },
+          null,
+          { timeout: 6000 },
+        );
+        const afterHoldMem = await sidePanel.evaluate(() => window.__TINYGPT_UI__.getMemoryStats());
+        await memBtnV12.click();
+
+        const confirmChecks = {
+          cardMountedWithCancelFocus: confirmInspect.hasCard && confirmInspect.cancelDefaultFocused,
+          escCancelledPreservingData: escPreservedMemory,
+          spaceHoldConfirmedWipe: (afterHoldMem?.records?.length ?? -1) === 0,
+          zeroInlineStylesAndOverflow: confirmInspect.styledNodes === 0 && confirmInspect.overflowPx === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeConfirm,
+        };
+        const confirmScore =
+          Object.values(confirmChecks).filter(Boolean).length / Object.keys(confirmChecks).length;
+        recordCase({
+          id: 'V12_confirm_action_card_destructive_guard_340px',
+          suite: 'guard',
+          passed: confirmScore === 1,
+          score: confirmScore,
+          latencyMs: 0,
+          metrics: {
+            cancelDefaultFocused: confirmInspect.cancelDefaultFocused,
+            escPreservedMemory,
+            recordsAfterHold: afterHoldMem?.records?.length ?? -1,
+            styledNodes: confirmInspect.styledNodes,
+            overflowPx: confirmInspect.overflowPx,
+            leakCount: 0,
+          },
+          ...(confirmScore < 1
+            ? { error: `Checks=${JSON.stringify(confirmChecks)} inspect=${JSON.stringify(confirmInspect)}` }
+            : {}),
+        });
+      } finally {
+        await sidePanel.evaluate(() => window.__TINYGPT_UI__?.wipeMemory()).catch(() => {});
+        if (origViewportV12Confirm) {
+          await sidePanel.setViewportSize(origViewportV12Confirm).catch(() => {});
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Case 50 (v12): PageSelectionCard Live Capture + Show on Page + Qwen Turn @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV12Sel = sidePanel.viewportSize();
+      try {
+        const errorsBeforeSel = runtimeErrors.length;
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await homePage.goto(`${baseUrl}/spec-edge`, { waitUntil: 'domcontentloaded' });
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', true);
+        await homePage.bringToFront();
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          await window.__TINYGPT_UI__.clearChat();
+        });
+
+        // Select text far down inside #scroller while scrolled to top so "Show on page" must scroll + select
+        await homePage.evaluate(() => {
+          const scroller = document.getElementById('scroller');
+          if (scroller) scroller.scrollTop = 0;
+          const targetP = Array.from(document.querySelectorAll('#scroller p')).find((el) =>
+            (el.textContent ?? '').includes('Paragraph 22:'),
+          );
+          if (targetP && targetP.firstChild) {
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(targetP);
+            sel?.removeAllRanges();
+            sel?.addRange(range);
+          }
+        });
+        await sidePanel.evaluate(() => window.__TINYGPT_UI__.refreshActiveTab());
+
+        const selCard = sidePanel.locator('[data-slot="page-selection-card"]');
+        await selCard.waitFor({ state: 'visible', timeout: 8000 });
+        const selDom = await sidePanel.evaluate(() => {
+          const card = document.querySelector('[data-slot="page-selection-card"]');
+          const styledNodes = card
+            ? Array.from(card.querySelectorAll('[style]')).length + (card.getAttribute('style') ? 1 : 0)
+            : -1;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          const quoteText = card?.querySelector('[data-slot="page-selection-quote"]')?.textContent ?? '';
+          return {
+            hasCard: Boolean(card),
+            styledNodes,
+            overflowPx,
+            hasParagraph22: /Paragraph 22/i.test(quoteText),
+            cardText: card?.textContent ?? '',
+          };
+        });
+
+        // Expand toggle if present
+        const expandBtn = selCard.locator('.yui-sel-toggle').first();
+        if (await expandBtn.isVisible().catch(() => false)) {
+          await expandBtn.click();
+        }
+
+        // Clear homePage scroll & selection temporarily? Actually clicking "Show on page" should scroll scroller down > 0
+        await homePage.evaluate(() => {
+          const scroller = document.getElementById('scroller');
+          if (scroller) scroller.scrollTop = 0;
+          window.getSelection()?.removeAllRanges();
+        });
+        await selCard.locator('button:has-text("Show on page")').click();
+        await sidePanel.waitForFunction(
+          () => /Scrolled to selection/i.test(document.body.innerText),
+          null,
+          { timeout: 6000 },
+        );
+        const pageScrollAfterLocate = await homePage.evaluate(() => {
+          const scroller = document.getElementById('scroller');
+          return {
+            scrollTop: scroller ? scroller.scrollTop : 0,
+            selectedText: window.getSelection()?.toString() ?? '',
+          };
+        });
+
+        // Run a live Qwen3.5-4B turn using the pinned selection and verify auto-dismiss after send
+        const selTurn = await runUiTurn(
+          sidePanel,
+          'In one short sentence, state the exact paragraph number and KV cache mechanism from my pinned selection.',
+          { timeoutMs: 60000 },
+        );
+        const selCardRemaining = await selCard.count();
+
+        const selChecks = {
+          capturedSelectionCard: selDom.hasCard && selDom.hasParagraph22,
+          showOnPageScrolledAndSelected:
+            pageScrollAfterLocate.scrollTop > 0 && /Paragraph 22/i.test(pageScrollAfterLocate.selectedText),
+          turnAnsweredAccurately:
+            /22/.test(selTurn.answerText) && /KV slot reuse|deterministic KV/i.test(selTurn.answerText),
+          cardClearedOnSubmit: selCardRemaining === 0,
+          zeroInlineStylesAndOverflow: selDom.styledNodes === 0 && selDom.overflowPx === 0,
+          zeroLeaks: selTurn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeSel,
+        };
+        const selScore =
+          Object.values(selChecks).filter(Boolean).length / Object.keys(selChecks).length;
+        recordCase(
+          {
+            id: 'V12_page_selection_card_show_on_page_and_live_qwen_turn_340px',
+            suite: 'harness',
+            passed: selScore === 1,
+            score: selScore,
+            latencyMs: selTurn.elapsedMs,
+            metrics: {
+              scrollTopAfterLocate: pageScrollAfterLocate.scrollTop,
+              styledNodes: selDom.styledNodes,
+              overflowPx: selDom.overflowPx,
+              ttftMs: round(selTurn.metrics?.ttftMs ?? 0, 1),
+              decodeTokPerSec: round(selTurn.metrics?.tokensPerSec ?? 0, 2),
+              leakCount: selTurn.leakedTags.length,
+            },
+            ...(selScore < 1
+              ? { error: `Checks=${JSON.stringify(selChecks)} locate=${JSON.stringify(pageScrollAfterLocate)} ans=${JSON.stringify(selTurn.answerText.slice(0, 140))}` }
+              : {}),
+          },
+          selTurn,
+        );
+      } finally {
+        await toggleChip(sidePanel, 'Page', false).catch(() => {});
+        if (origViewportV12Sel) {
+          await sidePanel.setViewportSize(origViewportV12Sel).catch(() => {});
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Case 51 (v12): DeviceCapabilityCard Real WebGPU + OPFS Telemetry in Models Drawer @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV12Cap = sidePanel.viewportSize();
+      try {
+        const errorsBeforeCap = runtimeErrors.length;
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          await window.__TINYGPT_UI__.clearChat();
+        });
+
+        const modelsBtnV12 = sidePanel.locator('button.yui-notch-btn[aria-label="Models"]');
+        await modelsBtnV12.click();
+        const capCard = sidePanel.locator('[data-slot="device-capability-card"]');
+        await capCard.waitFor({ state: 'visible', timeout: 6000 });
+        await capCard.locator('button:has-text("Re-check")').click();
+        await sidePanel.waitForFunction(
+          () => /capability & OPFS probe refreshed/i.test(document.body.innerText),
+          null,
+          { timeout: 6000 },
+        );
+
+        const capInspect = await sidePanel.evaluate(() => {
+          const card = document.querySelector('[data-slot="device-capability-card"]');
+          const styledNodes = card
+            ? Array.from(card.querySelectorAll('[style]')).length + (card.getAttribute('style') ? 1 : 0)
+            : -1;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          const rows = card ? Array.from(card.querySelectorAll('.yui-devcap-row')).map((r) => r.textContent?.trim() ?? '') : [];
+          const pressedTiers = card
+            ? Array.from(card.querySelectorAll('[aria-pressed="true"]')).map((b) => b.textContent?.trim() ?? '')
+            : [];
+          return {
+            hasCard: Boolean(card),
+            status: card?.getAttribute('data-status') ?? null,
+            text: card?.textContent?.trim() ?? '',
+            rowCount: rows.length,
+            rows,
+            pressedTiers,
+            hasHeadroomBar: Boolean(card?.querySelector('.yui-devcap-meter-box svg, .yui-devcap-meter-box .yui-storage-bar')),
+            styledNodes,
+            overflowPx,
+          };
+        });
+        await modelsBtnV12.click();
+        await capCard.waitFor({ state: 'hidden', timeout: 5000 });
+
+        const capTurn = await runUiTurn(
+          sidePanel,
+          'Reply with exactly DEV-CAP-READY.',
+          { timeoutMs: 45000 },
+        );
+
+        const capChecks = {
+          cardRenderedRealGpu:
+            capInspect.hasCard &&
+            capInspect.status === 'ready' &&
+            !/probing|unavailable/i.test(capInspect.rows[0] ?? '') &&
+            /OPFS/i.test(capInspect.text),
+          headroomAndTierSelected:
+            capInspect.rowCount >= 3 &&
+            capInspect.pressedTiers.some((t) => /Qwen/i.test(t)),
+          zeroInlineStylesAndOverflow: capInspect.styledNodes === 0 && capInspect.overflowPx === 0,
+          liveTurnHealthy: /DEV-CAP-READY/i.test(capTurn.answerText),
+          zeroLeaks: capTurn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeCap,
+        };
+        const capScore =
+          Object.values(capChecks).filter(Boolean).length / Object.keys(capChecks).length;
+        recordCase(
+          {
+            id: 'V12_device_capability_card_real_webgpu_opfs_models_drawer_340px',
+            suite: 'harness',
+            passed: capScore === 1,
+            score: capScore,
+            latencyMs: capTurn.elapsedMs,
+            metrics: {
+              status: capInspect.status,
+              rowCount: capInspect.rowCount,
+              styledNodes: capInspect.styledNodes,
+              overflowPx: capInspect.overflowPx,
+              ttftMs: round(capTurn.metrics?.ttftMs ?? 0, 1),
+              decodeTokPerSec: round(capTurn.metrics?.tokensPerSec ?? 0, 2),
+              leakCount: capTurn.leakedTags.length,
+            },
+            ...(capScore < 1
+              ? { error: `Checks=${JSON.stringify(capChecks)} inspect=${JSON.stringify(capInspect)} ans=${JSON.stringify(capTurn.answerText.slice(0, 120))}` }
+              : {}),
+          },
+          capTurn,
+        );
+      } finally {
+        if (origViewportV12Cap) {
+          await sidePanel.setViewportSize(origViewportV12Cap).catch(() => {});
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Case 52 (v12): prefers-reduced-motion: reduce + Keyboard SegmentedControl Roving Focus @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV12Motion = sidePanel.viewportSize();
+      try {
+        const errorsBeforeMotion = runtimeErrors.length;
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await sidePanel.emulateMedia({ reducedMotion: 'reduce' });
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          await window.__TINYGPT_UI__.clearChat();
+        });
+
+        const modelsBtnMotion = sidePanel.locator('button.yui-notch-btn[aria-label="Models"]');
+        await modelsBtnMotion.click();
+        const segGroup = sidePanel
+          .locator('.yui-params-card [data-slot="segmented-control"][role="radiogroup"]')
+          .first();
+        await segGroup.waitFor({ state: 'visible', timeout: 5000 });
+        const radios = segGroup.locator('[role="radio"]');
+        const radioCount = await radios.count();
+        const firstChecked = radios.nth(0);
+        await firstChecked.focus();
+
+        await sidePanel.keyboard.press('ArrowRight');
+        const afterRight = await segGroup.evaluate((el) => {
+          const checkedIdx = Array.from(el.querySelectorAll('[role="radio"]')).findIndex(
+            (n) => n.getAttribute('aria-checked') === 'true',
+          );
+          const focused = document.activeElement?.textContent?.trim() ?? '';
+          return { checkedIdx, focused };
+        });
+
+        await sidePanel.keyboard.press('End');
+        const afterEnd = await segGroup.evaluate((el) => {
+          const all = Array.from(el.querySelectorAll('[role="radio"]'));
+          const checkedIdx = all.findIndex((n) => n.getAttribute('aria-checked') === 'true');
+          return { checkedIdx, total: all.length, focused: document.activeElement?.textContent?.trim() ?? '' };
+        });
+
+        await sidePanel.keyboard.press('Home');
+        const motionAndHome = await sidePanel.evaluate(() => {
+          const grp = document.querySelector('.yui-params-card [data-slot="segmented-control"][role="radiogroup"]');
+          const all = grp ? Array.from(grp.querySelectorAll('[role="radio"]')) : [];
+          const checkedIdx = all.findIndex((n) => n.getAttribute('aria-checked') === 'true');
+          const thumb = grp?.querySelector('.yui-seg-thumb');
+          const transitionDur = thumb ? getComputedStyle(thumb).transitionDuration : '';
+          const styledNodes = grp
+            ? Array.from(grp.querySelectorAll('[style]')).length + (grp.getAttribute('style') ? 1 : 0)
+            : -1;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          return {
+            reducedMotionMatched: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+            checkedIdx,
+            transitionDur,
+            styledNodes,
+            overflowPx,
+          };
+        });
+        await modelsBtnMotion.click();
+
+        const motionTurn = await runUiTurn(
+          sidePanel,
+          'Reply with exactly MOTION-KEY-OK.',
+          { timeoutMs: 45000 },
+        );
+
+        const motionChecks = {
+          reducedMotionEmulatedAndStyled:
+            motionAndHome.reducedMotionMatched &&
+            /^(0s|0ms)$/.test(motionAndHome.transitionDur),
+          rovingFocusArrowHomeEndWorked:
+            radioCount >= 3 &&
+            afterRight.checkedIdx === 1 &&
+            afterEnd.checkedIdx === afterEnd.total - 1 &&
+            motionAndHome.checkedIdx === 0,
+          zeroInlineStylesAndOverflow:
+            motionAndHome.styledNodes === 0 && motionAndHome.overflowPx === 0,
+          liveTurnOk: /MOTION-KEY-OK/i.test(motionTurn.answerText),
+          zeroLeaks: motionTurn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeMotion,
+        };
+        const motionScore =
+          Object.values(motionChecks).filter(Boolean).length / Object.keys(motionChecks).length;
+        recordCase(
+          {
+            id: 'V12_reduced_motion_and_segmented_control_keyboard_nav_340px',
+            suite: 'harness',
+            passed: motionScore === 1,
+            score: motionScore,
+            latencyMs: motionTurn.elapsedMs,
+            metrics: {
+              reducedMotionMatched: motionAndHome.reducedMotionMatched,
+              arrowRightIdx: afterRight.checkedIdx,
+              endIdx: afterEnd.checkedIdx,
+              homeIdx: motionAndHome.checkedIdx,
+              styledNodes: motionAndHome.styledNodes,
+              overflowPx: motionAndHome.overflowPx,
+              ttftMs: round(motionTurn.metrics?.ttftMs ?? 0, 1),
+              decodeTokPerSec: round(motionTurn.metrics?.tokensPerSec ?? 0, 2),
+              leakCount: motionTurn.leakedTags.length,
+            },
+            ...(motionScore < 1
+              ? { error: `Checks=${JSON.stringify(motionChecks)} motion=${JSON.stringify(motionAndHome)} right=${JSON.stringify(afterRight)} end=${JSON.stringify(afterEnd)} ans=${JSON.stringify(motionTurn.answerText.slice(0, 120))}` }
+              : {}),
+          },
+          motionTurn,
+        );
+      } finally {
+        await sidePanel.emulateMedia({ reducedMotion: 'no-preference' }).catch(() => {});
+        if (origViewportV12Motion) {
+          await sidePanel.setViewportSize(origViewportV12Motion).catch(() => {});
+        }
       }
     } catch (caseErr) {
       recordCase({

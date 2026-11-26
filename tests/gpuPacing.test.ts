@@ -6,6 +6,7 @@ import {
   computeDecodeSliceBounds,
   computePrefillSliceBreatherMs,
   getGpuPacingPolicy,
+  resetSleepThrottleDetectorForTest,
   resolveExtensionAssetUrl,
   selectDecodeSliceCount,
   selectPrefillChunkSize,
@@ -399,6 +400,7 @@ describe('gpuPacing', () => {
   });
 
   it('sleepMs resolves immediately for non-positive durations and waits for positive ms', async () => {
+    resetSleepThrottleDetectorForTest();
     const spy = vi.spyOn(globalThis, 'setTimeout');
     await sleepMs(0);
     await sleepMs(-10);
@@ -406,6 +408,29 @@ describe('gpuPacing', () => {
 
     await sleepMs(1);
     expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+
+    // Simulate hidden-document Chromium timer throttling (> ms + 25 ms overshoot)
+    let fakeNow = 1000;
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => fakeNow);
+    const timeoutSpy = vi
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation(((cb: (...args: unknown[]) => void) => {
+        fakeNow += 250;
+        cb();
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout);
+    await sleepMs(4);
+    expect(timeoutSpy).toHaveBeenCalledTimes(1);
+
+    // Subsequent breathers should bypass throttled setTimeout via MessageChannel
+    await sleepMs(4);
+    await sleepMs(4);
+    expect(timeoutSpy).toHaveBeenCalledTimes(1);
+
+    resetSleepThrottleDetectorForTest();
+    timeoutSpy.mockRestore();
+    nowSpy.mockRestore();
   });
 });
 

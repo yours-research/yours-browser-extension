@@ -75,6 +75,16 @@ describe('sampling, position_ids, cache telemetry, and benchmarks', () => {
     });
     expect(picked).toBe(2);
 
+    const largeVocab = new Float32Array(248320);
+    largeVocab.fill(-25);
+    largeVocab[123456] = 8.5;
+    const sampledLarge = sampleNextToken(largeVocab, {
+      temperature: 0.7,
+      topK: 20,
+      topP: 0.9,
+    });
+    expect(sampledLarge).toBe(123456);
+
     // Verify float16 LUT decoding & greedy argmax helpers
     // 0x3c00 = 1.0, 0x4000 = 2.0, 0xc000 = -2.0, 0x3555 ~ 0.33325
     expect(decodeFloat16(0x3c00)).toBe(1.0);
