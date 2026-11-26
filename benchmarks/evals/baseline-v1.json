@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "suite": "harness",
+  "timestampIso": "2026-11-26T05:22:26.156Z",
+  "summary": {
+    "total": 7,
+    "passed": 1,
+    "failed": 6,
+    "aggregateScore": 0.5439,
+    "suiteMetrics": {
+      "passRate": 0.1429,
+      "meanTtftMs": 1041.96,
+      "meanDecodeTokPerSec": 74.9,
+      "meanInterTurnWaitMs": 24.5,
+      "prefixReuseRate": 0.3333,
+      "avgFps": 140.85,
+      "jankPct": 0.29,
+      "abortLatencyMs": 3,
+      "leakRate": 0,
+      "errorCount": 3,
+      "popupWindowCount": 0,
+      "toolCallSuccessRate": 0,
+      "memoryRecallRate": 0,
+      "guardBlockRate": 0
+    }
+  },
+  "cases": [
+    {
+      "id": "P1_startup_slot0_and_vram",
+      "suite": "harness",
+      "passed": false,
+      "score": 0.8571428571428571,
+      "latencyMs": 8176,
+      "metrics": {
+        "isQwen": true,
+        "tier1": true,
+        "slot0Cached": true,
+        "kvTieredSavings": true,
+        "slotRestoreFast": false,
+        "zeroExternalNetwork": true,
+        "composerMounted": true,
+        "basePromptTokens": 422,
+        "allocatedKvCapacity": 33280,
+        "lastSlotRestoreMs": -1
+      },
+      "error": "Failed checks: {\"isQwen\":true,\"tier1\":true,\"slot0Cached\":true,\"kvTieredSavings\":true,\"slotRestoreFast\":false,\"zeroExternalNetwork\":true,\"composerMounted\":true}"
+    },
+    {
+      "id": "P1_casual_direct_chat_no_leak",
+      "suite": "harness",
+      "passed": false,
+      "score": 0.8,
+      "latencyMs": 1283,
+      "metrics": {
+        "ttftMs": 855.5,
+        "decodeTokPerSec": 76.63,
+        "prefixReused": false,
+        "avgFps": 137.63,
+        "jankPct": 0.58,
+        "leakCount": 0
+      },
+      "error": "Checks={\"answered42\":true,\"zeroLeaks\":true,\"prefixReusedSlot0\":false,\"smoothFps\":true,\"zeroFreeze\":true} ans=\"42\""
+    },
+    {
+      "id": "P1_thinking_separation_and_followup_cache",
+      "suite": "harness",
+      "passed": false,
+      "score": 0.75,
+      "latencyMs": 3052,
+      "metrics": {
+        "ttftMs": 803.9,
+        "decodeTokPerSec": 68.8,
+        "interTurnWaitMs": 32,
+        "prefixReused": false,
+        "reasoningChars": 306,
+        "leakCount": 0
+      },
+      "error": "Checks={\"answered84\":true,\"zeroLeaks\":true,\"prefixReusedMultiTurn\":false,\"separatedReasoning\":true} ans=\"84 is even because it's divisible by 2 (any number ending in 0, 2, 4, 6, or 8 is even).\""
+    },
+    {
+      "id": "P1_abort_responsiveness",
+      "suite": "harness",
+      "passed": false,
+      "score": 0,
+      "latencyMs": 10448,
+      "metrics": {
+        "abortLatencyMs": 3,
+        "recoveredAfterAbort": false
+      },
+      "error": "abortLatencyMs=3, post="
+    },
+    {
+      "id": "P2_active_tab_comprehension_and_followup",
+      "suite": "harness",
+      "passed": true,
+      "score": 1,
+      "latencyMs": 10034,
+      "metrics": {
+        "q1TtftMs": 3276.3,
+        "q2TtftMs": 129.4,
+        "q2PrefixReused": true,
+        "decodeTokPerSec": 75.31,
+        "avgFps": 144.07,
+        "leakCount": 0
+      }
+    },
+    {
+      "id": "P2_multi_tab_compare",
+      "suite": "tools",
+      "passed": false,
+      "score": 0.4,
+      "latencyMs": 94744,
+      "metrics": {
+        "toolCallsCount": 0,
+        "usedTabTool": false,
+        "timedOut": true,
+        "turnState": "tool_executing",
+        "ttftMs": 136.4,
+        "decodeTokPerSec": 75.28,
+        "leakCount": 0
+      },
+      "error": "Checks={\"usedTabTool\":false,\"foundNebula\":false,\"foundQuantum\":false,\"zeroLeaks\":true,\"boundedSteps\":true} state=tool_executing stream=\"\" reason=\"\" tools=[] ans=\"\""
+    },
+    {
+      "id": "FATAL_REMAINING_CASES_7",
+      "suite": "harness",
+      "passed": false,
+      "score": 0,
+      "latencyMs": 0,
+      "metrics": {
+        "leakCount": 0
+      },
+      "error": "toggleChip(Page) failed: locator.waitFor: Timeout 5000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.yui-composer-toolbar .yui-chip-btn').filter({ hasText: 'Page' }).first() to be visible\u001b[22m\n | DOM debug={\"url\":\"chrome-extension://fnhgoningflahehfpncbkndenkempjbk/sidepanel.html\",\"bodyText\":\"\",\"chips\":[],\"metrics\":{\"status\":\"ready\",\"modelId\":\"onnx-community/Qwen3.5-4B-ONNX-OPT\",\"messageCount\":1,\"lastAssistantText\":\"\",\"ttftMs\":136.3999999910593,\"prefillTokPerSec\":157.5393848497337,\"tokensPerSec\":75.27504342661068,\"activeContextTokens\":1418,\"prefixReused\":true,\"backgroundPrefillState\":\"idle\",\"activePrefixSlot\":\"live\",\"lastSlotRestoreMs\":null,\"basePromptCached\":true,\"basePromptTokens\":422,\"allocatedKvCapacity\":33280,\"computeTier\":\"tier1-f16-subgroups\",\"displayHz\":144,\"pageEnabled\":true,\"researchEnabled\":false,\"enableThinking\":false,\"backendKind\":\"wgsl\",\"turnState\":\"tool_executing\",\"isGenerating\":true,\"chatError\":null,\"turnTelemetry\":{\"totalDurationMs\":299.80000001192093,\"ttftMs\":136.3999999910593,\"tokensPerSec\":76.04562737068102,\"kvTokens\":1416,\"speculativeAcceptRate\":0.25},\"lastCompaction\":{\"slot0\":{\"messages\":[{\"id\":\"slot0_7125e4a4\",\"role\":\"system\",\"content\":\"You are TinyGPT, a fast, accurate local browser assistant.\\nAnswer general knowledge and coding questions directly and concisely without calling tools.\\nNever fabricate tool output or cite unseen URLs.\\nWeb search is OFF. Do NOT call search_web_tab or fetch_background_tab.\\nThe active browser tab content is attached below. Answer directly without calling read_active_tab.\\nOnly invoke an available tool when genuinely required by emitting <tool_call>{\\\"name\\\":\\\"tool_name\\\",\\\"arguments\\\":{...}}</tool_call> and stopping.\\n\\nAvailable tools:\\n- list_tabs(window_scope?: \\\"current\\\" | \\\"all\\\"): List open tabs in the browser window (tab ID, title, URL, and active status) to identify relevant tabs before reading or interacting with one.\\n- read_tab(include_links?: boolean, max_chars?: integer, mode?: \\\"auto\\\" | \\\"article\\\" | \\\"selection\\\" | \\\"interactive\\\" | \\\"aom\\\", query?: string, tab_id: integer): Read the clean extracted text, semantic AOM snapshot, title, and URL of a specific open browser tab identified by tab_id from list_tabs.\\n- run_sandbox(code?: string, data?: unknown, dateA?: string, dateB?: string, days?: number, expression?: string, from?: string, memory_limit_bytes?: integer, mode?: \\\"expr\\\" | \\\"unit\\\" | \\\"date\\\" | \\\"json\\\" | \\\"csv\\\" | \\\"transform\\\" | \\\"js\\\", path?: string, timeout_ms?: integer, to?: string, value?: unknown): Air-gapped deterministic compute and data transform sandbox supporting math expressions, unit conversions, date arithmetic, JSON path queries, CSV stats, pipeline transforms, and QuickJS-isolated JS evaluation with zero network/DOM/chrome access.\",\"createdAt\":0}],\"prefixHash\":\"7125e4a4\",\"slotKey\":\"base-system:7125e4a4\",\"tokenCount\":462,\"hasProfileMemory\":false,\"toolCount\":3},\"compiledMessages\":[{\"id\":\"slot0_7125e4a4\",\"role\":\"system\",\"content\":\"You are TinyGPT, a fast, accurate local browser assistant.\\nAnswer general knowledge and coding questions directly and concisely without calling tools.\\nNever fabricate tool output or cite unseen URLs.\\nWeb search is OFF. Do NOT call search_web_tab or fetch_background_tab.\\nThe active browser tab content is attached below. Answer directly without calling read_active_tab.\\nOnly invoke an available tool when genuinely required by emitting <tool_call>{\\\"name\\\":\\\"tool_name\\\",\\\"arguments\\\":{...}}</tool_call> and stopping.\\n\\nAvailable tools:\\n- list_tabs(window_scope?: \\\"current\\\" | \\\"all\\\"): List open tabs in the browser window (tab ID, title, URL, and active status) to identify relevant tabs before reading or interacting with one.\\n- read_tab(include_links?: boolean, max_chars?: integer, mode?: \\\"auto\\\" | \\\"article\\\" | \\\"selection\\\" | \\\"interactive\\\" | \\\"aom\\\", query?: string, tab_id: integer): Read the clean extracted text, semantic AOM snapshot, title, and URL of a specific open browser tab identified by tab_id from list_tabs.\\n- run_sandbox(code?: string, data?: unknown, dateA?: string, dateB?: string, days?: number, expression?: string, from?: string, memory_limit_bytes?: integer, mode?: \\\"expr\\\" | \\\"unit\\\" | \\\"date\\\" | \\\"json\\\" | \\\"csv\\\" | \\\"transform\\\" | \\\"js\\\", path?: string, timeout_ms?: integer, to?: string, value?: unknown): Air-gapped deterministic compute and data transform sandbox supporting math expressions, unit conversions, date arithmetic, JSON path queries, CSV stats, pipeline transforms, and QuickJS-isolated JS evaluation with zero network/DOM/chrome access.\",\"createdAt\":0},{\"id\":\"page_cbacda39\",\"role\":\"system\",\"content\":\"[Active Tab: Quantum Anchor Architecture Spec (http://127.0.0.1:63201/article-quantum) | mode=article]\\n[BEGIN UNTRUSTED CONTENT id=\\\"ug-2c105a37\\\" origin=\\\"http://127.0.0.1:63201/article-quantum\\\" tainted=\\\"true\\\" risk=\\\"0.00\\\"]\\n# Quantum Anchor Runtime Specification\\n\\nThe primary cluster verification identifier for this release is **QUANTUM-ANCHOR-8821**.\\n\\nThe hard hardware acquisition budget cap approved by Engineering is **BUDGET-CAP-49M** ($49 million USD).\\n\\nParagraph 1: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 2: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 3: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 4: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 5: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 6: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 7: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 8: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 9: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 10: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 11: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 12: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 13: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 14: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 15: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 16: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 17: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 18: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 19: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 20: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 21: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 22: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 23: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 24: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 25: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 26: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 27: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n\\nParagraph 28: TinyGPT WebGPU local architecture uses deterministic KV slot reuse, offscreen worker execution, and strict origin isolation.\\n[END UNTRUSTED CONTENT id=\\\"ug-2c105a37\\\"]\",\"tainted\":true,\"createdAt\":0},{\"id\":\"msg_9ada3884-feee-45d4-bde3-a4f04fb512e6\",\"role\":\"user\",\"content\":\"Use your browser tab tools (list_tabs and read_tab) to inspect the other open \\\"Nebula Core Throughput Spec\\\" tab and tell me its NEBULA codename and THROUGHPUT number alongside QUANTUM-ANCHOR-8821.\",\"createdAt\":1795670450251}],\"rollingSummary\":null,\"rollingSummaryCutoffId\":null,\"summaryPrefixHash\":null,\"tokensBefore\":1784,\"tokensAfter\":1784,\"availableHistoryBudget\":128196,\"reservedOutputTokens\":1024,\"foldedToolCount\":0,\"evictedMessageCount\":0,\"kvPrefixPreservedMessages\":0,\"kvPrefixPreservedTokens\":0,\"slot0Preserved\":true,\"didCompact\":false},\"enabledToolNames\":[\"list_tabs\",\"read_tab\",\"run_sandbox\"],\"pendingApproval\":null,\"sourceCount\":0,\"activePage\":{\"title\":\"Quantum Anchor Architecture Spec\",\"url\":\"http://127.0.0.1:63201/article-quantum\",\"mode\":\"article\",\"chars\":4146,\"truncated\":false,\"contentHash\":\"cbacda39\"}}}"
+    }
+  ]
+}
