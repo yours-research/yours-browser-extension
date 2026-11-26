@@ -312,7 +312,7 @@ export function isMessagePrefix(prev: readonly ChatMessage[], next: readonly Cha
     return false;
   }
   for (let i = 0; i < prev.length; i++) {
-    if (prev[i].role !== next[i].role || prev[i].content !== next[i].content) {
+    if (prev[i].role !== next[i].role || prev[i].content.trim() !== next[i].content.trim()) {
       return false;
     }
   }

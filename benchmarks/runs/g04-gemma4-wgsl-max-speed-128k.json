@@ -1,0 +1,175 @@
+{
+  "runId": "g04-gemma4-wgsl-max-speed-128k",
+  "track": "gemma4-track4-max-speed",
+  "modelId": "onnx-community/gemma-4-E4B-it-qat-mobile-ONNX",
+  "recordedAt": "2026-11-25T22:33:36.229Z",
+  "config": {
+    "kvMode": "int8",
+    "maxContext": 131072,
+    "gpuPacingMode": "max-speed",
+    "executionHost": "worker"
+  },
+  "coldLoad": {
+    "coldLoadMs": 7684,
+    "streamWeightsMs": 6707,
+    "pipelineCompileMs": 6707,
+    "computeTier": "tier1-f16-subgroups",
+    "hasShaderF16": true,
+    "hasSubgroups": true,
+    "maxBufferSize": 2147483648,
+    "maxStorageBufferBindingSize": 2147483644,
+    "kvMode": "int8",
+    "maxContext": 131072,
+    "vramPlan": {
+      "maxContext": 131072,
+      "kvMode": "int8",
+      "slidingKvBytes": 41943040,
+      "globalKvPerBufBytes": 541065216,
+      "globalKvTotalBytes": 1082130432,
+      "kvTotalBytes": 1124073472,
+      "kvTotalMb": 1072,
+      "scratchBytes": 28001536,
+      "weightBytes": 2227270824,
+      "totalVramBytes": 3379345832,
+      "totalVramMb": 3222.8
+    },
+    "executionHost": "worker",
+    "loadSource": "bundled"
+  },
+  "golden": {
+    "goldenA": {
+      "text": "4",
+      "generatedIds": [
+        236812
+      ],
+      "top0": {
+        "id": 236812,
+        "val": 28.5225
+      }
+    },
+    "goldenB": {
+      "text": "WebGPU is a modern, high-performance API for running graphics and compute shaders directly in the web browser.",
+      "top0": {
+        "id": 6721,
+        "val": 28.256
+      },
+      "decodeTokPerSec": 55.84
+    }
+  },
+  "sweep": {
+    "points": [
+      {
+        "targetTokens": 1024,
+        "actualPromptTokens": 1024,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 2196.9,
+        "ttftMs": 2196.9,
+        "prefillTokPerSec": 466.11,
+        "decodeTokPerSec": 59.04,
+        "achievedBandwidthGBs": 119.96,
+        "bandwidthUtilizationPct": 12.82,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 8192,
+        "actualPromptTokens": 8192,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 20679.4,
+        "ttftMs": 20679.4,
+        "prefillTokPerSec": 396.14,
+        "decodeTokPerSec": 57.42,
+        "achievedBandwidthGBs": 122.57,
+        "bandwidthUtilizationPct": 13.1,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 32768,
+        "actualPromptTokens": 32768,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 122742.7,
+        "ttftMs": 122742.7,
+        "prefillTokPerSec": 266.96,
+        "decodeTokPerSec": 47.97,
+        "achievedBandwidthGBs": 119.3,
+        "bandwidthUtilizationPct": 12.75,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 65536,
+        "actualPromptTokens": 65536,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 349965,
+        "ttftMs": 349965,
+        "prefillTokPerSec": 187.26,
+        "decodeTokPerSec": 40.4,
+        "achievedBandwidthGBs": 119.45,
+        "bandwidthUtilizationPct": 12.76,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 98304,
+        "actualPromptTokens": 98304,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 680648.9,
+        "ttftMs": 680648.9,
+        "prefillTokPerSec": 144.43,
+        "decodeTokPerSec": 36.12,
+        "achievedBandwidthGBs": 123.76,
+        "bandwidthUtilizationPct": 13.22,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 131072,
+        "actualPromptTokens": 131072,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 1114688,
+        "ttftMs": 1114688,
+        "prefillTokPerSec": 117.59,
+        "decodeTokPerSec": 30.56,
+        "achievedBandwidthGBs": 119.07,
+        "bandwidthUtilizationPct": 12.72,
+        "status": "ok"
+      }
+    ],
+    "oomCeiling": null
+  },
+  "chatTurn1": {
+    "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+    "responseText": "Here are 4 benefits of running local LLMs in a dedicated Web Worker:\n\n* **Enhanced Privacy:** Data processing and model inference happen entirely on the client's device, ensuring sensitive data never leaves the local environment.\n* **Reduced Latency:** By running the model locally, you eliminate the network round-trip time required to call a remote API, leading to faster response times.\n* **Offline Capability:** The application remains functional and responsive even when the user has no internet connection.\n* **Controlled Resource Usage:** By isolating the LLM in a dedicated worker, you can manage memory and CPU usage without blocking the main",
+    "responseLength": 651,
+    "ttftMs": 116.5,
+    "prefillTokPerSec": 248.93,
+    "decodeTokPerSec": 59.95,
+    "activeContextTokens": 156,
+    "prefixReused": false,
+    "prefixReusedTokens": 0,
+    "aborted": false,
+    "speculativeStats": null
+  },
+  "speculativeCheck": {
+    "prompt": "Rewrite and clean up the following config bullet list verbatim in Markdown, keeping every field name and exact numeric limit unchanged:\n- maxBufferSize: 2147483648\n- maxStorageBufferBindingSize: 2147483644\n- workers: DedicatedWorker (es module)\n- kvCacheMode: int8 (131072 context)\n- weightShards: 21 parts (<= 128 MiB each)\n- decodePacing: balanced (144Hz smooth compositor)",
+    "parityPassed": true,
+    "baselineDecodeTokPerSec": 62.33,
+    "speculativeDecodeTokPerSec": 46.27,
+    "speedupRatio": 0.742,
+    "speculativeStats": {
+      "enabled": true,
+      "drafted": 84,
+      "accepted": 74,
+      "steps": 21,
+      "acceptanceRatePct": 88.1
+    },
+    "baselineLength": 318,
+    "speculativeLength": 318,
+    "responsePreview": "Here is the cleaned-up configuration list in Markdown format:\n\n```markdown\n- maxBufferSize: 2147483648\n- maxStorageBufferBindingSize: 2147483644\n- workers: DedicatedWorker (es module)\n- kvCacheMode: i"
+  },
+  "consoleErrorCount": 0,
+  "consoleErrors": [],
+  "status": "ok"
+}

@@ -1,0 +1,162 @@
+{
+  "runId": "g05-gemma4-wgsl-worker-balanced-smoothness",
+  "track": "gemma4-track5-balanced",
+  "modelId": "onnx-community/gemma-4-E4B-it-qat-mobile-ONNX",
+  "recordedAt": "2026-11-25T22:36:17.835Z",
+  "config": {
+    "kvMode": "int8",
+    "maxContext": 131072,
+    "gpuPacingMode": "balanced",
+    "executionHost": "worker",
+    "displayHz": 143
+  },
+  "idleSmoothness": {
+    "avgFps": 127.95,
+    "p50FrameMs": 7,
+    "p95FrameMs": 7.2,
+    "p99FrameMs": 7.3,
+    "maxFrameMs": 321.2,
+    "jankPctOver33ms": 0.28,
+    "freezePctOver100ms": 0.28,
+    "avgInputLatencyMs": 15.28,
+    "frameCount": 361
+  },
+  "coldLoad": {
+    "coldLoadMs": 6053,
+    "streamWeightsMs": 6000,
+    "pipelineCompileMs": 6000,
+    "computeTier": "tier1-f16-subgroups",
+    "hasShaderF16": true,
+    "hasSubgroups": true,
+    "maxBufferSize": 2147483648,
+    "maxStorageBufferBindingSize": 2147483644,
+    "kvMode": "int8",
+    "maxContext": 131072,
+    "vramPlan": {
+      "maxContext": 131072,
+      "kvMode": "int8",
+      "slidingKvBytes": 41943040,
+      "globalKvPerBufBytes": 541065216,
+      "globalKvTotalBytes": 1082130432,
+      "kvTotalBytes": 1124073472,
+      "kvTotalMb": 1072,
+      "scratchBytes": 28001536,
+      "weightBytes": 2227270824,
+      "totalVramBytes": 3379345832,
+      "totalVramMb": 3222.8
+    },
+    "executionHost": "worker",
+    "loadSource": "bundled"
+  },
+  "loadSmoothness": {
+    "avgFps": 140.72,
+    "p50FrameMs": 6.9,
+    "p95FrameMs": 7.2,
+    "p99FrameMs": 7.4,
+    "maxFrameMs": 122.4,
+    "jankPctOver33ms": 0.12,
+    "freezePctOver100ms": 0.12,
+    "avgInputLatencyMs": 3.63,
+    "frameCount": 857
+  },
+  "sweep": {
+    "points": [
+      {
+        "targetTokens": 8192,
+        "actualPromptTokens": 8192,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 21668.9,
+        "ttftMs": 21668.9,
+        "prefillTokPerSec": 378.05,
+        "decodeTokPerSec": 32.79,
+        "achievedBandwidthGBs": 69.99,
+        "bandwidthUtilizationPct": 7.48,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 32768,
+        "actualPromptTokens": 32768,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 125404.6,
+        "ttftMs": 125404.6,
+        "prefillTokPerSec": 261.3,
+        "decodeTokPerSec": 28.85,
+        "achievedBandwidthGBs": 71.75,
+        "bandwidthUtilizationPct": 7.67,
+        "status": "ok"
+      }
+    ],
+    "oomCeiling": null
+  },
+  "sweepSmoothness": {
+    "avgFps": 76.66,
+    "p50FrameMs": 7.1,
+    "p95FrameMs": 35.7,
+    "p99FrameMs": 45.2,
+    "maxFrameMs": 85.2,
+    "jankPctOver33ms": 7.35,
+    "freezePctOver100ms": 0,
+    "avgInputLatencyMs": 9.73,
+    "frameCount": 11438
+  },
+  "chatTurn1": {
+    "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+    "responseText": "Here are 4 benefits of running local LLMs in a dedicated Web Worker:\n\n* **Enhanced Privacy:** Data processing and model inference happen entirely on the client's device, ensuring sensitive data never leaves the local environment.\n* **Reduced Latency:** By running the model locally, you eliminate the network round-trip time required to call a remote API, leading to faster response times.\n* **Offline Capability:** The application remains functional and responsive even when the user has no internet connection.\n* **Controlled Resource Usage:** By isolating the LLM in a dedicated worker, you can manage memory and CPU usage without blocking the main",
+    "responseLength": 651,
+    "ttftMs": 117.6,
+    "prefillTokPerSec": 246.6,
+    "decodeTokPerSec": 26.51,
+    "activeContextTokens": 156,
+    "prefixReused": false,
+    "prefixReusedTokens": 0,
+    "aborted": false,
+    "speculativeStats": {
+      "enabled": true,
+      "drafted": 20,
+      "accepted": 8,
+      "steps": 5,
+      "acceptanceRatePct": 40
+    }
+  },
+  "chatSmoothness": {
+    "avgFps": 141.18,
+    "p50FrameMs": 6.9,
+    "p95FrameMs": 7.2,
+    "p99FrameMs": 13.2,
+    "maxFrameMs": 27.9,
+    "jankPctOver33ms": 0,
+    "freezePctOver100ms": 0,
+    "avgInputLatencyMs": 3.32,
+    "frameCount": 701
+  },
+  "turn2": {
+    "prompt": "Summarize bullet 1 in one short sentence.",
+    "responseText": "Running the model locally ensures that sensitive data remains private and never leaves the user's device.",
+    "responseLength": 105,
+    "ttftMs": 117,
+    "prefillTokPerSec": 179.49,
+    "decodeTokPerSec": 20.35,
+    "activeContextTokens": 196,
+    "prefixReused": true,
+    "prefixReusedTokens": 156,
+    "aborted": false,
+    "speculativeStats": {
+      "enabled": true,
+      "drafted": 12,
+      "accepted": 0,
+      "steps": 3,
+      "acceptanceRatePct": 0
+    }
+  },
+  "abortMetrics": {
+    "stoppedCleanly": true,
+    "abortLatencyMs": 32.9,
+    "preservedPartialChars": 31,
+    "partialPreview": "## The Architecture of Parallel"
+  },
+  "consoleErrorCount": 0,
+  "consoleErrors": [],
+  "status": "ok"
+}

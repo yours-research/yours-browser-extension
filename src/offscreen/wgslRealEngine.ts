@@ -1,3 +1,4 @@
+import { selectComputeTier } from '@yours/models/hardware';
 import type { GpuPacingMode, LoadSource, WgslKvMode } from '../shared/protocol.ts';
 import {
   calibratePacingForHardware,
@@ -208,20 +209,15 @@ function getCandidateComputeTiers(
   hasSubgroups: boolean,
   forceComputeTier?: WgslComputeTier,
 ): WgslComputeTier[] {
-  if (forceComputeTier) {
-    if (forceComputeTier === 'tier1-f16-subgroups') {
-      return ['tier1-f16-subgroups', 'tier2-f16-shared', 'tier3-f32-universal'];
-    }
-    if (forceComputeTier === 'tier2-f16-shared') {
-      return ['tier2-f16-shared', 'tier3-f32-universal'];
-    }
-    return ['tier3-f32-universal'];
-  }
-
-  if (hasShaderF16 && hasSubgroups) {
+  const features = [
+    ...(hasShaderF16 ? ['shader-f16'] : []),
+    ...(hasSubgroups ? ['subgroups'] : []),
+  ];
+  const primary = forceComputeTier ?? selectComputeTier(features);
+  if (primary === 'tier1-f16-subgroups') {
     return ['tier1-f16-subgroups', 'tier2-f16-shared', 'tier3-f32-universal'];
   }
-  if (hasShaderF16) {
+  if (primary === 'tier2-f16-shared') {
     return ['tier2-f16-shared', 'tier3-f32-universal'];
   }
   return ['tier3-f32-universal'];

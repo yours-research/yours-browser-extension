@@ -62,6 +62,12 @@ function createCallbacks(): EngineCallbacks {
       postToHost({ type: 'GENERATION_COMPLETE', requestId, finishReason }),
     onGenerationError: (requestId, error) =>
       postToHost({ type: 'GENERATION_ERROR', requestId, error }),
+    onPrefillComplete: (requestId, slotKey, tokens, elapsedMs) =>
+      postToHost({ type: 'PREFILL_COMPLETE', requestId, slotKey, tokens, elapsedMs }),
+    onPrefillError: (requestId, slotKey, error) =>
+      postToHost({ type: 'PREFILL_ERROR', requestId, slotKey, error }),
+    onEvictComplete: (requestId, slotKey) =>
+      postToHost({ type: 'EVICT_COMPLETE', requestId, slotKey }),
   };
 }
 
@@ -126,10 +132,19 @@ function handleClientMessage(msg: ClientToEngineMessage): void {
         isDraft: msg.isDraft,
         url: msg.url,
         contentHash: msg.contentHash,
+        requestId: msg.requestId,
       });
       break;
     case 'ABORT_BACKGROUND_PREFILL':
       activeEngine.abortBackgroundPrefill();
+      break;
+    case 'EVICT_SLOT':
+      activeEngine.evictSlot(msg.slotKey, msg.requestId);
+      break;
+    case 'PROBE_HARDWARE_CATALOG':
+    case 'DOWNLOAD_VERIFIED_MODEL':
+    case 'CANCEL_MODEL_DOWNLOAD':
+      // Handled in the offscreen document host.
       break;
     case 'GENERATE':
       activeEngine.enqueueGenerate(

@@ -1,0 +1,238 @@
+{
+  "runId": "g03-gemma4-wgsl-int8kv-128k",
+  "track": "gemma4-track3-wgsl-int8kv-128k",
+  "modelId": "onnx-community/gemma-4-E4B-it-qat-mobile-ONNX",
+  "recordedAt": "2026-11-25T21:52:32.169Z",
+  "tokenizerMs": 897,
+  "load": {
+    "coldLoadMs": 5890,
+    "streamWeightsMs": 5820,
+    "pipelineCompileMs": 5820,
+    "computeTier": "tier1-f16-subgroups",
+    "hasShaderF16": true,
+    "hasSubgroups": true,
+    "maxBufferSize": 2147483648,
+    "maxStorageBufferBindingSize": 2147483644,
+    "kvMode": "int8",
+    "maxContext": 131072,
+    "vramPlan": {
+      "maxContext": 131072,
+      "kvMode": "int8",
+      "slidingKvBytes": 41943040,
+      "globalKvPerBufBytes": 541065216,
+      "globalKvTotalBytes": 1082130432,
+      "kvTotalBytes": 1124073472,
+      "kvTotalMb": 1072,
+      "scratchBytes": 27473152,
+      "weightBytes": 2227270824,
+      "totalVramBytes": 3378817448,
+      "totalVramMb": 3222.29
+    }
+  },
+  "goldenA": {
+    "generatedIds": [
+      236812
+    ],
+    "promptTokens": 23,
+    "prefixReusedTokens": 0,
+    "prefillMs": 396.5,
+    "ttftMs": 396.5,
+    "prefillTokPerSec": 58.01,
+    "decodeMs": 18.6,
+    "decodeTokPerSec": 53.76,
+    "step0Top5Logits": [
+      {
+        "id": 236812,
+        "val": 28.52
+      },
+      {
+        "id": 236778,
+        "val": 22.787
+      },
+      {
+        "id": 818,
+        "val": 21.3229
+      },
+      {
+        "id": 236771,
+        "val": 19.9446
+      },
+      {
+        "id": 236775,
+        "val": 19.7522
+      }
+    ],
+    "aborted": false,
+    "speculativeStats": null,
+    "promptText": "What is 2 + 2? Answer with just the number.",
+    "decodedText": "4"
+  },
+  "goldenB": {
+    "generatedIds": [
+      6721,
+      88477,
+      563,
+      496,
+      4532,
+      236764,
+      1494,
+      236772,
+      32677,
+      9299,
+      573,
+      4710,
+      17284,
+      532,
+      16333,
+      188015,
+      5467,
+      528,
+      506,
+      4108,
+      11180,
+      236761
+    ],
+    "promptTokens": 17,
+    "prefixReusedTokens": 0,
+    "prefillMs": 108.1,
+    "ttftMs": 108.2,
+    "prefillTokPerSec": 157.26,
+    "decodeMs": 356.9,
+    "decodeTokPerSec": 61.64,
+    "step0Top5Logits": [
+      {
+        "id": 6721,
+        "val": 28.2542
+      },
+      {
+        "id": 1018,
+        "val": 25.1328
+      },
+      {
+        "id": 225639,
+        "val": 22.5814
+      },
+      {
+        "id": 818,
+        "val": 20.9618
+      },
+      {
+        "id": 5166,
+        "val": 20.9
+      }
+    ],
+    "aborted": false,
+    "speculativeStats": null,
+    "promptText": "Explain WebGPU in one short sentence.",
+    "decodedText": "WebGPU is a modern, high-performance API for running graphics and compute shaders directly in the web browser."
+  },
+  "sweep": {
+    "points": [
+      {
+        "targetTokens": 1024,
+        "actualPromptTokens": 1024,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 2023.4,
+        "ttftMs": 2023.4,
+        "prefillTokPerSec": 506.08,
+        "pleFetchMs": 29.6,
+        "pleDequantMs": 22.8,
+        "decodeTokPerSec": 28.27,
+        "achievedBandwidthGBs": 57.44,
+        "bandwidthUtilizationPct": 6.14,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 8192,
+        "actualPromptTokens": 8192,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 19829.8,
+        "ttftMs": 19829.8,
+        "prefillTokPerSec": 413.12,
+        "pleFetchMs": 0.6,
+        "pleDequantMs": 180.3,
+        "decodeTokPerSec": 27.15,
+        "achievedBandwidthGBs": 57.95,
+        "bandwidthUtilizationPct": 6.19,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 32768,
+        "actualPromptTokens": 32768,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 124007.1,
+        "ttftMs": 124007.1,
+        "prefillTokPerSec": 264.24,
+        "pleFetchMs": 1.8,
+        "pleDequantMs": 730.6,
+        "decodeTokPerSec": 23.45,
+        "achievedBandwidthGBs": 58.32,
+        "bandwidthUtilizationPct": 6.23,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 65536,
+        "actualPromptTokens": 65536,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 366815.5,
+        "ttftMs": 366815.5,
+        "prefillTokPerSec": 178.66,
+        "pleFetchMs": 4.6,
+        "pleDequantMs": 1462,
+        "decodeTokPerSec": 20.55,
+        "achievedBandwidthGBs": 60.76,
+        "bandwidthUtilizationPct": 6.49,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 98304,
+        "actualPromptTokens": 98304,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 720802,
+        "ttftMs": 720802,
+        "prefillTokPerSec": 136.38,
+        "pleFetchMs": 7.1,
+        "pleDequantMs": 2172.6,
+        "decodeTokPerSec": 17.83,
+        "achievedBandwidthGBs": 61.09,
+        "bandwidthUtilizationPct": 6.53,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 131072,
+        "actualPromptTokens": 131072,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 1196293.8,
+        "ttftMs": 1196293.8,
+        "prefillTokPerSec": 109.57,
+        "pleFetchMs": 7.6,
+        "pleDequantMs": 2846.2,
+        "decodeTokPerSec": 15.55,
+        "achievedBandwidthGBs": 60.59,
+        "bandwidthUtilizationPct": 6.47,
+        "status": "ok"
+      }
+    ],
+    "oomCeiling": null
+  },
+  "niah": {
+    "targetTokens": 32768,
+    "actualTokens": 32768,
+    "needleDepthPct": 0.5,
+    "passkey": "VELVET-ORBIT-7492",
+    "responseText": "The secret passkey is: **VELVET-ORBIT-7492**.",
+    "passed": true,
+    "ttftMs": 122548,
+    "prefillTokPerSec": 267.39,
+    "decodeTokPerSec": 23.81
+  },
+  "consoleErrorCount": 0,
+  "consoleErrors": [],
+  "status": "ok"
+}

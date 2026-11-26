@@ -1,0 +1,195 @@
+{
+  "runId": "g01-gemma4-ort-baseline",
+  "track": "gemma4-track1-ort",
+  "modelId": "onnx-community/gemma-4-E4B-it-qat-mobile-ONNX",
+  "recordedAt": "2026-11-25T20:50:12.401Z",
+  "deviceConfigUsed": {
+    "embed_tokens": "webgpu",
+    "decoder_model_merged": "webgpu"
+  },
+  "webgpuEmbedError": null,
+  "tokenizerMs": 851,
+  "modelLoadMs": 10079,
+  "totalColdLoadMs": 10930,
+  "goldenA": {
+    "promptText": "What is 2 + 2? Answer with just the number.",
+    "formattedPrompt": "<bos><|turn>user\nWhat is 2 + 2? Answer with just the number.<turn|>\n<|turn>model\n",
+    "inputIds": [
+      2,
+      105,
+      2364,
+      107,
+      3689,
+      563,
+      236743,
+      236778,
+      900,
+      236743,
+      236778,
+      236881,
+      25685,
+      607,
+      1164,
+      506,
+      1548,
+      236761,
+      106,
+      107,
+      105,
+      4368,
+      107
+    ],
+    "promptTokens": 23,
+    "prefillMs": 1621.9,
+    "step0Top5Logits": [
+      {
+        "id": 236812,
+        "val": 28.5
+      },
+      {
+        "id": 236778,
+        "val": 22.7969
+      },
+      {
+        "id": 818,
+        "val": 21.3281
+      },
+      {
+        "id": 236771,
+        "val": 19.9375
+      },
+      {
+        "id": 236775,
+        "val": 19.7188
+      }
+    ],
+    "generatedIds": [
+      236812
+    ],
+    "decodeTokens": 1,
+    "decodeMs": 538.1,
+    "decodedText": "4",
+    "ttftMs": 1621.9,
+    "decodeTokPerSec": 1.86
+  },
+  "goldenB": {
+    "promptText": "Explain WebGPU in one short sentence.",
+    "formattedPrompt": "<bos><|turn>user\nExplain WebGPU in one short sentence.<turn|>\n<|turn>model\n",
+    "inputIds": [
+      2,
+      105,
+      2364,
+      107,
+      155122,
+      6940,
+      88477,
+      528,
+      886,
+      2822,
+      13315,
+      236761,
+      106,
+      107,
+      105,
+      4368,
+      107
+    ],
+    "promptTokens": 17,
+    "prefillMs": 116.8,
+    "step0Top5Logits": [
+      {
+        "id": 6721,
+        "val": 28.25
+      },
+      {
+        "id": 1018,
+        "val": 25.1563
+      },
+      {
+        "id": 225639,
+        "val": 22.5625
+      },
+      {
+        "id": 5166,
+        "val": 20.9531
+      },
+      {
+        "id": 818,
+        "val": 20.9063
+      }
+    ],
+    "generatedIds": [
+      6721,
+      88477,
+      563,
+      496,
+      4532,
+      236764,
+      1494,
+      236772,
+      32677,
+      9299,
+      573,
+      4710,
+      17284,
+      532,
+      16333,
+      188015,
+      5467,
+      528,
+      506,
+      4108,
+      11180,
+      236761
+    ],
+    "decodeTokens": 22,
+    "decodeMs": 1095.4,
+    "decodedText": "WebGPU is a modern, high-performance API for running graphics and compute shaders directly in the web browser.",
+    "ttftMs": 116.8,
+    "decodeTokPerSec": 20.08
+  },
+  "contextSweep": [
+    {
+      "targetTokens": 1024,
+      "prefillMs": 1576.2,
+      "prefillTokPerSec": 649.66,
+      "decodeTokPerSec": 23.76,
+      "status": "ok"
+    },
+    {
+      "targetTokens": 4096,
+      "prefillMs": 4490.4,
+      "prefillTokPerSec": 912.17,
+      "decodeTokPerSec": 12.73,
+      "status": "ok"
+    },
+    {
+      "targetTokens": 8192,
+      "prefillMs": 10689.7,
+      "prefillTokPerSec": 766.35,
+      "decodeTokPerSec": 12.14,
+      "status": "ok"
+    },
+    {
+      "targetTokens": 16384,
+      "prefillMs": 29133.2,
+      "prefillTokPerSec": 562.38,
+      "decodeTokPerSec": 8.11,
+      "status": "ok"
+    },
+    {
+      "targetTokens": 32768,
+      "prefillMs": 112440.2,
+      "prefillTokPerSec": 291.43,
+      "decodeTokPerSec": 3.53,
+      "status": "ok"
+    }
+  ],
+  "oomCeiling": null,
+  "logs": [],
+  "consoleErrorCount": 1,
+  "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ],
+  "status": "ok"
+}

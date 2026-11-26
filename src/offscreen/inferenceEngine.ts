@@ -1,7 +1,11 @@
 import { AutoTokenizer, env, type PreTrainedTokenizer } from '@huggingface/transformers';
+import { buildSlot0Envelope } from '@yours/harness/compaction';
+import { CANONICAL_TOOL_DEFINITIONS } from '@yours/tools/schemas';
 import {
+  BUNDLED_MODEL_IDS,
   DEFAULT_ENGINE_CONFIG,
   INITIAL_TELEMETRY_STATE,
+  isGemma4ModelId,
   type BenchmarkPoint,
   type BenchmarkSuiteResult,
   type ChatMessage,
@@ -15,16 +19,66 @@ import {
   type WebGpuProbeInfo,
   type YieldMode,
 } from '../shared/protocol.ts';
-import { buildModeSystemMessage } from '../shared/systemPrompt.ts';
+import { buildHarnessSystemPrompt } from '../shared/systemPrompt.ts';
 import { buildNeedleInHaystackPrompt, buildSyntheticTokenIds, verifyNeedleAnswer } from './benchmarks.ts';
 import { resolveExtensionAssetUrl } from './gpuPacing.ts';
+import { Gemma4ExtensionAdapter, type WgslRuntimeEngine } from './gemma4ExtensionAdapter.ts';
 import { clearWgslWeightCache } from './onnxWeightLoader.ts';
 import { OpfsModelCache } from './opfsCache.ts';
 import { BASE_SYSTEM_SLOT_ID, PrefixCacheManager } from './prefixCacheManager.ts';
 import { computeBandwidthStats, isMessagePrefix, type SamplingOptions } from './sampling.ts';
 import { SuffixSpeculator } from './suffixSpeculator.ts';
 import { installWebGpuLimitPatch, probeWebGpu } from './webgpuLimits.ts';
-import { WgslQwen35Engine, type WgslCpuSnapshot } from './wgslRealEngine.ts';
+import { WgslQwen35Engine } from './wgslRealEngine.ts';
+
+const CONTROL_TOKENS_TO_STRIP_RE =
+  /<\|im_end\|>|<\|endoftext\|>|<end_of_turn>|<turn\|>|<\|turn>model\r?\n?|<\|im_start\|>assistant\r?\n?|<eos>|<bos>|<pad>/g;
+
+/**
+ * Decodes generated token IDs while preserving reasoning delimiters (including Gemma 4's
+ * special `<|channel>thought` / `<channel|>` tokens) and stripping only turn/EOS control tokens.
+ * Prepends `<think>\n` when the prompt template already pre-opened `<think>` before token 0.
+ */
+export function decodeGeneratedText(
+  tokenizer: Pick<PreTrainedTokenizer, 'decode'>,
+  tokenIds: number[],
+  options?: { preOpenedThink?: boolean },
+): string {
+  const raw = tokenizer.decode(tokenIds, { skip_special_tokens: false });
+  let cleaned = raw.replace(CONTROL_TOKENS_TO_STRIP_RE, '');
+  if (
+    options?.preOpenedThink &&
+    cleaned.length > 0 &&
+    !/^\s*(?:<think>|<thought>|<\|channel>thought)/.test(cleaned)
+  ) {
+    cleaned = `<think>\n${cleaned}`;
+  }
+  return cleaned;
+}
+
+export function buildIncrementalTurnPrompt(
+  chatTemplate: string,
+  suffixMessages: readonly ChatMessage[],
+): string | null {
+  if (chatTemplate.includes('<|im_start|>')) {
+    let out = '<|im_end|>\n';
+    for (const msg of suffixMessages) {
+      out += `<|im_start|>${msg.role}\n${msg.content}<|im_end|>\n`;
+    }
+    out += '<|im_start|>assistant\n<think>\n\n</think>\n\n';
+    return out;
+  }
+  if (chatTemplate.includes('<|turn>')) {
+    let out = '<turn|>\n';
+    for (const msg of suffixMessages) {
+      const role = msg.role === 'assistant' ? 'model' : msg.role;
+      out += `<|turn>${role}\n${msg.content.trim()}<turn|>\n`;
+    }
+    out += '<|turn>model\n';
+    return out;
+  }
+  return null;
+}
 
 export interface EngineCallbacks {
   onTelemetry: (telemetry: TelemetryState) => void;
@@ -41,6 +95,14 @@ export interface EngineCallbacks {
   onTokenDelta: (requestId: string, delta: string, tokenCount: number) => void;
   onGenerationComplete: (requestId: string, finishReason: 'stop' | 'length' | 'abort') => void;
   onGenerationError: (requestId: string, error: string) => void;
+  onPrefillComplete?: (
+    requestId: string,
+    slotKey: string,
+    tokens: number,
+    elapsedMs: number,
+  ) => void;
+  onPrefillError?: (requestId: string, slotKey: string, error: string) => void;
+  onEvictComplete?: (requestId: string, slotKey: string) => void;
 }
 
 let yieldChannel: MessageChannel | null = null;
@@ -80,7 +142,7 @@ export class InferenceEngine {
   private lastNiah: NiahResult | null = null;
   private logs: LogEntry[] = [];
 
-  private wgslEngine: WgslQwen35Engine | null = null;
+  private wgslEngine: WgslRuntimeEngine | null = null;
   private tokenizer: PreTrainedTokenizer | null = null;
   private eosTokenIds = new Set<number>();
 
@@ -89,7 +151,7 @@ export class InferenceEngine {
   private cachedTokenIds: number[] = [];
   private pendingLiveTokenIds: number[] = [];
   private cachedThinkingMode = false;
-  private wgslSnapshot: WgslCpuSnapshot | null = null;
+  private wgslSnapshot: { seqPos: number } | null = null;
   private wgslSnapshotMeta: {
     cachedMessages: ChatMessage[];
     cachedThinkingMode: boolean;
@@ -106,6 +168,7 @@ export class InferenceEngine {
   private displayHz = 60;
   private bgAbortController: AbortController | null = null;
   private activeBgSlotKey: string | null = null;
+  private activeBgRequestId: string | null = null;
   private bgPrefillSeq = 0;
 
   constructor(
@@ -203,6 +266,12 @@ export class InferenceEngine {
         ? patch.forceComputeTier
         : (this.config.forceComputeTier ?? null);
     const tierChanged = nextForceTier !== (this.config.forceComputeTier ?? null);
+    const nextModelId =
+      typeof patch.modelId === 'string' &&
+      (BUNDLED_MODEL_IDS as readonly string[]).includes(patch.modelId)
+        ? patch.modelId
+        : this.config.modelId;
+    const modelChanged = nextModelId !== this.config.modelId;
 
     this.config = {
       ...this.config,
@@ -211,13 +280,13 @@ export class InferenceEngine {
       wgslKvMode: 'int8',
       wgslMaxContext: nextMaxContext,
       forceComputeTier: nextForceTier,
-      modelId: DEFAULT_ENGINE_CONFIG.modelId,
+      modelId: nextModelId,
       dtype: 'q4f16',
     };
     this.callbacks.onConfig(this.config);
 
-    if ((contextCapChanged || tierChanged) && this.wgslEngine) {
-      this.log('info', 'offscreen', 'WGSL engine geometry/tier config changed; unloading active session.');
+    if ((modelChanged || contextCapChanged || tierChanged) && this.wgslEngine) {
+      this.log('info', 'offscreen', 'WGSL engine model/geometry/tier config changed; unloading active session.');
       await this.unloadModel();
     } else {
       this.updateTelemetry({
@@ -320,13 +389,17 @@ export class InferenceEngine {
       this.configureTransformersEnv();
 
       const startMs = performance.now();
+      const isGemma4 = isGemma4ModelId(this.config.modelId);
+      const modelLabel = isGemma4 ? 'Gemma 4 E4B QAT' : 'Qwen3.5-4B';
+      const assetSubdir = isGemma4 ? 'models/gemma4-e4b' : 'models/qwen35-4b';
+
       this.updateTelemetry({
         status: 'downloading',
         modelId: this.config.modelId,
         dtype: this.config.dtype,
         executionHost: this.executionHost,
         loadProgressPct: 0,
-        loadPhaseLabel: 'Loading bundled Qwen3.5-4B tokenizer & weights...',
+        loadPhaseLabel: `Loading bundled ${modelLabel} tokenizer & weights...`,
         loadBreakdown: null,
         lastError: null,
         deviceLostReason: null,
@@ -339,10 +412,17 @@ export class InferenceEngine {
       );
 
       const tokStartMs = performance.now();
-      const tokenizerUrl = resolveExtensionAssetUrl('models/qwen35-4b', this.assetBaseUrl);
+      const tokenizerUrl = resolveExtensionAssetUrl(assetSubdir, this.assetBaseUrl);
       const tokenizer = await AutoTokenizer.from_pretrained(tokenizerUrl, {
         local_files_only: true,
       });
+      if (isGemma4) {
+        const jinjaUrl = `${tokenizerUrl.replace(/\/+$/, '')}/chat_template.jinja`;
+        const jinjaRes = await fetch(jinjaUrl);
+        if (jinjaRes.ok) {
+          tokenizer.chat_template = await jinjaRes.text();
+        }
+      }
       const tokenizerMs = performance.now() - tokStartMs;
 
       const rawDevMem =
@@ -354,7 +434,10 @@ export class InferenceEngine {
           ? rawDevMem
           : undefined;
 
-      const wgslEngine = new WgslQwen35Engine();
+      const wgslEngine: WgslRuntimeEngine = isGemma4
+        ? new Gemma4ExtensionAdapter()
+        : (new WgslQwen35Engine() as unknown as WgslRuntimeEngine);
+      wgslEngine.setDisplayHz(this.displayHz);
       const stats = await wgslEngine.load(null, {
         assetBaseUrl: this.assetBaseUrl,
         modelId: this.config.modelId,
@@ -376,8 +459,13 @@ export class InferenceEngine {
       this.tokenizer = tokenizer;
       this.wgslEngine = wgslEngine;
       this.eosTokenIds = this.collectEosTokenIds(tokenizer);
-      this.eosTokenIds.add(248044);
-      this.eosTokenIds.add(248046);
+      if (isGemma4) {
+        this.eosTokenIds.add(1);
+        this.eosTokenIds.add(106);
+      } else {
+        this.eosTokenIds.add(248044);
+        this.eosTokenIds.add(248046);
+      }
       this.prefixCache = new PrefixCacheManager(wgslEngine, { maxTabSlots: 3 });
 
       await this.prewarmBaseSystemPrompt();
@@ -388,7 +476,7 @@ export class InferenceEngine {
       this.log(
         'info',
         'offscreen',
-        `WGSL Qwen3.5-4B ready in ${(coldLoadMs / 1000).toFixed(2)}s (tier=${stats.computeTier}, source=${stats.loadSource}, host=${this.executionHost}, stream=${stats.opfsReadMs.toFixed(0)}ms, compile+verify=${stats.pipelineCompileMs.toFixed(0)}ms, kv=int8 [${stats.allocatedKvCapacity}/${stats.maxSafeKvCapacity}], dp4a=${stats.usingDp4a}, baseSlot=${baseInfo.tokens}t, hz=${this.displayHz}).`,
+        `WGSL ${modelLabel} ready in ${(coldLoadMs / 1000).toFixed(2)}s (tier=${stats.computeTier}, source=${stats.loadSource}, host=${this.executionHost}, stream=${stats.opfsReadMs.toFixed(0)}ms, compile+verify=${stats.pipelineCompileMs.toFixed(0)}ms, kv=int8 [${stats.allocatedKvCapacity}/${stats.maxSafeKvCapacity}], dp4a=${stats.usingDp4a}, baseSlot=${baseInfo.tokens}t, hz=${this.displayHz}).`,
       );
 
       this.updateTelemetry({
@@ -538,6 +626,9 @@ export class InferenceEngine {
 
   abortBackgroundPrefill(): void {
     this.bgPrefillSeq += 1;
+    const prevReqId = this.activeBgRequestId;
+    const prevSlotKey = this.activeBgSlotKey ?? '';
+    this.activeBgRequestId = null;
     if (this.bgAbortController) {
       this.bgAbortController.abort();
       this.bgAbortController = null;
@@ -545,14 +636,31 @@ export class InferenceEngine {
     if (this.telemetry.backgroundPrefillState === 'prefilling') {
       this.updateTelemetry({ backgroundPrefillState: 'idle' });
     }
+    if (prevReqId) {
+      this.callbacks.onPrefillComplete?.(prevReqId, prevSlotKey, 0, 0);
+    }
+  }
+
+  evictSlot(slotKey: string, requestId?: string): void {
+    this.prefixCache?.deleteSlot(slotKey);
+    if (requestId) {
+      this.callbacks.onEvictComplete?.(requestId, slotKey);
+    }
   }
 
   private normalizeMessagesForChatTemplate(messages: readonly ChatMessage[]): ChatMessage[] {
-    return messages.map((msg, idx) =>
-      idx > 0 && msg.role === 'system'
-        ? { role: 'user', content: msg.content }
-        : { role: msg.role, content: msg.content },
-    );
+    return messages.map((msg, idx) => {
+      if (msg.role === 'tool') {
+        return {
+          role: 'user',
+          content: msg.toolName ? `[Tool Result: ${msg.toolName}]\n${msg.content}` : msg.content,
+        };
+      }
+      if (idx > 0 && msg.role === 'system') {
+        return { role: 'user', content: msg.content };
+      }
+      return { role: msg.role, content: msg.content };
+    });
   }
 
   private formatChatMessages(
@@ -576,10 +684,11 @@ export class InferenceEngine {
       const normalized = this.normalizeMessagesForChatTemplate(messages);
       if (hasUserMessage) {
         let formatted = this.formatChatMessages(normalized, { addGenerationPrompt: false });
-        if (formatted.endsWith('<|im_end|>\n')) {
-          formatted = formatted.slice(0, -'<|im_end|>\n'.length);
-        } else if (formatted.endsWith('<|im_end|>')) {
-          formatted = formatted.slice(0, -'<|im_end|>'.length);
+        for (const suffix of ['<|im_end|>\n', '<|im_end|>', '<turn|>\n', '<turn|>']) {
+          if (formatted.endsWith(suffix)) {
+            formatted = formatted.slice(0, -suffix.length);
+            break;
+          }
         }
         return this.tokenizer.encode(formatted, { add_special_tokens: false });
       }
@@ -590,7 +699,10 @@ export class InferenceEngine {
       [...messages, { role: 'user', content: marker }],
       { addGenerationPrompt: false },
     );
-    const markerIdx = withMarker.lastIndexOf(`<|im_start|>user\n${marker}`);
+    let markerIdx = withMarker.lastIndexOf(`<|im_start|>user\n${marker}`);
+    if (markerIdx < 0) {
+      markerIdx = withMarker.lastIndexOf(`<|turn>user\n${marker}`);
+    }
     const prefixText = markerIdx >= 0 ? withMarker.slice(0, markerIdx) : withMarker;
     return this.tokenizer.encode(prefixText, { add_special_tokens: false });
   }
@@ -600,11 +712,27 @@ export class InferenceEngine {
       return;
     }
     try {
-      const baseMsg = buildModeSystemMessage({
-        pageEnabled: true,
-        pageAttached: false,
-        researchEnabled: false,
+      const defaultTools = CANONICAL_TOOL_DEFINITIONS.filter(
+        (t) =>
+          t.name === 'read_active_tab' ||
+          t.name === 'list_tabs' ||
+          t.name === 'read_tab' ||
+          t.name === 'run_sandbox',
+      );
+      const slot0 = await buildSlot0Envelope({
+        systemPrompt: buildHarnessSystemPrompt({
+          pageEnabled: true,
+          pageAttached: false,
+          researchEnabled: false,
+        }),
+        tools: defaultTools as unknown as NonNullable<
+          Parameters<typeof buildSlot0Envelope>[0]
+        >['tools'],
       });
+      const baseMsg: ChatMessage = {
+        role: 'system',
+        content: slot0.messages[0]!.content,
+      };
       const baseTokenIds = this.encodePrefixMessages([baseMsg], false);
       if (baseTokenIds.length === 0 || baseTokenIds.length >= this.wgslEngine.maxContextTokens) {
         return;
@@ -631,7 +759,7 @@ export class InferenceEngine {
   enqueueBackgroundPrefill(
     slotKey: string,
     messages: ChatMessage[],
-    options?: { isDraft?: boolean; url?: string; contentHash?: string },
+    options?: { isDraft?: boolean; url?: string; contentHash?: string; requestId?: string },
   ): void {
     // Never let composer typing prefill abort and wipe an in-progress active-tab prefill.
     if (
@@ -639,15 +767,26 @@ export class InferenceEngine {
       this.bgAbortController !== null &&
       this.activeBgSlotKey?.startsWith('tab:')
     ) {
+      if (options?.requestId) {
+        this.callbacks.onPrefillComplete?.(options.requestId, slotKey, 0, 0);
+      }
       return;
     }
     this.abortBackgroundPrefill();
     const mySeq = this.bgPrefillSeq;
+    if (options?.requestId) {
+      this.activeBgRequestId = options.requestId;
+    }
     this.taskQueue = this.taskQueue
       .then(() => this.runBackgroundPrefill(mySeq, slotKey, messages, options))
-      .catch(() => {
+      .catch((err) => {
         if (this.telemetry.backgroundPrefillState === 'prefilling') {
           this.updateTelemetry({ backgroundPrefillState: 'idle' });
+        }
+        if (options?.requestId && this.activeBgRequestId === options.requestId) {
+          this.activeBgRequestId = null;
+          const errMsg = err instanceof Error ? err.message : String(err);
+          this.callbacks.onPrefillError?.(options.requestId, slotKey, errMsg);
         }
       });
   }
@@ -665,8 +804,30 @@ export class InferenceEngine {
     seq: number,
     slotKey: string,
     messages: ChatMessage[],
-    options?: { isDraft?: boolean; url?: string; contentHash?: string },
+    options?: { isDraft?: boolean; url?: string; contentHash?: string; requestId?: string },
   ): Promise<void> {
+    const startMs = performance.now();
+    const reqId = options?.requestId;
+    let reqSettled = false;
+    const resolvePrefill = (tokens: number) => {
+      if (reqId && !reqSettled) {
+        reqSettled = true;
+        if (this.activeBgRequestId === reqId) {
+          this.activeBgRequestId = null;
+        }
+        this.callbacks.onPrefillComplete?.(reqId, slotKey, tokens, performance.now() - startMs);
+      }
+    };
+    const rejectPrefill = (errMsg: string) => {
+      if (reqId && !reqSettled) {
+        reqSettled = true;
+        if (this.activeBgRequestId === reqId) {
+          this.activeBgRequestId = null;
+        }
+        this.callbacks.onPrefillError?.(reqId, slotKey, errMsg);
+      }
+    };
+
     if (
       seq !== this.bgPrefillSeq ||
       !this.isEngineReady() ||
@@ -676,17 +837,21 @@ export class InferenceEngine {
       this.activeRequestId !== null ||
       this.telemetry.status !== 'ready'
     ) {
+      resolvePrefill(0);
       return;
     }
 
     const targetTokenIds = this.encodePrefixMessages(messages, Boolean(options?.isDraft));
     if (targetTokenIds.length === 0 || targetTokenIds.length >= this.wgslEngine.getMaxSafeKvCapacity() - 64) {
+      resolvePrefill(0);
       return;
     }
 
     const match = this.prefixCache.findBestMatch(targetTokenIds, this.getEvaluatedLiveTokenIds());
     if (match.matchedTokens === targetTokenIds.length) {
-      if (match.source === 'live') {
+      if (slotKey === BASE_SYSTEM_SLOT_ID || slotKey.startsWith('base-system:')) {
+        await this.prefixCache.saveBasePromptSlot(targetTokenIds, messages);
+      } else if (match.source === 'live') {
         await this.prefixCache.saveTabSlot(slotKey, targetTokenIds, messages, {
           url: options?.url,
           contentHash: options?.contentHash,
@@ -696,6 +861,16 @@ export class InferenceEngine {
         backgroundPrefillState: 'warm',
         activePrefixSlot: match.slotId ?? slotKey,
       });
+      resolvePrefill(0);
+      return;
+    }
+
+    // Never wipe an active multi-turn live conversation KV cache for a speculative background prefill
+    if (
+      match.source !== 'live' &&
+      this.cachedMessages.some((m) => m.role === 'assistant')
+    ) {
+      resolvePrefill(0);
       return;
     }
 
@@ -751,10 +926,14 @@ export class InferenceEngine {
         throw new Error('__BG_ABORTED__');
       }
 
-      await this.prefixCache.saveTabSlot(slotKey, targetTokenIds, messages, {
-        url: options?.url,
-        contentHash: options?.contentHash,
-      });
+      if (slotKey === BASE_SYSTEM_SLOT_ID || slotKey.startsWith('base-system:')) {
+        await this.prefixCache.saveBasePromptSlot(targetTokenIds, messages);
+      } else {
+        await this.prefixCache.saveTabSlot(slotKey, targetTokenIds, messages, {
+          url: options?.url,
+          contentHash: options?.contentHash,
+        });
+      }
       this.cachedTokenIds = [...targetTokenIds];
       this.cachedMessages = messages.map((m) => ({ ...m }));
       this.pendingLiveTokenIds = [];
@@ -766,6 +945,7 @@ export class InferenceEngine {
         activePrefixSlot: slotKey,
         prefillChunkProgress: null,
       });
+      resolvePrefill(deltaTokens.length);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg === '__BG_ABORTED__' || msg === 'Generation aborted' || controller.signal.aborted) {
@@ -782,10 +962,12 @@ export class InferenceEngine {
           backgroundPrefillState: 'idle',
           prefillChunkProgress: null,
         });
+        resolvePrefill(0);
         return;
       }
       this.log('warn', 'offscreen', `Background speculative prefill stopped: ${msg}`);
       this.updateTelemetry({ backgroundPrefillState: 'idle', prefillChunkProgress: null });
+      rejectPrefill(msg);
     } finally {
       if (this.bgAbortController === controller) {
         this.bgAbortController = null;
@@ -911,15 +1093,7 @@ export class InferenceEngine {
     }
     const template =
       typeof this.tokenizer.chat_template === 'string' ? this.tokenizer.chat_template : '';
-    if (!template.includes('<|im_start|>')) {
-      return null;
-    }
-    let out = '<|im_end|>\n';
-    for (const msg of suffixMessages) {
-      out += `<|im_start|>${msg.role}\n${msg.content}<|im_end|>\n`;
-    }
-    out += '<|im_start|>assistant\n<think>\n\n</think>\n\n';
-    return out;
+    return buildIncrementalTurnPrompt(template, suffixMessages);
   }
 
   private refreshCacheTelemetry(): void {
@@ -1068,6 +1242,7 @@ export class InferenceEngine {
       let reusedPrefix = false;
       let restoredSlotId: string | null = null;
       let lastSlotRestoreMs: number | null = null;
+      let promptOpensThink = this.config.enableThinking && !isGemma4ModelId(this.config.modelId);
       const hasActiveState = this.wgslEngine !== null && this.wgslEngine.activeSeqPos > 0;
 
       const normMessages = this.normalizeMessagesForChatTemplate(messages);
@@ -1084,12 +1259,14 @@ export class InferenceEngine {
         !this.cachedThinkingMode &&
         hasActiveState &&
         normCached.length > 0 &&
+        normCached[normCached.length - 1]?.role !== 'system' &&
         pendingMatchesCached &&
         isMessagePrefix(normCached, normMessages)
       ) {
         const suffixMessages = normMessages.slice(normCached.length);
         const incrementalText = this.buildIncrementalChatMlPrompt(suffixMessages);
         if (incrementalText !== null) {
+          promptOpensThink = /<think>\s*$/.test(incrementalText);
           promptTokenIds = [
             ...this.pendingLiveTokenIds,
             ...this.tokenizer.encode(incrementalText, { add_special_tokens: false }),
@@ -1105,6 +1282,7 @@ export class InferenceEngine {
         const formattedPrompt = this.formatChatMessages(normMessages, {
           addGenerationPrompt: true,
         });
+        promptOpensThink = /<think>\s*$/.test(formattedPrompt);
         const fullTokenIds = this.tokenizer.encode(formattedPrompt, {
           add_special_tokens: false,
         });
@@ -1210,8 +1388,8 @@ export class InferenceEngine {
         sessionTokenIds.push(tok);
         speculator.pushToken(tok);
 
-        const decodedFull = this.tokenizer!.decode(generatedIds, {
-          skip_special_tokens: true,
+        const decodedFull = decodeGeneratedText(this.tokenizer!, generatedIds, {
+          preOpenedThink: promptOpensThink,
         });
         // Hold back trailing replacement char U+FFFD if a multi-byte UTF-8 sequence spans tokens.
         const safeEnd = decodedFull.endsWith('\uFFFD') ? decodedFull.length - 1 : decodedFull.length;
@@ -1221,7 +1399,10 @@ export class InferenceEngine {
           this.callbacks.onTokenDelta(requestId, delta, generatedIds.length);
         }
 
-        if (stopOnToolCall && emittedText.includes('</tool_call>')) {
+        if (
+          stopOnToolCall &&
+          (emittedText.includes('</tool_call>') || emittedText.includes('<tool_call|>'))
+        ) {
           finishReason = 'stop';
           return true;
         }
@@ -1234,13 +1415,16 @@ export class InferenceEngine {
       };
 
       let iter = 0;
+      let lastTelemetryEmitMs = decodeStartMs;
       while (generatedIds.length < this.config.maxNewTokens) {
         if (emitTokenAndCheckDone(nextToken)) {
           break;
         }
 
-        if (!this.config.fastDecodePath || iter % 4 === 0) {
-          const decodeElapsedSec = Math.max(0.001, (performance.now() - decodeStartMs) / 1000);
+        const nowMs = performance.now();
+        if (!this.config.fastDecodePath || nowMs - lastTelemetryEmitMs >= 150) {
+          lastTelemetryEmitMs = nowMs;
+          const decodeElapsedSec = Math.max(0.001, (nowMs - decodeStartMs) / 1000);
           this.updateTelemetry({
             tokensPerSec: generatedIds.length / decodeElapsedSec,
             speculativeStats: buildSpecStats(),
@@ -1322,8 +1506,8 @@ export class InferenceEngine {
       }
 
       if (finishReason !== 'abort') {
-        const finalDecoded = this.tokenizer.decode(generatedIds, {
-          skip_special_tokens: true,
+        const finalDecoded = decodeGeneratedText(this.tokenizer, generatedIds, {
+          preOpenedThink: promptOpensThink,
         });
         if (finalDecoded.length > emittedText.length) {
           this.callbacks.onTokenDelta(
@@ -1342,10 +1526,7 @@ export class InferenceEngine {
         this.cachedThinkingMode = this.config.enableThinking;
         this.cachedTokenIds = sessionTokenIds;
       } else {
-        this.pendingLiveTokenIds = [];
-        this.cachedMessages = [];
-        this.cachedThinkingMode = this.config.enableThinking;
-        this.cachedTokenIds = [];
+        await this.resetContext(this.prefixCache?.hasBasePrompt() ?? false);
       }
 
       this.updateTelemetry({ status: 'ready', prefillChunkProgress: null });

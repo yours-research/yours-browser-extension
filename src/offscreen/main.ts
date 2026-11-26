@@ -1,4 +1,9 @@
 import {
+  ChromeRuntimePortTransport,
+  Mv3OffscreenHost,
+  WebAudioPlaybackSink,
+} from '@yours/voice/adapters';
+import {
   DEFAULT_ENGINE_CONFIG,
   ENGINE_PORT_NAME,
   INITIAL_TELEMETRY_STATE,
@@ -15,10 +20,15 @@ import {
   type WgslBenchResult,
   type WgslOpfsLoadResult,
 } from '../shared/protocol.ts';
+import { Mv3AudioWorkletInputSource } from '../voice/mv3AudioInput.ts';
 import type { WorkerInboundMessage } from './engineWorker.ts';
 import { InferenceEngine, type EngineCallbacks } from './inferenceEngine.ts';
+import { ModelDeliveryService } from './modelDelivery.ts';
 import { installWebGpuLimitPatch } from './webgpuLimits.ts';
 import { WgslEngineRunner } from './wgslEngine.ts';
+
+const VOICE_PORT_NAME = 'yours-voice-bridge';
+const modelDelivery = new ModelDeliveryService();
 
 // Install WebGPU elevated-limits wrapper immediately on offscreen startup.
 installWebGpuLimitPatch();
@@ -195,6 +205,12 @@ function createLocalCallbacks(genId: number): EngineCallbacks {
       handleHostMessage(genId, { type: 'GENERATION_COMPLETE', requestId, finishReason }),
     onGenerationError: (requestId, error) =>
       handleHostMessage(genId, { type: 'GENERATION_ERROR', requestId, error }),
+    onPrefillComplete: (requestId, slotKey, tokens, elapsedMs) =>
+      handleHostMessage(genId, { type: 'PREFILL_COMPLETE', requestId, slotKey, tokens, elapsedMs }),
+    onPrefillError: (requestId, slotKey, error) =>
+      handleHostMessage(genId, { type: 'PREFILL_ERROR', requestId, slotKey, error }),
+    onEvictComplete: (requestId, slotKey) =>
+      handleHostMessage(genId, { type: 'EVICT_COMPLETE', requestId, slotKey }),
   };
 }
 
@@ -287,7 +303,7 @@ async function switchHost(targetHost: ExecutionHost): Promise<void> {
     ...mirrorState.config,
     backend: 'wgsl',
     wgslKvMode: 'int8',
-    modelId: DEFAULT_ENGINE_CONFIG.modelId,
+    modelId: mirrorState.config.modelId || DEFAULT_ENGINE_CONFIG.modelId,
     dtype: 'q4f16',
     executionHost: targetHost,
   };
@@ -330,7 +346,10 @@ function applyConfigPatchToMirror(patch: Partial<EngineConfig>): void {
     backend: 'wgsl',
     wgslKvMode: 'int8',
     wgslMaxContext: nextMaxContext,
-    modelId: DEFAULT_ENGINE_CONFIG.modelId,
+    modelId:
+      typeof patch.modelId === 'string' && patch.modelId.trim().length > 0
+        ? patch.modelId
+        : mirrorState.config.modelId,
     dtype: 'q4f16',
   };
 }
@@ -403,10 +422,14 @@ function dispatchToLocalHost(genId: number, msg: ClientToEngineMessage): void {
         isDraft: msg.isDraft,
         url: msg.url,
         contentHash: msg.contentHash,
+        requestId: msg.requestId,
       });
       break;
     case 'ABORT_BACKGROUND_PREFILL':
       engine.abortBackgroundPrefill();
+      break;
+    case 'EVICT_SLOT':
+      engine.evictSlot(msg.slotKey, msg.requestId);
       break;
     case 'GENERATE':
       engine.enqueueGenerate(
@@ -475,6 +498,62 @@ function dispatchToLocalHost(genId: number, msg: ClientToEngineMessage): void {
 function handleClientMessage(port: chrome.runtime.Port, msg: ClientToEngineMessage): void {
   if (msg.type === 'GET_STATE') {
     port.postMessage(buildStateSnapshot());
+    const cachedHw = modelDelivery.getLastHardwareProfile();
+    if (cachedHw) {
+      port.postMessage({
+        type: 'HARDWARE_PROFILE_UPDATE',
+        hardwareProfile: cachedHw,
+        catalog: modelDelivery.getLastCatalog(),
+      } satisfies EngineToClientMessage);
+    }
+    return;
+  }
+
+  if (msg.type === 'PROBE_HARDWARE_CATALOG') {
+    void modelDelivery
+      .probeHardwareAndCatalog()
+      .then(({ hardware, catalog }) => {
+        broadcast({
+          type: 'HARDWARE_PROFILE_UPDATE',
+          hardwareProfile: hardware,
+          catalog,
+        });
+      })
+      .catch((err) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        recordErrorAndBroadcast(`Hardware catalog probe failed: ${errMsg}`);
+      });
+    return;
+  }
+
+  if (msg.type === 'DOWNLOAD_VERIFIED_MODEL') {
+    void modelDelivery
+      .downloadVerifiedModelFromManifest({
+        modelId: msg.modelId,
+        manifestUrl: msg.manifestUrl,
+        onProgress: (progress) => broadcast({ type: 'MODEL_DOWNLOAD_PROGRESS', progress }),
+      })
+      .then((catalog) => {
+        broadcast({
+          type: 'MODEL_DOWNLOAD_COMPLETE',
+          modelId: msg.modelId,
+          cachedInOpfs: true,
+          catalog,
+        });
+      })
+      .catch((err) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        broadcast({
+          type: 'MODEL_DOWNLOAD_ERROR',
+          modelId: msg.modelId,
+          error: errMsg,
+        });
+      });
+    return;
+  }
+
+  if (msg.type === 'CANCEL_MODEL_DOWNLOAD') {
+    modelDelivery.cancelDownload(msg.modelId);
     return;
   }
 
@@ -515,12 +594,45 @@ function handleClientMessage(port: chrome.runtime.Port, msg: ClientToEngineMessa
 // Register port listener synchronously at top-level startup.
 if (typeof chrome !== 'undefined' && chrome.runtime?.onConnect) {
   chrome.runtime.onConnect.addListener((port) => {
+    if (port.name === VOICE_PORT_NAME) {
+      const transport = new ChromeRuntimePortTransport(port);
+      const host = new Mv3OffscreenHost({
+        transport,
+        inputSource: new Mv3AudioWorkletInputSource(),
+        playbackSink: new WebAudioPlaybackSink(),
+      });
+      port.onDisconnect.addListener(() => {
+        void host.dispose();
+        transport.close();
+      });
+      return;
+    }
+
     if (port.name !== ENGINE_PORT_NAME) {
       return;
     }
     ports.add(port);
 
     port.postMessage(buildStateSnapshot());
+    const cachedHw = modelDelivery.getLastHardwareProfile();
+    if (cachedHw) {
+      port.postMessage({
+        type: 'HARDWARE_PROFILE_UPDATE',
+        hardwareProfile: cachedHw,
+        catalog: modelDelivery.getLastCatalog(),
+      } satisfies EngineToClientMessage);
+    } else {
+      void modelDelivery
+        .probeHardwareAndCatalog()
+        .then(({ hardware, catalog }) => {
+          broadcast({
+            type: 'HARDWARE_PROFILE_UPDATE',
+            hardwareProfile: hardware,
+            catalog,
+          });
+        })
+        .catch(() => {});
+    }
 
     port.onMessage.addListener((rawMsg) => {
       handleClientMessage(port, rawMsg as ClientToEngineMessage);

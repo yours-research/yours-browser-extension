@@ -1,0 +1,82 @@
+{
+  "runId": "g12-extension-head-to-head",
+  "recordedAt": "2026-11-26T01:08:59.662Z",
+  "externalHttpsRequests": 0,
+  "consoleErrorCount": 0,
+  "qwen35": {
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "coldLoadMs": 6690,
+    "loadSource": "bundled",
+    "computeTier": "tier1-f16-subgroups",
+    "estVramMb": 2563,
+    "basePromptTokens": 192,
+    "mathTurn": {
+      "wallMs": 1020,
+      "ttftMs": 439,
+      "prefillTokPerSec": 366.2,
+      "decodeTokPerSec": 92.6,
+      "activeContextTokens": 159,
+      "prefixReused": false,
+      "activePrefixSlot": null,
+      "text": "4"
+    },
+    "pageTurn1": {
+      "wallMs": 454,
+      "ttftMs": 134,
+      "prefillTokPerSec": 232.9,
+      "decodeTokPerSec": 93.5,
+      "activeContextTokens": 809,
+      "prefixReused": true,
+      "activePrefixSlot": "live",
+      "text": "QUANTUM-ANCHOR-8821"
+    },
+    "pageTurn2": {
+      "wallMs": 457,
+      "ttftMs": 128,
+      "prefillTokPerSec": 195.9,
+      "decodeTokPerSec": 119.7,
+      "activeContextTokens": 845,
+      "prefixReused": true,
+      "activePrefixSlot": "live",
+      "text": "QUANTUM-ANCHOR-8821"
+    }
+  },
+  "gemma4": {
+    "modelId": "onnx-community/gemma-4-E4B-it-qat-mobile-ONNX",
+    "coldLoadMs": 6793,
+    "loadSource": "bundled",
+    "computeTier": "tier1-f16-subgroups",
+    "estVramMb": 3347,
+    "basePromptTokens": 211,
+    "mathTurn": {
+      "wallMs": 980,
+      "ttftMs": 398,
+      "prefillTokPerSec": 422,
+      "decodeTokPerSec": 77.5,
+      "activeContextTokens": 167,
+      "prefixReused": false,
+      "activePrefixSlot": null,
+      "text": "4"
+    },
+    "pageTurn1": {
+      "wallMs": 972,
+      "ttftMs": 152,
+      "prefillTokPerSec": 178,
+      "decodeTokPerSec": 47.5,
+      "activeContextTokens": 798,
+      "prefixReused": true,
+      "activePrefixSlot": "live",
+      "text": "QUANTUM-ANCHOR-8821"
+    },
+    "pageTurn2": {
+      "wallMs": 457,
+      "ttftMs": 157,
+      "prefillTokPerSec": 134.4,
+      "decodeTokPerSec": 65.9,
+      "activeContextTokens": 829,
+      "prefixReused": true,
+      "activePrefixSlot": "live",
+      "text": "QUANTUM-ANCHOR-8821"
+    }
+  }
+}

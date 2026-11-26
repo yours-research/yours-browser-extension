@@ -2,6 +2,10 @@
 
 use core::panic::PanicInfo;
 
+mod gemma4;
+mod gemma4_opt;
+pub use gemma4::g4_dequant_ple_rows;
+
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     loop {}
@@ -189,6 +193,10 @@ pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
         40 => set_shader_bytes(WGSL_GQA_INT8_PREFILL_T2.as_bytes()),
         41 => set_shader_bytes(WGSL_GDN_CHUNK_PREP_T2.as_bytes()),
         42 => set_shader_bytes(WGSL_GDN_CHUNK_APPLY_T2.as_bytes()),
+        100..=199 => match gemma4::get_shader(shader_id) {
+            Some(bytes) => set_shader_bytes(bytes),
+            None => 0,
+        },
         _ => 0,
     }
 }
@@ -6152,7 +6160,7 @@ pub unsafe extern "C" fn repack_q4_rows(
 // Exact CPU Reference Implementations (Compiled into WASM for Browser Verification)
 // ============================================================================
 
-fn f16_to_f32(h: u16) -> f32 {
+pub(crate) fn f16_to_f32(h: u16) -> f32 {
     let s = ((h >> 15) & 1) as u32;
     let e = ((h >> 10) & 0x1f) as u32;
     let f = (h & 0x3ff) as u32;

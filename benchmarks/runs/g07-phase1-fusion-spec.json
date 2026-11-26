@@ -1,0 +1,160 @@
+{
+  "phase": "phase1-fusion-spec",
+  "recordedAt": "2026-11-25T23:36:41.108Z",
+  "config": {
+    "kvMode": "int8",
+    "maxContext": 131072,
+    "flags": {}
+  },
+  "load": {
+    "coldLoadMs": 7334,
+    "streamWeightsMs": 6241,
+    "pipelineCompileMs": 6241,
+    "computeTier": "tier1-f16-subgroups",
+    "hasShaderF16": true,
+    "hasSubgroups": true,
+    "hasDp4a": true,
+    "maxBufferSize": 2147483648,
+    "maxStorageBufferBindingSize": 2147483644,
+    "kvMode": "int8",
+    "maxContext": 131072,
+    "vramPlan": {
+      "maxContext": 131072,
+      "kvMode": "int8",
+      "slidingKvBytes": 41943040,
+      "globalKvPerBufBytes": 541065216,
+      "globalKvTotalBytes": 1082130432,
+      "kvTotalBytes": 1124073472,
+      "kvTotalMb": 1072,
+      "scratchBytes": 29631744,
+      "weightBytes": 2254817952,
+      "totalVramBytes": 3408523168,
+      "totalVramMb": 3250.62
+    },
+    "executionHost": "worker",
+    "loadSource": "bundled"
+  },
+  "golden": {
+    "goldenA": {
+      "text": "4",
+      "generatedIds": [
+        236812
+      ],
+      "top0": {
+        "id": 236812,
+        "val": 28.521
+      },
+      "prefillTokPerSec": 170.37,
+      "decodeTokPerSec": 51.81
+    },
+    "goldenB": {
+      "text": "WebGPU is a modern, high-performance API for running graphics and compute shaders directly in the web browser.",
+      "generatedIds": [
+        6721,
+        88477,
+        563,
+        496,
+        4532,
+        236764,
+        1494,
+        236772,
+        32677,
+        9299,
+        573,
+        4710,
+        17284,
+        532,
+        16333,
+        188015,
+        5467,
+        528,
+        506,
+        4108,
+        11180,
+        236761
+      ],
+      "top0": {
+        "id": 6721,
+        "val": 28.2537
+      },
+      "prefillTokPerSec": 166.5,
+      "decodeTokPerSec": 63.92
+    }
+  },
+  "sweep": {
+    "points": [
+      {
+        "targetTokens": 1024,
+        "actualPromptTokens": 1024,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 2058.9,
+        "ttftMs": 2058.9,
+        "prefillTokPerSec": 497.35,
+        "decodeTokPerSec": 60.71,
+        "achievedBandwidthGBs": 123.35,
+        "bandwidthUtilizationPct": 13.18,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 8192,
+        "actualPromptTokens": 8192,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 19699.7,
+        "ttftMs": 19699.7,
+        "prefillTokPerSec": 415.84,
+        "decodeTokPerSec": 56.85,
+        "achievedBandwidthGBs": 121.35,
+        "bandwidthUtilizationPct": 12.96,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 32768,
+        "actualPromptTokens": 32768,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 118447.5,
+        "ttftMs": 118447.5,
+        "prefillTokPerSec": 276.65,
+        "decodeTokPerSec": 49.24,
+        "achievedBandwidthGBs": 122.46,
+        "bandwidthUtilizationPct": 13.08,
+        "status": "ok"
+      }
+    ],
+    "oomCeiling": null
+  },
+  "chatTurn1": {
+    "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+    "responseText": "Here are 4 benefits of running local LLMs in a dedicated Web Worker:\n\n* **Enhanced Privacy:** Data processing and model inference happen entirely on the client's device, ensuring sensitive data never leaves the local environment.\n* **Reduced Latency:** By running the model locally, you eliminate the network round-trip time required to call a remote API, leading to faster response times.\n* **Offline Capability:** The application remains functional and responsive even when the user has no internet connection.\n* **Controlled Resource Usage:** By isolating the LLM in a dedicated worker, you can manage memory and CPU usage without blocking the main",
+    "responseLength": 651,
+    "ttftMs": 104.6,
+    "prefillTokPerSec": 277.51,
+    "decodeTokPerSec": 57.18,
+    "activeContextTokens": 156,
+    "prefixReused": false,
+    "prefixReusedTokens": 0,
+    "aborted": false,
+    "speculativeStats": null
+  },
+  "speculativeCheck": {
+    "parityPassed": true,
+    "baselineDecodeTokPerSec": 68.51,
+    "speculativeDecodeTokPerSec": 101.6,
+    "speedupRatio": 1.483,
+    "speculativeStats": {
+      "enabled": true,
+      "drafted": 84,
+      "accepted": 74,
+      "steps": 21,
+      "acceptanceRatePct": 88.1
+    },
+    "baselineLength": 318,
+    "speculativeLength": 318
+  },
+  "niah": null,
+  "balanced": null,
+  "consoleErrorCount": 0,
+  "status": "ok"
+}

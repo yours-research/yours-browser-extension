@@ -270,6 +270,18 @@ export class PrefixCacheManager {
     };
   }
 
+  deleteSlot(slotId: string): boolean {
+    if (slotId === BASE_SYSTEM_SLOT_ID) {
+      return false;
+    }
+    if (!this.slots.has(slotId)) {
+      return false;
+    }
+    this.backend.deleteGpuPrefixSlot(slotId);
+    this.slots.delete(slotId);
+    return true;
+  }
+
   clearVolatileSlots(): void {
     for (const [slotId, record] of this.slots.entries()) {
       if (record.entry.kind === 'base') {

@@ -1,0 +1,788 @@
+{
+  "runId": "g09-phase3-rd-experiments",
+  "recordedAt": "2026-11-26T00:31:51.405Z",
+  "baselinePhase2B": "g08b-phase2b-warp-attn-smooth.json",
+  "experiments": {
+    "3a_sync_hotPle_q8PleProj_splitSlide": {
+      "phase": "phase3a-sync",
+      "recordedAt": "2026-11-26T00:19:11.233Z",
+      "config": {
+        "kvMode": "int8",
+        "maxContext": 131072,
+        "flags": {
+          "enablePipelinedDecode": false
+        }
+      },
+      "load": {
+        "coldLoadMs": 7595,
+        "streamWeightsMs": 6587,
+        "pipelineCompileMs": 6587,
+        "computeTier": "tier1-f16-subgroups",
+        "hasShaderF16": true,
+        "hasSubgroups": true,
+        "hasDp4a": true,
+        "maxBufferSize": 2147483648,
+        "maxStorageBufferBindingSize": 2147483644,
+        "kvMode": "int8",
+        "maxContext": 131072,
+        "vramPlan": {
+          "maxContext": 131072,
+          "kvMode": "int8",
+          "slidingKvBytes": 41943040,
+          "globalKvPerBufBytes": 541065216,
+          "globalKvTotalBytes": 1082130432,
+          "kvTotalBytes": 1124073472,
+          "kvTotalMb": 1072,
+          "scratchBytes": 38610432,
+          "weightBytes": 2346699424,
+          "totalVramBytes": 3509383328,
+          "totalVramMb": 3346.81
+        },
+        "executionHost": "worker",
+        "loadSource": "bundled"
+      },
+      "golden": {
+        "goldenA": {
+          "text": "4",
+          "generatedIds": [
+            236812
+          ],
+          "top0": {
+            "id": 236812,
+            "val": 28.529
+          },
+          "prefillTokPerSec": 135.61,
+          "decodeTokPerSec": 64.94
+        },
+        "goldenB": {
+          "text": "WebGPU is a modern, high-performance API that allows web applications to access the GPU directly for advanced graphics and compute tasks.",
+          "generatedIds": [
+            6721,
+            88477,
+            563,
+            496,
+            4532,
+            236764,
+            1494,
+            236772,
+            32677,
+            9299,
+            600,
+            5862,
+            4108,
+            6182,
+            531,
+            2802,
+            506,
+            39937,
+            5467,
+            573,
+            9691,
+            17284,
+            532,
+            16333,
+            9395,
+            236761
+          ],
+          "top0": {
+            "id": 6721,
+            "val": 28.2405
+          },
+          "prefillTokPerSec": 168.65,
+          "decodeTokPerSec": 81.33
+        }
+      },
+      "sweep": {
+        "points": [
+          {
+            "targetTokens": 1024,
+            "actualPromptTokens": 1024,
+            "decodeTokens": 32,
+            "chunkSize": 64,
+            "prefillMs": 2130.1,
+            "ttftMs": 2130.1,
+            "prefillTokPerSec": 480.73,
+            "decodeTokPerSec": 77.29,
+            "achievedBandwidthGBs": 157.04,
+            "bandwidthUtilizationPct": 16.78,
+            "status": "ok"
+          },
+          {
+            "targetTokens": 32768,
+            "actualPromptTokens": 32768,
+            "decodeTokens": 32,
+            "chunkSize": 64,
+            "prefillMs": 87780.5,
+            "ttftMs": 87780.5,
+            "prefillTokPerSec": 373.29,
+            "decodeTokPerSec": 67.41,
+            "achievedBandwidthGBs": 167.64,
+            "bandwidthUtilizationPct": 17.91,
+            "status": "ok"
+          }
+        ],
+        "oomCeiling": null
+      },
+      "chatTurn1": {
+        "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+        "responseText": "Here are 4 benefits of running local LLMs in a dedicated Web Worker:\n\n* **Enhanced Privacy:** Data processing and model inference happen entirely on the client's device, ensuring sensitive data never leaves the local environment.\n* **Reduced Latency:** By running the model locally, you eliminate the network round-trip time required to call a remote API, leading to faster response times.\n* **Offline Capability:** The application remains functional and responsive even when the user has no internet connection.\n* **Controlled Resource Usage:** By isolating the LLM in a dedicated worker, you can manage memory and CPU usage without blocking the main",
+        "responseLength": 651,
+        "ttftMs": 103.6,
+        "prefillTokPerSec": 280.19,
+        "decodeTokPerSec": 81.44,
+        "activeContextTokens": 156,
+        "prefixReused": false,
+        "prefixReusedTokens": 0,
+        "aborted": false,
+        "speculativeStats": null
+      },
+      "speculativeCheck": {
+        "parityPassed": true,
+        "baselineDecodeTokPerSec": 82.76,
+        "speculativeDecodeTokPerSec": 97.6,
+        "speedupRatio": 1.179,
+        "speculativeStats": {
+          "enabled": true,
+          "drafted": 84,
+          "accepted": 74,
+          "steps": 21,
+          "acceptanceRatePct": 88.1
+        },
+        "baselineLength": 318,
+        "speculativeLength": 318
+      },
+      "draftSkipSweep": null,
+      "niah": null,
+      "balanced": null,
+      "consoleErrorCount": 0,
+      "status": "ok"
+    },
+    "3a_pipe_2tokenOverlap": {
+      "phase": "phase3a-pipe-and-3d",
+      "recordedAt": "2026-11-26T00:22:45.047Z",
+      "config": {
+        "kvMode": "int8",
+        "maxContext": 131072,
+        "flags": {}
+      },
+      "load": {
+        "coldLoadMs": 7416,
+        "streamWeightsMs": 6390,
+        "pipelineCompileMs": 6390,
+        "computeTier": "tier1-f16-subgroups",
+        "hasShaderF16": true,
+        "hasSubgroups": true,
+        "hasDp4a": true,
+        "maxBufferSize": 2147483648,
+        "maxStorageBufferBindingSize": 2147483644,
+        "kvMode": "int8",
+        "maxContext": 131072,
+        "vramPlan": {
+          "maxContext": 131072,
+          "kvMode": "int8",
+          "slidingKvBytes": 41943040,
+          "globalKvPerBufBytes": 541065216,
+          "globalKvTotalBytes": 1082130432,
+          "kvTotalBytes": 1124073472,
+          "kvTotalMb": 1072,
+          "scratchBytes": 38610432,
+          "weightBytes": 2346699424,
+          "totalVramBytes": 3509383328,
+          "totalVramMb": 3346.81
+        },
+        "executionHost": "worker",
+        "loadSource": "bundled"
+      },
+      "golden": {
+        "goldenA": {
+          "text": "4",
+          "generatedIds": [
+            236812
+          ],
+          "top0": {
+            "id": 236812,
+            "val": 28.529
+          },
+          "prefillTokPerSec": 138.72,
+          "decodeTokPerSec": 46.51
+        },
+        "goldenB": {
+          "text": "WebGPU is a modern, high-performance API that allows web applications to access the GPU directly for advanced graphics and compute tasks.",
+          "generatedIds": [
+            6721,
+            88477,
+            563,
+            496,
+            4532,
+            236764,
+            1494,
+            236772,
+            32677,
+            9299,
+            600,
+            5862,
+            4108,
+            6182,
+            531,
+            2802,
+            506,
+            39937,
+            5467,
+            573,
+            9691,
+            17284,
+            532,
+            16333,
+            9395,
+            236761
+          ],
+          "top0": {
+            "id": 6721,
+            "val": 28.2405
+          },
+          "prefillTokPerSec": 174,
+          "decodeTokPerSec": 81.63
+        }
+      },
+      "sweep": {
+        "points": [
+          {
+            "targetTokens": 1024,
+            "actualPromptTokens": 1024,
+            "decodeTokens": 32,
+            "chunkSize": 64,
+            "prefillMs": 2155.1,
+            "ttftMs": 2155.1,
+            "prefillTokPerSec": 475.15,
+            "decodeTokPerSec": 91.09,
+            "achievedBandwidthGBs": 185.08,
+            "bandwidthUtilizationPct": 19.77,
+            "status": "ok"
+          },
+          {
+            "targetTokens": 32768,
+            "actualPromptTokens": 32768,
+            "decodeTokens": 32,
+            "chunkSize": 64,
+            "prefillMs": 88547.2,
+            "ttftMs": 88547.2,
+            "prefillTokPerSec": 370.06,
+            "decodeTokPerSec": 75.69,
+            "achievedBandwidthGBs": 188.24,
+            "bandwidthUtilizationPct": 20.11,
+            "status": "ok"
+          }
+        ],
+        "oomCeiling": null
+      },
+      "chatTurn1": {
+        "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+        "responseText": "Here are 4 benefits of running local LLMs in a dedicated Web Worker:\n\n* **Enhanced Privacy:** Data processing and model inference happen entirely on the client's device, ensuring sensitive data never leaves the local environment.\n* **Reduced Latency:** By running the model locally, you eliminate the network round-trip time required to call a remote API, leading to faster response times.\n* **Offline Capability:** The application remains functional and responsive even when the user has no internet connection.\n* **Controlled Resource Usage:** By isolating the LLM in a dedicated worker, you can manage memory and CPU usage without blocking the main",
+        "responseLength": 651,
+        "ttftMs": 105.6,
+        "prefillTokPerSec": 274.62,
+        "decodeTokPerSec": 85.91,
+        "activeContextTokens": 156,
+        "prefixReused": false,
+        "prefixReusedTokens": 0,
+        "aborted": false,
+        "speculativeStats": null
+      },
+      "speculativeCheck": {
+        "parityPassed": true,
+        "baselineDecodeTokPerSec": 91.16,
+        "speculativeDecodeTokPerSec": 97.29,
+        "speedupRatio": 1.067,
+        "speculativeStats": {
+          "enabled": true,
+          "drafted": 84,
+          "accepted": 74,
+          "steps": 21,
+          "acceptanceRatePct": 88.1
+        },
+        "baselineLength": 318,
+        "speculativeLength": 318
+      },
+      "draftSkipSweep": [
+        {
+          "skipLayers": 6,
+          "activeDraftLayers": 36,
+          "decodeTokPerSec": 27.21,
+          "speedupVsBaseline": 0.317,
+          "parityPassed": true,
+          "speculativeStats": {
+            "enabled": true,
+            "drafted": 206,
+            "accepted": 56,
+            "steps": 69,
+            "acceptanceRatePct": 27.18
+          }
+        },
+        {
+          "skipLayers": 12,
+          "activeDraftLayers": 30,
+          "decodeTokPerSec": 21.86,
+          "speedupVsBaseline": 0.254,
+          "parityPassed": true,
+          "speculativeStats": {
+            "enabled": true,
+            "drafted": 272,
+            "accepted": 34,
+            "steps": 91,
+            "acceptanceRatePct": 12.5
+          }
+        },
+        {
+          "skipLayers": 18,
+          "activeDraftLayers": 24,
+          "decodeTokPerSec": 16.85,
+          "speedupVsBaseline": 0.196,
+          "parityPassed": true,
+          "speculativeStats": {
+            "enabled": true,
+            "drafted": 374,
+            "accepted": 0,
+            "steps": 125,
+            "acceptanceRatePct": 0
+          }
+        }
+      ],
+      "niah": {
+        "targetTokens": 32768,
+        "actualTokens": 32768,
+        "needleDepthPct": 0.5,
+        "passkey": "VELVET-ORBIT-7492",
+        "responseText": "The secret passkey is: **VELVET-ORBIT-7492**.",
+        "passed": true,
+        "ttftMs": 89594.6,
+        "prefillTokPerSec": 365.74,
+        "decodeTokPerSec": 71.89
+      },
+      "balanced": null,
+      "consoleErrorCount": 0,
+      "status": "ok"
+    },
+    "3b_w4a8_w2a8_dp4a_note": "1K+Chat ran in g09-3b-w4a8; 8K sweep reached 98.95 tok/s before 32K NIAH hit [Device] is lost during sustained 32K prefill (2x repro on 32K sweep & NIAH); dropped spec acc 88.1% -> 56.82%",
+    "3b_w4a8_w2a8_dp4a": {
+      "phase": "phase3b-w4a8",
+      "recordedAt": "2026-11-26T00:31:20.817Z",
+      "config": {
+        "kvMode": "int8",
+        "maxContext": 131072,
+        "flags": {
+          "enableW4A8Dp4a": true
+        }
+      },
+      "load": {
+        "coldLoadMs": 9417,
+        "streamWeightsMs": 8057,
+        "pipelineCompileMs": 8057,
+        "computeTier": "tier1-f16-subgroups",
+        "hasShaderF16": true,
+        "hasSubgroups": true,
+        "hasDp4a": true,
+        "maxBufferSize": 2147483648,
+        "maxStorageBufferBindingSize": 2147483644,
+        "kvMode": "int8",
+        "maxContext": 131072,
+        "vramPlan": {
+          "maxContext": 131072,
+          "kvMode": "int8",
+          "slidingKvBytes": 41943040,
+          "globalKvPerBufBytes": 541065216,
+          "globalKvTotalBytes": 1082130432,
+          "kvTotalBytes": 1124073472,
+          "kvTotalMb": 1072,
+          "scratchBytes": 38610432,
+          "weightBytes": 2346699424,
+          "totalVramBytes": 3509383328,
+          "totalVramMb": 3346.81
+        },
+        "executionHost": "worker",
+        "loadSource": "bundled"
+      },
+      "golden": {
+        "goldenA": {
+          "text": "4",
+          "generatedIds": [
+            236812
+          ],
+          "top0": {
+            "id": 236812,
+            "val": 28.5184
+          },
+          "prefillTokPerSec": 144.56,
+          "decodeTokPerSec": 39.53
+        },
+        "goldenB": {
+          "text": "WebGPU is a modern, high-performance API that allows web applications to access the GPU directly for advanced graphics and compute tasks.",
+          "generatedIds": [
+            6721,
+            88477,
+            563,
+            496,
+            4532,
+            236764,
+            1494,
+            236772,
+            32677,
+            9299,
+            600,
+            5862,
+            4108,
+            6182,
+            531,
+            2802,
+            506,
+            39937,
+            5467,
+            573,
+            9691,
+            17284,
+            532,
+            16333,
+            9395,
+            236761
+          ],
+          "top0": {
+            "id": 6721,
+            "val": 28.2506
+          },
+          "prefillTokPerSec": 153.57,
+          "decodeTokPerSec": 90.12
+        }
+      },
+      "sweep": {
+        "points": [
+          {
+            "targetTokens": 1024,
+            "actualPromptTokens": 1024,
+            "decodeTokens": 32,
+            "chunkSize": 64,
+            "prefillMs": 2157.4,
+            "ttftMs": 2157.4,
+            "prefillTokPerSec": 474.65,
+            "decodeTokPerSec": 106.6,
+            "achievedBandwidthGBs": 216.59,
+            "bandwidthUtilizationPct": 23.14,
+            "status": "ok"
+          }
+        ],
+        "oomCeiling": null
+      },
+      "chatTurn1": {
+        "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+        "responseText": "Here are 4 benefits of running local LLMs in a dedicated Web Worker:\n\n* **Enhanced Privacy:** Data processing and model inference happen entirely on the client's device, ensuring sensitive data never leaves the local environment.\n* **Reduced Latency:** By running the model locally, you eliminate the network round-trip time required to call a remote API, leading to faster response times.\n* **Offline Capability:** The application remains functional and responsive even when the user has no internet connection.\n* **Controlled Resource Usage:** By isolating the LLM in a dedicated worker, you prevent the main UI thread from being blocked by heavy",
+        "responseLength": 648,
+        "ttftMs": 98,
+        "prefillTokPerSec": 295.92,
+        "decodeTokPerSec": 98.9,
+        "activeContextTokens": 156,
+        "prefixReused": false,
+        "prefixReusedTokens": 0,
+        "aborted": false,
+        "speculativeStats": null
+      },
+      "speculativeCheck": {
+        "parityPassed": true,
+        "baselineDecodeTokPerSec": 106.89,
+        "speculativeDecodeTokPerSec": 79.71,
+        "speedupRatio": 0.746,
+        "speculativeStats": {
+          "enabled": true,
+          "drafted": 88,
+          "accepted": 50,
+          "steps": 22,
+          "acceptanceRatePct": 56.82
+        },
+        "baselineLength": 324,
+        "speculativeLength": 324
+      },
+      "draftSkipSweep": null,
+      "niah": null,
+      "balanced": null,
+      "consoleErrorCount": 0,
+      "status": "ok"
+    },
+    "3c_int4_global_kv": {
+      "phase": "phase3c-int4kv",
+      "recordedAt": "2026-11-26T00:29:13.815Z",
+      "config": {
+        "kvMode": "int4",
+        "maxContext": 131072,
+        "flags": {}
+      },
+      "load": {
+        "coldLoadMs": 9721,
+        "streamWeightsMs": 8162,
+        "pipelineCompileMs": 8162,
+        "computeTier": "tier1-f16-subgroups",
+        "hasShaderF16": true,
+        "hasSubgroups": true,
+        "hasDp4a": true,
+        "maxBufferSize": 2147483648,
+        "maxStorageBufferBindingSize": 2147483644,
+        "kvMode": "int4",
+        "maxContext": 131072,
+        "vramPlan": {
+          "maxContext": 131072,
+          "kvMode": "int4",
+          "slidingKvBytes": 41943040,
+          "globalKvPerBufBytes": 285212672,
+          "globalKvTotalBytes": 570425344,
+          "kvTotalBytes": 612368384,
+          "kvTotalMb": 584,
+          "scratchBytes": 38610432,
+          "weightBytes": 2346699424,
+          "totalVramBytes": 2997678240,
+          "totalVramMb": 2858.81
+        },
+        "executionHost": "worker",
+        "loadSource": "bundled"
+      },
+      "golden": {
+        "goldenA": {
+          "text": "4",
+          "generatedIds": [
+            236812
+          ],
+          "top0": {
+            "id": 236812,
+            "val": 28.5666
+          },
+          "prefillTokPerSec": 148.87,
+          "decodeTokPerSec": 41.49
+        },
+        "goldenB": {
+          "text": "WebGPU is a modern, high-performance API that allows web applications to access the GPU directly for advanced graphics and compute tasks.",
+          "generatedIds": [
+            6721,
+            88477,
+            563,
+            496,
+            4532,
+            236764,
+            1494,
+            236772,
+            32677,
+            9299,
+            600,
+            5862,
+            4108,
+            6182,
+            531,
+            2802,
+            506,
+            39937,
+            5467,
+            573,
+            9691,
+            17284,
+            532,
+            16333,
+            9395,
+            236761
+          ],
+          "top0": {
+            "id": 6721,
+            "val": 28.1926
+          },
+          "prefillTokPerSec": 160.83,
+          "decodeTokPerSec": 75.36
+        }
+      },
+      "sweep": {
+        "points": [
+          {
+            "targetTokens": 1024,
+            "actualPromptTokens": 1024,
+            "decodeTokens": 32,
+            "chunkSize": 64,
+            "prefillMs": 2203.4,
+            "ttftMs": 2203.4,
+            "prefillTokPerSec": 464.74,
+            "decodeTokPerSec": 92.73,
+            "achievedBandwidthGBs": 187.8,
+            "bandwidthUtilizationPct": 20.06,
+            "status": "ok"
+          },
+          {
+            "targetTokens": 32768,
+            "actualPromptTokens": 32768,
+            "decodeTokens": 32,
+            "chunkSize": 64,
+            "prefillMs": 104966.2,
+            "ttftMs": 104966.2,
+            "prefillTokPerSec": 312.18,
+            "decodeTokPerSec": 72.63,
+            "achievedBandwidthGBs": 165.68,
+            "bandwidthUtilizationPct": 17.7,
+            "status": "ok"
+          }
+        ],
+        "oomCeiling": null
+      },
+      "chatTurn1": {
+        "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+        "responseText": "Here are 4 benefits of running local LLMs in a dedicated web worker:\n\n* **Enhanced Privacy:** Data processing and model inference happen entirely on the client's device, ensuring sensitive data never leaves the local environment.\n* **Reduced Latency:** By running the model locally, you eliminate the network round-trip time required to call a remote API, leading to faster response times.\n* **Offline Capability:** The application remains functional and responsive even when the user has no internet connection.\n* **Cost Efficiency:** By running the model locally, you avoid the recurring costs associated with external API calls or cloud hosting fees.",
+        "responseLength": 653,
+        "ttftMs": 106.1,
+        "prefillTokPerSec": 273.58,
+        "decodeTokPerSec": 92.94,
+        "activeContextTokens": 156,
+        "prefixReused": false,
+        "prefixReusedTokens": 0,
+        "aborted": false,
+        "speculativeStats": null
+      },
+      "speculativeCheck": {
+        "parityPassed": true,
+        "baselineDecodeTokPerSec": 96.01,
+        "speculativeDecodeTokPerSec": 77.14,
+        "speedupRatio": 0.803,
+        "speculativeStats": {
+          "enabled": true,
+          "drafted": 88,
+          "accepted": 50,
+          "steps": 22,
+          "acceptanceRatePct": 56.82
+        },
+        "baselineLength": 324,
+        "speculativeLength": 324
+      },
+      "draftSkipSweep": null,
+      "niah": {
+        "targetTokens": 32768,
+        "actualTokens": 32768,
+        "needleDepthPct": 0.5,
+        "passkey": "VELVET-ORBIT-7492",
+        "responseText": "The secret passkey is: **VELVET-ORBIT-7492**.",
+        "passed": true,
+        "ttftMs": 105551.1,
+        "prefillTokPerSec": 310.45,
+        "decodeTokPerSec": 66.85
+      },
+      "balanced": null,
+      "consoleErrorCount": 0,
+      "status": "ok"
+    },
+    "3d_layer_skip_self_spec": [
+      {
+        "skipLayers": 6,
+        "activeDraftLayers": 36,
+        "decodeTokPerSec": 27.21,
+        "speedupVsBaseline": 0.317,
+        "parityPassed": true,
+        "speculativeStats": {
+          "enabled": true,
+          "drafted": 206,
+          "accepted": 56,
+          "steps": 69,
+          "acceptanceRatePct": 27.18
+        }
+      },
+      {
+        "skipLayers": 12,
+        "activeDraftLayers": 30,
+        "decodeTokPerSec": 21.86,
+        "speedupVsBaseline": 0.254,
+        "parityPassed": true,
+        "speculativeStats": {
+          "enabled": true,
+          "drafted": 272,
+          "accepted": 34,
+          "steps": 91,
+          "acceptanceRatePct": 12.5
+        }
+      },
+      {
+        "skipLayers": 18,
+        "activeDraftLayers": 24,
+        "decodeTokPerSec": 16.85,
+        "speedupVsBaseline": 0.196,
+        "parityPassed": true,
+        "speculativeStats": {
+          "enabled": true,
+          "drafted": 374,
+          "accepted": 0,
+          "steps": 125,
+          "acceptanceRatePct": 0
+        }
+      }
+    ],
+    "3e_coop_matrix_audit": {
+      "feature": "chromium_experimental_subgroup_matrix",
+      "exposedOnWindowsDawnD3D12": false,
+      "adopted": false,
+      "note": "Not exposed on current Chromium/Dawn D3D12 RTX 3090 runtime."
+    }
+  },
+  "summary": [
+    {
+      "name": "Phase 2B Reference (g08b)",
+      "adopted": true,
+      "kvMode": "int8",
+      "vramMb": 3258.68,
+      "decode1K": 71.97,
+      "decode32K": 59.36,
+      "prefill32K": 360.66,
+      "chatTurn1": 72.68,
+      "specTokPerSec": 93.79,
+      "specAccPct": 88.1,
+      "niah32K": true
+    },
+    {
+      "name": "3A-Sync: Hot PLE + Q8 PLE Proj + SplitK 148",
+      "adopted": true,
+      "kvMode": "int8",
+      "vramMb": 3346.81,
+      "decode1K": 77.29,
+      "decode32K": 67.41,
+      "prefill32K": 373.29,
+      "chatTurn1": 81.44,
+      "specTokPerSec": 97.6,
+      "specAccPct": 88.1,
+      "niah32K": "verified with 3A-Pipe"
+    },
+    {
+      "name": "3A-Pipe: + 2-Token Pipelined Decode",
+      "adopted": true,
+      "kvMode": "int8",
+      "vramMb": 3346.81,
+      "decode1K": 91.09,
+      "decode32K": 75.69,
+      "prefill32K": 370.06,
+      "chatTurn1": 85.91,
+      "specTokPerSec": 97.29,
+      "specAccPct": 88.1,
+      "niah32K": true
+    },
+    {
+      "name": "3B: + W4A8/W2A8 DP4A (experimental opt-in)",
+      "adopted": false,
+      "kvMode": "int8",
+      "vramMb": 3346.81,
+      "decode1K": 106.6,
+      "decode8KRun1": 98.95,
+      "decode1KRun1": 110.88,
+      "decode32K": "FAILED ([Device] is lost on 32K sweep/NIAH)",
+      "chatTurn1": 98.9,
+      "specTokPerSec": 79.71,
+      "specAccPct": 56.82,
+      "niah32K": "FAILED ([Device] is lost)"
+    },
+    {
+      "name": "3C: INT4 Global KV (kvMode=int4 opt-in)",
+      "adopted": false,
+      "kvMode": "int4",
+      "vramMb": 2858.81,
+      "decode1K": 92.73,
+      "decode32K": 72.63,
+      "prefill32K": 312.18,
+      "chatTurn1": 92.94,
+      "specTokPerSec": 77.14,
+      "specAccPct": 56.82,
+      "niah32K": true
+    }
+  ]
+}

@@ -151,6 +151,7 @@ export async function acquireWgslDevice(): Promise<{
   hasShaderF16: boolean;
   hasSubgroups: boolean;
   hasDp4a: boolean;
+  subgroupMinSize: number;
   maxBufferSize: number;
   maxStorageBufferBindingSize: number;
 }> {
@@ -168,6 +169,13 @@ export async function acquireWgslDevice(): Promise<{
   if (!adapter) {
     throw new Error('No WebGPU adapter returned.');
   }
+  const adapterExtra = adapter as unknown as {
+    info?: { subgroupMinSize?: number };
+    limits?: { minSubgroupSize?: number };
+  };
+  const subgroupMinSize = Number(
+    adapterExtra.info?.subgroupMinSize ?? adapterExtra.limits?.minSubgroupSize ?? 32,
+  );
   const features = new Set(Array.from(adapter.features));
   const wantF16 = features.has('shader-f16');
   const wantSubgroups = features.has('subgroups');
@@ -213,6 +221,7 @@ export async function acquireWgslDevice(): Promise<{
     hasShaderF16: grantedFeatures.has('shader-f16'),
     hasSubgroups: grantedFeatures.has('subgroups'),
     hasDp4a,
+    subgroupMinSize,
     maxBufferSize,
     maxStorageBufferBindingSize,
   };

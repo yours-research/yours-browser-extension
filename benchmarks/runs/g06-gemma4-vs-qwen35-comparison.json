@@ -1,0 +1,310 @@
+{
+  "runId": "g06-gemma4-vs-qwen35-comparison",
+  "recordedAt": "2026-11-26T01:03:23.105Z",
+  "models": {
+    "qwen35_4b": {
+      "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+      "coldLoadMs": 6969.4,
+      "baseVramMb": 2560.2,
+      "vram128kMb": 4640.7,
+      "kvCache128kMb": 2080.5,
+      "niah32k": {
+        "passed": true,
+        "ttftMs": 99947.6,
+        "prefillTokPerSec": 327.85,
+        "decodeTokPerSec": 62.32
+      },
+      "chatTurn1": {
+        "ttftMs": 118.8,
+        "decodeTokPerSec": 91.71
+      },
+      "speculativeCheck": {
+        "parityPassed": true,
+        "baselineTokPerSec": 91.77,
+        "speculativeTokPerSec": 114.83,
+        "speedupRatio": 1.251,
+        "acceptanceRatePct": 94.87
+      },
+      "balancedSmoothness": {
+        "chatTurn1DecodeTokPerSec": 78.29,
+        "turn2PrefixReused": true,
+        "abortLatencyMs": 99.34,
+        "chatAvgFps": 142.72,
+        "chatP99FrameMs": 11,
+        "sweepAvgFps": 140.25,
+        "sweepJankPct": 0
+      }
+    },
+    "gemma4_e4b_qat": {
+      "modelId": "onnx-community/gemma-4-E4B-it-qat-mobile-ONNX",
+      "gpuWeightsGiB": 2.074,
+      "cpuOpfsPleGiB": 0.838,
+      "coldLoadOrtMs": 10930,
+      "coldLoadWgslWorkerMs": 7210,
+      "baseVramMb": 3346.81,
+      "vram128kMb": 3346.81,
+      "kvCache128kMb": 1072,
+      "ortBaseline1kDecodeTokPerSec": 23.76,
+      "wgslFp16Parity": {
+        "goldenAText": "4",
+        "goldenATop0": {
+          "id": 236812,
+          "val": 28.529
+        },
+        "goldenBTop0": {
+          "id": 6721,
+          "val": 28.2405
+        },
+        "goldenBDecodeTokPerSec": 90.56
+      },
+      "niah32k": {
+        "passed": true,
+        "ttftMs": 88936.5,
+        "prefillTokPerSec": 368.44,
+        "decodeTokPerSec": 73.25
+      },
+      "chatTurn1": {
+        "ttftMs": 106.4,
+        "decodeTokPerSec": 88.65
+      },
+      "speculativeCheck": {
+        "parityPassed": true,
+        "baselineTokPerSec": 96.66,
+        "speculativeTokPerSec": 99.49,
+        "speedupRatio": 1.029,
+        "acceptanceRatePct": 88.1
+      },
+      "balancedSmoothness": {
+        "chatTurn1DecodeTokPerSec": 37.95,
+        "turn2PrefixReused": true,
+        "abortLatencyMs": 30.1,
+        "chatAvgFps": 144,
+        "chatP99FrameMs": 7.1,
+        "sweepAvgFps": 140.23,
+        "sweepJankPct": 0.01,
+        "sweep8kPrefillTokPerSec": 275.75,
+        "sweep8kDecodeTokPerSec": 55.03,
+        "sweep32kPrefillTokPerSec": 185.16,
+        "sweep32kDecodeTokPerSec": 51.86
+      },
+      "trackG4G5Baseline": {
+        "coldLoadMs": 7684,
+        "chatTurn1DecodeTokPerSec": 59.95,
+        "balancedSweepAvgFps": 76.66,
+        "balancedSweepJankPct": 7.35
+      }
+    }
+  },
+  "sweepComparison": [
+    {
+      "contextTokens": 1024,
+      "qwen35Ort": {
+        "prefillTokPerSec": 920.7,
+        "decodeTokPerSec": 13.62
+      },
+      "qwen35WgslMax": {
+        "prefillTokPerSec": 506.96,
+        "decodeTokPerSec": 109.55,
+        "achievedBandwidthGBs": 268.52,
+        "estVramMb": 2576.9
+      },
+      "gemma4Ort": {
+        "prefillTokPerSec": 649.66,
+        "decodeTokPerSec": 23.76
+      },
+      "gemma4WgslFp16": {
+        "prefillTokPerSec": 498.39,
+        "decodeTokPerSec": 28.23
+      },
+      "gemma4WgslInt8": {
+        "prefillTokPerSec": 506.08,
+        "decodeTokPerSec": 28.27,
+        "achievedBandwidthGBs": 57.44
+      },
+      "gemma4WgslTrackG4": {
+        "prefillTokPerSec": 466.11,
+        "decodeTokPerSec": 59.04,
+        "achievedBandwidthGBs": 119.96
+      },
+      "gemma4WgslWorkerMax": {
+        "prefillTokPerSec": 481.97,
+        "decodeTokPerSec": 94.51,
+        "achievedBandwidthGBs": 192.03
+      },
+      "gemma4WgslVsOrtDecodeSpeedup": 3.98,
+      "gemma4VsQwen35DecodeRatio": 0.86,
+      "gemma4VsQwen35PrefillRatio": 0.95
+    },
+    {
+      "contextTokens": 8192,
+      "qwen35Ort": {
+        "prefillTokPerSec": 861.3,
+        "decodeTokPerSec": 13.35
+      },
+      "qwen35WgslMax": {
+        "prefillTokPerSec": 501.03,
+        "decodeTokPerSec": 97.18,
+        "achievedBandwidthGBs": 238.19,
+        "estVramMb": 2690.7
+      },
+      "gemma4Ort": {
+        "prefillTokPerSec": 766.35,
+        "decodeTokPerSec": 12.14
+      },
+      "gemma4WgslFp16": {
+        "prefillTokPerSec": 403.78,
+        "decodeTokPerSec": 26.57
+      },
+      "gemma4WgslInt8": {
+        "prefillTokPerSec": 413.12,
+        "decodeTokPerSec": 27.15,
+        "achievedBandwidthGBs": 57.95
+      },
+      "gemma4WgslTrackG4": {
+        "prefillTokPerSec": 396.14,
+        "decodeTokPerSec": 57.42,
+        "achievedBandwidthGBs": 122.57
+      },
+      "gemma4WgslWorkerMax": {
+        "prefillTokPerSec": 440.89,
+        "decodeTokPerSec": 89.71,
+        "achievedBandwidthGBs": 191.49
+      },
+      "gemma4WgslVsOrtDecodeSpeedup": 7.39,
+      "gemma4VsQwen35DecodeRatio": 0.92,
+      "gemma4VsQwen35PrefillRatio": 0.88
+    },
+    {
+      "contextTokens": 32768,
+      "qwen35Ort": {
+        "prefillTokPerSec": 563.62,
+        "decodeTokPerSec": 6.33
+      },
+      "qwen35WgslMax": {
+        "prefillTokPerSec": 393.11,
+        "decodeTokPerSec": 74.06,
+        "achievedBandwidthGBs": 181.52,
+        "estVramMb": 3080.7
+      },
+      "gemma4Ort": {
+        "prefillTokPerSec": 291.43,
+        "decodeTokPerSec": 3.53
+      },
+      "gemma4WgslFp16": {
+        "prefillTokPerSec": 259.77,
+        "decodeTokPerSec": 23.22
+      },
+      "gemma4WgslInt8": {
+        "prefillTokPerSec": 264.24,
+        "decodeTokPerSec": 23.45,
+        "achievedBandwidthGBs": 58.32
+      },
+      "gemma4WgslTrackG4": {
+        "prefillTokPerSec": 266.96,
+        "decodeTokPerSec": 47.97,
+        "achievedBandwidthGBs": 119.3
+      },
+      "gemma4WgslWorkerMax": {
+        "prefillTokPerSec": 372.81,
+        "decodeTokPerSec": 75.78,
+        "achievedBandwidthGBs": 188.46
+      },
+      "gemma4WgslVsOrtDecodeSpeedup": 21.47,
+      "gemma4VsQwen35DecodeRatio": 1.02,
+      "gemma4VsQwen35PrefillRatio": 0.95
+    },
+    {
+      "contextTokens": 65536,
+      "qwen35Ort": {
+        "prefillTokPerSec": 386.84,
+        "decodeTokPerSec": 3.39
+      },
+      "qwen35WgslMax": {
+        "prefillTokPerSec": 290.12,
+        "decodeTokPerSec": 55.74,
+        "achievedBandwidthGBs": 136.62,
+        "estVramMb": 3600.7
+      },
+      "gemma4Ort": null,
+      "gemma4WgslFp16": null,
+      "gemma4WgslInt8": {
+        "prefillTokPerSec": 178.66,
+        "decodeTokPerSec": 20.55,
+        "achievedBandwidthGBs": 60.76
+      },
+      "gemma4WgslTrackG4": {
+        "prefillTokPerSec": 187.26,
+        "decodeTokPerSec": 40.4,
+        "achievedBandwidthGBs": 119.45
+      },
+      "gemma4WgslWorkerMax": {
+        "prefillTokPerSec": 303.17,
+        "decodeTokPerSec": 68.07,
+        "achievedBandwidthGBs": 201.26
+      },
+      "gemma4WgslVsOrtDecodeSpeedup": null,
+      "gemma4VsQwen35DecodeRatio": 1.22,
+      "gemma4VsQwen35PrefillRatio": 1.04
+    },
+    {
+      "contextTokens": 98304,
+      "qwen35Ort": null,
+      "qwen35WgslMax": {
+        "prefillTokPerSec": 229.08,
+        "decodeTokPerSec": 43.71,
+        "achievedBandwidthGBs": 107.14,
+        "estVramMb": 4120.7
+      },
+      "gemma4Ort": null,
+      "gemma4WgslFp16": null,
+      "gemma4WgslInt8": {
+        "prefillTokPerSec": 136.38,
+        "decodeTokPerSec": 17.83,
+        "achievedBandwidthGBs": 61.09
+      },
+      "gemma4WgslTrackG4": {
+        "prefillTokPerSec": 144.43,
+        "decodeTokPerSec": 36.12,
+        "achievedBandwidthGBs": 123.76
+      },
+      "gemma4WgslWorkerMax": {
+        "prefillTokPerSec": 256.35,
+        "decodeTokPerSec": 59.58,
+        "achievedBandwidthGBs": 204.15
+      },
+      "gemma4WgslVsOrtDecodeSpeedup": null,
+      "gemma4VsQwen35DecodeRatio": 1.36,
+      "gemma4VsQwen35PrefillRatio": 1.12
+    },
+    {
+      "contextTokens": 131072,
+      "qwen35Ort": null,
+      "qwen35WgslMax": {
+        "prefillTokPerSec": 176.93,
+        "decodeTokPerSec": 32.32,
+        "achievedBandwidthGBs": 79.23,
+        "estVramMb": 4640.7
+      },
+      "gemma4Ort": null,
+      "gemma4WgslFp16": null,
+      "gemma4WgslInt8": {
+        "prefillTokPerSec": 109.57,
+        "decodeTokPerSec": 15.55,
+        "achievedBandwidthGBs": 60.59
+      },
+      "gemma4WgslTrackG4": {
+        "prefillTokPerSec": 117.59,
+        "decodeTokPerSec": 30.56,
+        "achievedBandwidthGBs": 119.07
+      },
+      "gemma4WgslWorkerMax": {
+        "prefillTokPerSec": 220.69,
+        "decodeTokPerSec": 51.88,
+        "achievedBandwidthGBs": 202.14
+      },
+      "gemma4WgslVsOrtDecodeSpeedup": null,
+      "gemma4VsQwen35DecodeRatio": 1.61,
+      "gemma4VsQwen35PrefillRatio": 1.25
+    }
+  ]
+}

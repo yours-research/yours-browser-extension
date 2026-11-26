@@ -1,0 +1,436 @@
+{
+  "runId": "g00-gemma4-math-audit",
+  "modelId": "onnx-community/gemma-4-E4B-it-qat-mobile-ONNX",
+  "recordedAt": "2026-11-25T20:40:38.940Z",
+  "normsSample": {
+    "l0_input_layernorm_f16": [
+      8.5,
+      8.5,
+      10.375,
+      8.5625,
+      7.96875,
+      7.90625,
+      8.1875,
+      8.625
+    ],
+    "l0_post_attn_layernorm_f16": [
+      0.365234,
+      0.527344,
+      24.125,
+      24.125,
+      0.738281,
+      0.488281,
+      0.828125,
+      3.1875
+    ],
+    "l0_q_norm_f16": [
+      0.984375,
+      0.984375,
+      0.984375,
+      0.984375,
+      0.984375,
+      0.984375,
+      0.984375,
+      0.984375
+    ],
+    "note": "Inspect whether weights hover near ~1.0 (pre-shifted 1+w) or ~0.0 (needs +1)."
+  },
+  "layerScalarsF16": {
+    "layer_0": 0.072266,
+    "layer_5": 0.539063,
+    "layer_24": 0.519531,
+    "layer_41": 0.470703
+  },
+  "ropeCaches": {
+    "cos_cache_local_dims": [
+      131072,
+      128
+    ],
+    "cos_cache_global_dims": [
+      131072,
+      256
+    ],
+    "localSample": {
+      "pos_0": {
+        "first8": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "last8": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "pos_1": {
+        "first8": [
+          0.540527,
+          0.597168,
+          0.647949,
+          0.692383,
+          0.731934,
+          0.766113,
+          0.796387,
+          0.822754
+        ],
+        "last8": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "pos_100": {
+        "first8": [
+          0.862305,
+          0.371094,
+          0.201294,
+          0.456055,
+          0.91748,
+          0.785156,
+          -0.510254,
+          -0.73877
+        ],
+        "last8": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    "globalSample": {
+      "pos_0": {
+        "first8": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "last8": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "pos_1": {
+        "first8": [
+          0.540527,
+          0.583984,
+          0.623535,
+          0.659668,
+          0.692383,
+          0.722656,
+          0.749512,
+          0.774414
+        ],
+        "last8": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "pos_100": {
+        "first8": [
+          0.862305,
+          0.878418,
+          -0.231201,
+          -0.973633,
+          0.456055,
+          0.57959,
+          -0.996582,
+          0.838379
+        ],
+        "last8": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    }
+  },
+  "quantizationNodes": {
+    "gatherBlockQuantized": [
+      {
+        "name": "/model.embed_tokens/GatherBlockQuantized",
+        "inputs": [
+          "model.embed_tokens.weight_q",
+          "input_ids",
+          "model.embed_tokens.scales"
+        ],
+        "attrs": {
+          "bits": 2,
+          "block_size": 256,
+          "gather_axis": 0,
+          "quantize_axis": 1
+        }
+      },
+      {
+        "name": "/model.embed_tokens_per_layer/GatherBlockQuantized",
+        "inputs": [
+          "model.embed_tokens_per_layer.weight_q",
+          "/model/embed_tokens_per_layer/Where/output_0",
+          "model.embed_tokens_per_layer.scales"
+        ],
+        "attrs": {
+          "bits": 2,
+          "block_size": 256,
+          "gather_axis": 0,
+          "quantize_axis": 1
+        }
+      }
+    ],
+    "matMulNBitsSample": {
+      "/model/layers.0/attn/q_proj/MatMul": {
+        "inputs": [
+          "/model/layers.0/input_layernorm/output_0",
+          "model.layers.0.attn.q_proj.MatMul.qweight",
+          "/model/layers.0/attn/q_proj/MatMul/scales/Reshape/output_0"
+        ],
+        "attrs": {
+          "bits": 4,
+          "block_size": 32,
+          "K": 2560,
+          "N": 2048
+        }
+      },
+      "/model/layers.0/mlp/gate_up_proj/MatMul": {
+        "inputs": [
+          "/model/layers.0/pre_feedforward_layernorm/output_0",
+          "model.layers.0.mlp.gate_up_proj.MatMul.qweight",
+          "/model/layers.0/mlp/gate_up_proj/MatMul/scales/Reshape/output_0"
+        ],
+        "attrs": {
+          "bits": 4,
+          "block_size": 32,
+          "K": 2560,
+          "N": 20480
+        }
+      },
+      "/model/layers.0/per_layer/per_layer_input_gate/MatMul": {
+        "inputs": [
+          "/model/layers.0/Add_2/output_0",
+          "model.layers.0.per_layer.per_layer_input_gate.MatMul.qweight",
+          "/model/layers.0/per_layer/per_layer_input_gate/MatMul/scales/Reshape/output_0"
+        ],
+        "attrs": {
+          "bits": 8,
+          "block_size": 32,
+          "K": 2560,
+          "N": 256
+        }
+      },
+      "/model/layers.0/per_layer/per_layer_projection/MatMul": {
+        "inputs": [
+          "/model/layers.0/per_layer/gate_mul/Mul/output_0",
+          "model.layers.0.per_layer.per_layer_projection.MatMul.qweight",
+          "/model/layers.0/per_layer/per_layer_projection/MatMul/scales/Reshape/output_0"
+        ],
+        "attrs": {
+          "bits": 8,
+          "block_size": 32,
+          "K": 256,
+          "N": 2560
+        }
+      },
+      "/lm_head/MatMul": {
+        "inputs": [
+          "/lm_head/num_logits_to_keep/Slice/output_0",
+          "lm_head.MatMul.qweight",
+          "/lm_head/MatMul/scales/Reshape/output_0"
+        ],
+        "attrs": {
+          "bits": 2,
+          "block_size": 32,
+          "K": 2560,
+          "N": 262144
+        }
+      }
+    }
+  },
+  "tensorByteSamples": {
+    "embedTokensQ2": {
+      "qweightDims": [
+        262144,
+        640
+      ],
+      "scalesDims": [
+        262144,
+        10
+      ],
+      "qBytes0": [
+        121,
+        234,
+        191,
+        235,
+        167,
+        173,
+        89,
+        30,
+        185,
+        108,
+        172,
+        210,
+        238,
+        233,
+        198,
+        151
+      ],
+      "scales0": [
+        0.020523,
+        0.020523,
+        0.020523,
+        0.020523,
+        0.020523,
+        0.020523,
+        0.020523,
+        0.020523,
+        0.020523,
+        0.020523
+      ]
+    },
+    "pleTokensQ2": {
+      "qweightDims": [
+        262144,
+        2688
+      ],
+      "scalesDims": [
+        262144,
+        42
+      ]
+    },
+    "lmHeadQ2": {
+      "qweightDims": [
+        262144,
+        80,
+        8
+      ],
+      "scalesDims": [
+        262144,
+        1
+      ],
+      "qBytes0": [
+        121,
+        234,
+        191,
+        235,
+        167,
+        173,
+        89,
+        30,
+        185,
+        108,
+        172,
+        210,
+        238,
+        233,
+        198,
+        151
+      ],
+      "scales0": [
+        0.020523,
+        0.021591,
+        0.021942,
+        0.019257,
+        0.019821,
+        0.01944,
+        0.020355,
+        0.017914
+      ]
+    },
+    "layer0QProjQ4": {
+      "qweightDims": [
+        2048,
+        80,
+        16
+      ],
+      "scalesDims": [
+        2048,
+        1
+      ],
+      "qBytes0": [
+        151,
+        164,
+        168,
+        186,
+        75,
+        123,
+        154,
+        179,
+        151,
+        55,
+        56,
+        133,
+        198,
+        97,
+        247,
+        122
+      ],
+      "scales0": [
+        0.010208,
+        0.008766,
+        0.008469,
+        0.005829,
+        0.006432,
+        0.006744,
+        0.005848,
+        0.006897
+      ]
+    }
+  },
+  "footprintBreakdownBytes": {
+    "attentionQ4Bytes": 294074368,
+    "mlpQ4Bytes": 1653442560,
+    "pleLinearQ8Bytes": 55286784,
+    "pleProjFp16Bytes": 55050240,
+    "lmHeadQ2Bytes": 168296448,
+    "embedTokensQ2Bytes": 173015040,
+    "pleTokensQ2Bytes": 726663168,
+    "normsAndScalarsBytes": 905300,
+    "ropeCachesBytes": 201326592,
+    "otherConstantsBytes": 230362,
+    "gpuWeightsWithoutRoPECachesBytes": 2227055700,
+    "gpuWeightsGiB": 2.074,
+    "cpuOpfsEmbeddingsBytes": 899678208,
+    "cpuOpfsEmbeddingsGiB": 0.838,
+    "combinedTextTotalGiB": 2.912
+  }
+}

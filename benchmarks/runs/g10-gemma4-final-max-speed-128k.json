@@ -1,0 +1,214 @@
+{
+  "phase": "final-max-speed-128k",
+  "recordedAt": "2026-11-26T00:55:43.393Z",
+  "config": {
+    "kvMode": "int8",
+    "maxContext": 131072,
+    "flags": {}
+  },
+  "load": {
+    "coldLoadMs": 7210,
+    "streamWeightsMs": 6238,
+    "pipelineCompileMs": 6239,
+    "computeTier": "tier1-f16-subgroups",
+    "hasShaderF16": true,
+    "hasSubgroups": true,
+    "hasDp4a": true,
+    "maxBufferSize": 2147483648,
+    "maxStorageBufferBindingSize": 2147483644,
+    "kvMode": "int8",
+    "maxContext": 131072,
+    "vramPlan": {
+      "maxContext": 131072,
+      "kvMode": "int8",
+      "slidingKvBytes": 41943040,
+      "globalKvPerBufBytes": 541065216,
+      "globalKvTotalBytes": 1082130432,
+      "kvTotalBytes": 1124073472,
+      "kvTotalMb": 1072,
+      "scratchBytes": 38610432,
+      "weightBytes": 2346699424,
+      "totalVramBytes": 3509383328,
+      "totalVramMb": 3346.81
+    },
+    "executionHost": "worker",
+    "loadSource": "bundled"
+  },
+  "golden": {
+    "goldenA": {
+      "text": "4",
+      "generatedIds": [
+        236812
+      ],
+      "top0": {
+        "id": 236812,
+        "val": 28.529
+      },
+      "prefillTokPerSec": 129.87,
+      "decodeTokPerSec": 40.65
+    },
+    "goldenB": {
+      "text": "WebGPU is a modern, high-performance API that allows web applications to access the GPU directly for advanced graphics and compute tasks.",
+      "generatedIds": [
+        6721,
+        88477,
+        563,
+        496,
+        4532,
+        236764,
+        1494,
+        236772,
+        32677,
+        9299,
+        600,
+        5862,
+        4108,
+        6182,
+        531,
+        2802,
+        506,
+        39937,
+        5467,
+        573,
+        9691,
+        17284,
+        532,
+        16333,
+        9395,
+        236761
+      ],
+      "top0": {
+        "id": 6721,
+        "val": 28.2405
+      },
+      "prefillTokPerSec": 167.16,
+      "decodeTokPerSec": 90.56
+    }
+  },
+  "sweep": {
+    "points": [
+      {
+        "targetTokens": 1024,
+        "actualPromptTokens": 1024,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 2124.6,
+        "ttftMs": 2124.6,
+        "prefillTokPerSec": 481.97,
+        "decodeTokPerSec": 94.51,
+        "achievedBandwidthGBs": 192.03,
+        "bandwidthUtilizationPct": 20.52,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 8192,
+        "actualPromptTokens": 8192,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 18580.7,
+        "ttftMs": 18580.7,
+        "prefillTokPerSec": 440.89,
+        "decodeTokPerSec": 89.71,
+        "achievedBandwidthGBs": 191.49,
+        "bandwidthUtilizationPct": 20.46,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 32768,
+        "actualPromptTokens": 32768,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 87895,
+        "ttftMs": 87895,
+        "prefillTokPerSec": 372.81,
+        "decodeTokPerSec": 75.78,
+        "achievedBandwidthGBs": 188.46,
+        "bandwidthUtilizationPct": 20.13,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 65536,
+        "actualPromptTokens": 65536,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 216172.1,
+        "ttftMs": 216172.1,
+        "prefillTokPerSec": 303.17,
+        "decodeTokPerSec": 68.07,
+        "achievedBandwidthGBs": 201.26,
+        "bandwidthUtilizationPct": 21.5,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 98304,
+        "actualPromptTokens": 98304,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 383471.1,
+        "ttftMs": 383471.1,
+        "prefillTokPerSec": 256.35,
+        "decodeTokPerSec": 59.58,
+        "achievedBandwidthGBs": 204.15,
+        "bandwidthUtilizationPct": 21.81,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 131072,
+        "actualPromptTokens": 131072,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 593908,
+        "ttftMs": 593908,
+        "prefillTokPerSec": 220.69,
+        "decodeTokPerSec": 51.88,
+        "achievedBandwidthGBs": 202.14,
+        "bandwidthUtilizationPct": 21.6,
+        "status": "ok"
+      }
+    ],
+    "oomCeiling": null
+  },
+  "chatTurn1": {
+    "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+    "responseText": "Here are 4 benefits of running local LLMs in a dedicated Web Worker:\n\n* **Enhanced Privacy:** Data processing and model inference happen entirely on the client's device, ensuring sensitive data never leaves the local environment.\n* **Reduced Latency:** By running the model locally, you eliminate the network round-trip time required to call a remote API, leading to faster response times.\n* **Offline Capability:** The application remains functional and responsive even when the user has no internet connection.\n* **Controlled Resource Usage:** By isolating the LLM in a dedicated worker, you can manage memory and CPU usage without blocking the main",
+    "responseLength": 651,
+    "ttftMs": 106.4,
+    "prefillTokPerSec": 272.56,
+    "decodeTokPerSec": 88.65,
+    "activeContextTokens": 156,
+    "prefixReused": false,
+    "prefixReusedTokens": 0,
+    "aborted": false,
+    "speculativeStats": null
+  },
+  "speculativeCheck": {
+    "parityPassed": true,
+    "baselineDecodeTokPerSec": 96.66,
+    "speculativeDecodeTokPerSec": 99.49,
+    "speedupRatio": 1.029,
+    "speculativeStats": {
+      "enabled": true,
+      "drafted": 84,
+      "accepted": 74,
+      "steps": 21,
+      "acceptanceRatePct": 88.1
+    },
+    "baselineLength": 318,
+    "speculativeLength": 318
+  },
+  "draftSkipSweep": null,
+  "niah": {
+    "targetTokens": 32768,
+    "actualTokens": 32768,
+    "needleDepthPct": 0.5,
+    "passkey": "VELVET-ORBIT-7492",
+    "responseText": "The secret passkey is: **VELVET-ORBIT-7492**.",
+    "passed": true,
+    "ttftMs": 88936.5,
+    "prefillTokPerSec": 368.44,
+    "decodeTokPerSec": 73.25
+  },
+  "balanced": null,
+  "consoleErrorCount": 0,
+  "status": "ok"
+}

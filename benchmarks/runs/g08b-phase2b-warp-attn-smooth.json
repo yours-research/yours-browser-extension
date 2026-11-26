@@ -1,0 +1,318 @@
+{
+  "phase": "phase2b-warp-attn-smooth",
+  "recordedAt": "2026-11-26T00:06:17.141Z",
+  "config": {
+    "kvMode": "int8",
+    "maxContext": 131072,
+    "flags": {}
+  },
+  "load": {
+    "coldLoadMs": 7737,
+    "streamWeightsMs": 6701,
+    "pipelineCompileMs": 6701,
+    "computeTier": "tier1-f16-subgroups",
+    "hasShaderF16": true,
+    "hasSubgroups": true,
+    "hasDp4a": true,
+    "maxBufferSize": 2147483648,
+    "maxStorageBufferBindingSize": 2147483644,
+    "kvMode": "int8",
+    "maxContext": 131072,
+    "vramPlan": {
+      "maxContext": 131072,
+      "kvMode": "int8",
+      "slidingKvBytes": 41943040,
+      "globalKvPerBufBytes": 541065216,
+      "globalKvTotalBytes": 1082130432,
+      "kvTotalBytes": 1124073472,
+      "kvTotalMb": 1072,
+      "scratchBytes": 38085888,
+      "weightBytes": 2254817952,
+      "totalVramBytes": 3416977312,
+      "totalVramMb": 3258.68
+    },
+    "executionHost": "worker",
+    "loadSource": "bundled"
+  },
+  "golden": {
+    "goldenA": {
+      "text": "4",
+      "generatedIds": [
+        236812
+      ],
+      "top0": {
+        "id": 236812,
+        "val": 28.5254
+      },
+      "prefillTokPerSec": 144.11,
+      "decodeTokPerSec": 65.36
+    },
+    "goldenB": {
+      "text": "WebGPU is a modern, high-performance API for running graphics and compute shaders directly in the web browser.",
+      "generatedIds": [
+        6721,
+        88477,
+        563,
+        496,
+        4532,
+        236764,
+        1494,
+        236772,
+        32677,
+        9299,
+        573,
+        4710,
+        17284,
+        532,
+        16333,
+        188015,
+        5467,
+        528,
+        506,
+        4108,
+        11180,
+        236761
+      ],
+      "top0": {
+        "id": 6721,
+        "val": 28.2535
+      },
+      "prefillTokPerSec": 152.47,
+      "decodeTokPerSec": 70.99
+    }
+  },
+  "sweep": {
+    "points": [
+      {
+        "targetTokens": 1024,
+        "actualPromptTokens": 1024,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 2247.7,
+        "ttftMs": 2247.7,
+        "prefillTokPerSec": 455.58,
+        "decodeTokPerSec": 71.97,
+        "achievedBandwidthGBs": 146.23,
+        "bandwidthUtilizationPct": 15.62,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 8192,
+        "actualPromptTokens": 8192,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 19118.9,
+        "ttftMs": 19118.9,
+        "prefillTokPerSec": 428.48,
+        "decodeTokPerSec": 66.09,
+        "achievedBandwidthGBs": 141.08,
+        "bandwidthUtilizationPct": 15.07,
+        "status": "ok"
+      },
+      {
+        "targetTokens": 32768,
+        "actualPromptTokens": 32768,
+        "decodeTokens": 32,
+        "chunkSize": 64,
+        "prefillMs": 90854.7,
+        "ttftMs": 90854.7,
+        "prefillTokPerSec": 360.66,
+        "decodeTokPerSec": 59.36,
+        "achievedBandwidthGBs": 147.62,
+        "bandwidthUtilizationPct": 15.77,
+        "status": "ok"
+      }
+    ],
+    "oomCeiling": null
+  },
+  "chatTurn1": {
+    "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+    "responseText": "Here are 4 benefits of running local LLMs in a dedicated Web Worker:\n\n* **Enhanced Privacy:** Data processing and model inference happen entirely on the client's device, ensuring sensitive data never leaves the local environment.\n* **Reduced Latency:** By running the model locally, you eliminate the network round-trip time required to call a remote API, leading to faster response times.\n* **Offline Capability:** The application remains functional and responsive even when the user has no internet connection.\n* **Controlled Resource Usage:** By isolating the LLM in a dedicated worker, you can manage memory and CPU usage without blocking the main",
+    "responseLength": 651,
+    "ttftMs": 110.1,
+    "prefillTokPerSec": 263.64,
+    "decodeTokPerSec": 72.68,
+    "activeContextTokens": 156,
+    "prefixReused": false,
+    "prefixReusedTokens": 0,
+    "aborted": false,
+    "speculativeStats": null
+  },
+  "speculativeCheck": {
+    "parityPassed": true,
+    "baselineDecodeTokPerSec": 75.1,
+    "speculativeDecodeTokPerSec": 93.79,
+    "speedupRatio": 1.249,
+    "speculativeStats": {
+      "enabled": true,
+      "drafted": 84,
+      "accepted": 74,
+      "steps": 21,
+      "acceptanceRatePct": 88.1
+    },
+    "baselineLength": 318,
+    "speculativeLength": 318
+  },
+  "niah": {
+    "targetTokens": 32768,
+    "actualTokens": 32768,
+    "needleDepthPct": 0.5,
+    "passkey": "VELVET-ORBIT-7492",
+    "responseText": "The secret passkey is: **VELVET-ORBIT-7492**.",
+    "passed": true,
+    "ttftMs": 91422.8,
+    "prefillTokPerSec": 358.42,
+    "decodeTokPerSec": 57.51
+  },
+  "balanced": {
+    "detectedHz": 145,
+    "idleSmoothness": {
+      "avgFps": 144,
+      "p50FrameMs": 6.9,
+      "p95FrameMs": 7.1,
+      "p99FrameMs": 7.1,
+      "maxFrameMs": 7.2,
+      "jankPctOver33ms": 0,
+      "freezePctOver100ms": 0,
+      "avgInputLatencyMs": 2.5,
+      "frameCount": 372
+    },
+    "load": {
+      "coldLoadMs": 7032,
+      "streamWeightsMs": 7005,
+      "pipelineCompileMs": 7005,
+      "computeTier": "tier1-f16-subgroups",
+      "hasShaderF16": true,
+      "hasSubgroups": true,
+      "hasDp4a": true,
+      "maxBufferSize": 2147483648,
+      "maxStorageBufferBindingSize": 2147483644,
+      "kvMode": "int8",
+      "maxContext": 131072,
+      "vramPlan": {
+        "maxContext": 131072,
+        "kvMode": "int8",
+        "slidingKvBytes": 41943040,
+        "globalKvPerBufBytes": 541065216,
+        "globalKvTotalBytes": 1082130432,
+        "kvTotalBytes": 1124073472,
+        "kvTotalMb": 1072,
+        "scratchBytes": 38085888,
+        "weightBytes": 2254817952,
+        "totalVramBytes": 3416977312,
+        "totalVramMb": 3258.68
+      },
+      "executionHost": "worker",
+      "loadSource": "bundled"
+    },
+    "loadSmoothness": {
+      "avgFps": 139.61,
+      "p50FrameMs": 6.9,
+      "p95FrameMs": 7.1,
+      "p99FrameMs": 7.3,
+      "maxFrameMs": 201.4,
+      "jankPctOver33ms": 0.1,
+      "freezePctOver100ms": 0.1,
+      "avgInputLatencyMs": 4.54,
+      "frameCount": 986
+    },
+    "sweep": {
+      "points": [
+        {
+          "targetTokens": 8192,
+          "actualPromptTokens": 8192,
+          "decodeTokens": 32,
+          "chunkSize": 64,
+          "prefillMs": 36181.1,
+          "ttftMs": 36181.1,
+          "prefillTokPerSec": 226.42,
+          "decodeTokPerSec": 36.55,
+          "achievedBandwidthGBs": 78.02,
+          "bandwidthUtilizationPct": 8.34,
+          "status": "ok"
+        },
+        {
+          "targetTokens": 32768,
+          "actualPromptTokens": 32768,
+          "decodeTokens": 32,
+          "chunkSize": 64,
+          "prefillMs": 242686.1,
+          "ttftMs": 242686.1,
+          "prefillTokPerSec": 135.02,
+          "decodeTokPerSec": 35.52,
+          "achievedBandwidthGBs": 88.34,
+          "bandwidthUtilizationPct": 9.44,
+          "status": "ok"
+        }
+      ],
+      "oomCeiling": null
+    },
+    "sweepSmoothness": {
+      "avgFps": 143.93,
+      "p50FrameMs": 6.9,
+      "p95FrameMs": 7.1,
+      "p99FrameMs": 7.1,
+      "maxFrameMs": 27.7,
+      "jankPctOver33ms": 0,
+      "freezePctOver100ms": 0,
+      "avgInputLatencyMs": 2.73,
+      "frameCount": 40394
+    },
+    "chatTurn1": {
+      "prompt": "List 4 benefits of running local LLMs in a Dedicated Web Worker in 4 short bullets.",
+      "responseText": "Here are 4 benefits of running local LLMs in a dedicated Web Worker:\n\n* **Enhanced Privacy:** Data processing and model inference happen entirely on the client's device, ensuring sensitive data never leaves the local environment.\n* **Reduced Latency:** By running the model locally, you eliminate the network round-trip time required to call a remote API, leading to faster response times.\n* **Offline Capability:** The application remains functional and responsive even when the user has no internet connection.\n* **Controlled Resource Usage:** By isolating the LLM in a dedicated worker, you can manage memory and CPU usage without blocking the main",
+      "responseLength": 651,
+      "ttftMs": 143.9,
+      "prefillTokPerSec": 201.53,
+      "decodeTokPerSec": 30.97,
+      "activeContextTokens": 156,
+      "prefixReused": false,
+      "prefixReusedTokens": 0,
+      "aborted": false,
+      "speculativeStats": {
+        "enabled": true,
+        "drafted": 20,
+        "accepted": 8,
+        "steps": 5,
+        "acceptanceRatePct": 40
+      }
+    },
+    "chatSmoothness": {
+      "avgFps": 144,
+      "p50FrameMs": 6.9,
+      "p95FrameMs": 7.1,
+      "p99FrameMs": 7.1,
+      "maxFrameMs": 7.2,
+      "jankPctOver33ms": 0,
+      "freezePctOver100ms": 0,
+      "avgInputLatencyMs": 2.57,
+      "frameCount": 626
+    },
+    "turn2": {
+      "prompt": "Summarize bullet 1 in one short sentence.",
+      "responseText": "Running the model locally ensures that sensitive data remains private and never leaves the user's device.",
+      "responseLength": 105,
+      "ttftMs": 151.3,
+      "prefillTokPerSec": 138.8,
+      "decodeTokPerSec": 26.81,
+      "activeContextTokens": 196,
+      "prefixReused": true,
+      "prefixReusedTokens": 156,
+      "aborted": false,
+      "speculativeStats": {
+        "enabled": true,
+        "drafted": 12,
+        "accepted": 0,
+        "steps": 3,
+        "acceptanceRatePct": 0
+      }
+    },
+    "abortMetrics": {
+      "stoppedCleanly": true,
+      "abortLatencyMs": 6,
+      "preservedPartialChars": 31
+    }
+  },
+  "consoleErrorCount": 0,
+  "status": "ok"
+}

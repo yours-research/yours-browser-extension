@@ -9,5 +9,13 @@ dist/
 .bench-profile-track6/
 .bench-profile-track6-matrix/
 .bench-profile-firecrawl-eval/
+.bench-profile-gemma4/
+.bench-profile-*
+.bench-profile-gemma4-wgsl/
+.bench-profile-gemma4-worker/
 .tmp-dl-bench/
 model-bundle/
+benchmarks/evals/latest-scorecard.json
+benchmarks/evals/latest-scorecard-report.json
+.bench-eval-profile/
+.bench-eval-dist/
