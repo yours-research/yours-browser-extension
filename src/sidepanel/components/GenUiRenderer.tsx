@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  CodeBlock,
+  CodeBlockCard,
   StreamingResponse,
   type StreamingResponseStatus,
 } from '@yours/ui';
@@ -38,6 +38,7 @@ type ParsedSegment =
 
 type RenderSegment =
   | { kind: 'markdown'; value: string }
+  | { kind: 'code'; language: string; value: string }
   | { kind: 'genui'; payload: Record<string, unknown>; raw: string };
 
 const FENCED_BLOCK_RE = /```([a-zA-Z0-9_-]*)\r?\n([\s\S]*?)```/g;
@@ -84,7 +85,10 @@ export function parseAssistantSegments(content: string): ParsedSegment[] {
   return segments;
 }
 
-function splitForStreamingRenderer(content: string): RenderSegment[] {
+function splitForStreamingRenderer(
+  content: string,
+  status?: StreamingResponseStatus,
+): RenderSegment[] {
   const result: RenderSegment[] = [];
   let mdStart = 0;
   FENCED_BLOCK_RE.lastIndex = 0;
@@ -92,29 +96,39 @@ function splitForStreamingRenderer(content: string): RenderSegment[] {
   let match: RegExpExecArray | null;
   while ((match = FENCED_BLOCK_RE.exec(content)) !== null) {
     const lang = (match[1] ?? '').trim().toLowerCase();
-    if (lang !== 'genui' && lang !== 'yours-genui') {
-      continue;
-    }
     const body = match[2] ?? '';
-    let parsed: unknown = null;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
-      continue;
+    if (lang === 'genui' || lang === 'yours-genui') {
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        continue;
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        continue;
+      }
+      const before = content.slice(mdStart, match.index);
+      if (before.trim().length > 0) {
+        result.push({ kind: 'markdown', value: before });
+      }
+      result.push({
+        kind: 'genui',
+        payload: parsed as Record<string, unknown>,
+        raw: body,
+      });
+      mdStart = match.index + match[0].length;
+    } else if (status !== 'streaming') {
+      const before = content.slice(mdStart, match.index);
+      if (before.trim().length > 0) {
+        result.push({ kind: 'markdown', value: before });
+      }
+      result.push({
+        kind: 'code',
+        language: lang || 'text',
+        value: body.trimEnd(),
+      });
+      mdStart = match.index + match[0].length;
     }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      continue;
-    }
-    const before = content.slice(mdStart, match.index);
-    if (before.trim().length > 0) {
-      result.push({ kind: 'markdown', value: before });
-    }
-    result.push({
-      kind: 'genui',
-      payload: parsed as Record<string, unknown>,
-      raw: body,
-    });
-    mdStart = match.index + match[0].length;
   }
 
   const tail = content.slice(mdStart);
@@ -334,7 +348,7 @@ function renderGenUiCard(
     }
     default:
       return (
-        <CodeBlock
+        <CodeBlockCard
           key={`g-${idx}`}
           code={raw.trim()}
           language="json"
@@ -347,12 +361,13 @@ function renderGenUiCard(
 /**
  * Renders assistant markdown responses safely in Chrome MV3:
  * - Dispatches ` ```genui ` JSON payloads to `@yours/ui/genui` cards.
+ * - Renders settled fenced code blocks via `@yours/ui` `CodeBlockCard` (zero inline styles).
  * - Uses `@yours/ui` `StreamingResponse` for progressive optical sharpen/develop reveal,
- *   gliding caret, and line-by-line fenced code blocks.
+ *   gliding caret, and native GFM pipe tables.
  * - Zero raw HTML string injection, zero inline CSS style objects.
  */
 export function GenUiRenderer(props: GenUiRendererProps) {
-  const segments = splitForStreamingRenderer(props.content);
+  const segments = splitForStreamingRenderer(props.content, props.status);
   if (segments.length === 0) {
     return null;
   }
@@ -362,6 +377,17 @@ export function GenUiRenderer(props: GenUiRendererProps) {
       {segments.map((seg, idx) => {
         if (seg.kind === 'genui') {
           return renderGenUiCard(seg.payload, seg.raw, idx, props);
+        }
+        if (seg.kind === 'code') {
+          return (
+            <CodeBlockCard
+              key={`cb-${idx}`}
+              code={seg.value}
+              language={seg.language}
+              showLineNumbers
+              onCopy={props.onCopyText}
+            />
+          );
         }
         const isLast = idx === segments.length - 1;
         return (

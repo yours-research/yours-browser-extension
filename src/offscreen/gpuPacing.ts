@@ -119,6 +119,10 @@ export function calibratePacingForHardware(
   let decodeSplitsLong: 1 | 2 | 4 = base.decodeSplitsLong;
   let prefillChunkShort = base.prefillChunkShort;
   let prefillChunkLong = base.prefillChunkLong;
+  let prefillBurstBudgetMs =
+    base.mode === 'balanced' && safeStepMs > 0 && safeStepMs < 22 ? 24 : base.prefillBurstBudgetMs;
+  let prefillBreatherMs =
+    base.mode === 'balanced' && safeStepMs > 0 && safeStepMs < 22 ? 1 : base.prefillBreatherMs;
 
   if (safeStepMs >= 100) {
     // Very slow iGPU / Tier 3 fallback: split decode aggressively and shrink prefill chunks
@@ -144,6 +148,8 @@ export function calibratePacingForHardware(
     ...base,
     prefillChunkShort,
     prefillChunkLong,
+    prefillBurstBudgetMs,
+    prefillBreatherMs,
     decodeSplitsShort,
     decodeSplitsLong,
     decodeSlowStepThresholdMs,

@@ -17,8 +17,11 @@ export interface VoiceStatusSnapshot {
   partialTranscript: string;
   finalTranscript: string;
   speaking: boolean;
+  muted: boolean;
+  bargeInEnabled: boolean;
   bargeInCount: number;
   error: string | null;
+  mockMode: boolean;
 }
 
 interface SpeechRecognitionAlternativeLike {
@@ -65,8 +68,11 @@ export class SidepanelVoiceController {
     partialTranscript: '',
     finalTranscript: '',
     speaking: false,
+    muted: false,
+    bargeInEnabled: true,
     bargeInCount: 0,
     error: null,
+    mockMode: false,
   };
 
   subscribe(listener: (snapshot: VoiceStatusSnapshot) => void): () => void {
@@ -222,16 +228,86 @@ export class SidepanelVoiceController {
   }
 
   async startDictation(): Promise<void> {
-    this.updateSnapshot({ error: null, partialTranscript: '', finalTranscript: '' });
+    this.updateSnapshot({
+      error: null,
+      partialTranscript: '',
+      finalTranscript: '',
+      muted: false,
+      mockMode: false,
+    });
     try {
       const pipeline = await this.ensurePipeline();
-      await pipeline.startListening({ bargeInEnabled: true });
+      await pipeline.startListening({ bargeInEnabled: this.snapshot.bargeInEnabled });
       this.startBrowserSpeechRecognitionFallback();
       this.updateSnapshot({ active: true, state: pipeline.state, micLevel: 0.2 });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.updateSnapshot({ active: false, state: 'idle', error: msg });
     }
+  }
+
+  /**
+   * Starts a deterministic local voice-session preview (no physical microphone required)
+   * driven by `@yours/voice` state semantics for automated tests & offline UX verification.
+   */
+  startMockSession(opts?: {
+    level?: number;
+    interimTranscript?: string;
+    transcript?: string;
+    state?: VoiceState;
+  }): void {
+    this.updateSnapshot({
+      error: null,
+      active: true,
+      mockMode: true,
+      muted: false,
+      state: opts?.state ?? 'listening',
+      micLevel: Math.max(0, Math.min(1, opts?.level ?? 0.35)),
+      partialTranscript: opts?.interimTranscript ?? '',
+      finalTranscript: opts?.transcript ?? '',
+    });
+  }
+
+  /** Updates deterministic audio envelope / interim / committed transcript on an active session. */
+  pushMockInput(opts: {
+    level?: number;
+    interimTranscript?: string;
+    transcript?: string;
+    state?: VoiceState;
+  }): void {
+    this.updateSnapshot({
+      active: true,
+      mockMode: true,
+      ...(opts.state ? { state: opts.state } : {}),
+      ...(typeof opts.level === 'number'
+        ? { micLevel: Math.max(0, Math.min(1, opts.level)) }
+        : {}),
+      ...(opts.interimTranscript !== undefined
+        ? { partialTranscript: opts.interimTranscript }
+        : {}),
+      ...(opts.transcript !== undefined ? { finalTranscript: opts.transcript } : {}),
+    });
+  }
+
+  toggleMute(): void {
+    const nextMuted = !this.snapshot.muted;
+    this.updateSnapshot({
+      muted: nextMuted,
+      micLevel: nextMuted ? 0 : Math.max(0.15, this.snapshot.micLevel),
+    });
+  }
+
+  toggleBargeIn(): void {
+    this.updateSnapshot({ bargeInEnabled: !this.snapshot.bargeInEnabled });
+  }
+
+  pulsePushToTalk(): void {
+    if (!this.snapshot.active) return;
+    this.updateSnapshot({
+      muted: false,
+      state: 'listening',
+      micLevel: 0.78,
+    });
   }
 
   async stopDictation(): Promise<string> {
@@ -244,7 +320,7 @@ export class SidepanelVoiceController {
       this.recognition = null;
     }
 
-    if (this.pipeline) {
+    if (this.pipeline && !this.snapshot.mockMode) {
       await this.pipeline.stopListening().catch(() => {});
     }
 
@@ -253,6 +329,10 @@ export class SidepanelVoiceController {
       active: false,
       state: 'idle',
       micLevel: 0,
+      muted: false,
+      mockMode: false,
+      partialTranscript: '',
+      finalTranscript: '',
     });
     return transcript;
   }

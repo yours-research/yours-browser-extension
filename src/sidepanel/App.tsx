@@ -29,7 +29,7 @@ import {
   TabContextList,
   ThreadHistoryList,
   TopNotch,
-  VoiceDictationPill,
+  VoiceSessionCard,
   formatCompactTokens,
   type CommandPaletteAction,
   type MemoryRecord as UiMemoryRecord,
@@ -165,6 +165,23 @@ declare global {
       setCompactionBudget: (maxContextTokens: number | null) => void;
       wipeMemory: () => Promise<void>;
       clearChat: () => Promise<void>;
+      injectRecoverableError: (msg: string | null, notice?: string | null) => void;
+      unloadModel: () => Promise<void>;
+      loadModel: () => Promise<void>;
+      voice: {
+        startMockSession: (opts?: {
+          level?: number;
+          interimTranscript?: string;
+          transcript?: string;
+        }) => void;
+        pushMockInput: (opts: {
+          level?: number;
+          interimTranscript?: string;
+          transcript?: string;
+        }) => void;
+        commitAndEnd: () => Promise<string>;
+        getSnapshot: () => VoiceStatusSnapshot;
+      };
     };
   }
 }
@@ -303,6 +320,11 @@ export function App() {
     'config' | 'spike' | 'bench' | 'shortcuts' | undefined
   >(undefined);
   const [labTabNonce, setLabTabNonce] = useState(0);
+  const [recoverableError, setRecoverableError] = useState<string | null>(null);
+  const [inlineNotice, setInlineNotice] = useState<{
+    message: string;
+    tone?: 'neutral' | 'info' | 'warning' | 'success';
+  } | null>(null);
   const [memoryRecords, setMemoryRecords] = useState<MemoryRecord[]>([]);
   const [memorySearch, setMemorySearch] = useState('');
   const [memoryTierFilter, setMemoryTierFilter] = useState<UiMemoryTier | 'all'>('all');
@@ -889,6 +911,8 @@ export function App() {
       if (!trimmed || chat.isGenerating) return;
 
       tabCtrl.cancelForSubmit();
+      setRecoverableError(null);
+      setInlineNotice(null);
       const composed = quotedSelection
         ? `> ${quotedSelection}\n\n${trimmed}`
         : trimmed;
@@ -1026,11 +1050,45 @@ export function App() {
         await Promise.all([refreshMemoryList(), chat.session.refreshProfileMemories()]);
       },
       clearChat: async () => {
+        setRecoverableError(null);
+        setInlineNotice(null);
         await Promise.all([
           chat.createThread({ systemPrompt: modeSystemPrompt }),
           client.resetContext(true),
         ]);
         setSources([]);
+      },
+      injectRecoverableError: (msg: string | null, notice?: string | null) => {
+        setRecoverableError(msg);
+        setInlineNotice(notice ? { message: notice, tone: 'warning' } : null);
+      },
+      unloadModel: async () => {
+        userUnloadedRef.current = true;
+        await client.unloadModel();
+      },
+      loadModel: async () => {
+        userUnloadedRef.current = false;
+        await client.loadModel({ modelId: selectedModelId });
+      },
+      voice: {
+        startMockSession: (opts?: {
+          level?: number;
+          interimTranscript?: string;
+          transcript?: string;
+        }) => voiceController.startMockSession(opts),
+        pushMockInput: (opts: {
+          level?: number;
+          interimTranscript?: string;
+          transcript?: string;
+        }) => voiceController.pushMockInput(opts),
+        commitAndEnd: async () => {
+          const text = await voiceController.stopDictation();
+          if (text) {
+            setComposerText((prev) => (prev ? `${prev} ${text}` : text));
+          }
+          return text;
+        },
+        getSnapshot: () => voiceController.getSnapshot(),
       },
     };
   }, [
@@ -1047,6 +1105,8 @@ export function App() {
     sources,
     activePage,
     handleSendText,
+    selectedModelId,
+    voiceController,
   ]);
 
   const handleToggleResearch = useCallback(async () => {
@@ -1808,16 +1868,6 @@ export function App() {
     showToast,
   ]);
 
-  const voiceBars: Array<'low' | 'mid' | 'high'> = useMemo(() => {
-    const lvl = voiceState.micLevel;
-    return [
-      lvl > 0.2 ? 'mid' : 'low',
-      lvl > 0.5 ? 'high' : lvl > 0.25 ? 'mid' : 'low',
-      lvl > 0.7 ? 'high' : lvl > 0.35 ? 'mid' : 'low',
-      lvl > 0.4 ? 'mid' : 'low',
-    ];
-  }, [voiceState.micLevel]);
-
   const composerTopSlot = useMemo(() => {
     if (!quotedSelection) return undefined;
     return (
@@ -2029,13 +2079,35 @@ export function App() {
         footer={
           <div className="ext-footer-stack">
             {voiceState.active ? (
-              <VoiceDictationPill
-                statusLabel={voiceState.partialTranscript || 'Listening locally...'}
-                bars={voiceBars}
-                onCancel={() => {
-                  void voiceController.stopDictation();
-                }}
-                onConfirm={() => {
+              <VoiceSessionCard
+                state={
+                  voiceState.speaking
+                    ? 'speaking'
+                    : voiceState.partialTranscript
+                      ? 'transcribing'
+                      : 'listening'
+                }
+                statusLabel={
+                  voiceState.muted
+                    ? 'Microphone muted'
+                    : voiceState.partialTranscript
+                      ? 'Transcribing locally...'
+                      : 'Listening locally'
+                }
+                transcript={voiceState.finalTranscript || undefined}
+                interimTranscript={voiceState.partialTranscript || undefined}
+                level={voiceState.micLevel}
+                muted={voiceState.muted}
+                bargeInEnabled={voiceState.bargeInEnabled}
+                onPushToTalk={() => voiceController.pulsePushToTalk()}
+                onToggleBargeIn={() => voiceController.toggleBargeIn()}
+                onToggleMute={() => voiceController.toggleMute()}
+                endLabel={
+                  voiceState.finalTranscript || voiceState.partialTranscript
+                    ? 'Commit & End'
+                    : 'End'
+                }
+                onEndSession={() => {
                   void voiceController.stopDictation().then((text) => {
                     if (text) {
                       setComposerText((prev) => (prev ? `${prev} ${text}` : text));
@@ -2047,6 +2119,12 @@ export function App() {
             <FloatingComposer
               value={composerText}
               onChange={(val) => {
+                if (composerText === '' && val === '/') {
+                  setCommandQuery('');
+                  setExpandedNotchId(null);
+                  setCommandPaletteOpen(true);
+                  return;
+                }
                 setComposerText(val);
                 chat.setComposerText(val);
               }}
@@ -2056,6 +2134,30 @@ export function App() {
               placeholder={composerPlaceholder}
               topSlot={composerTopSlot}
               leftSlot={composerLeftSlot}
+              onOpenCommands={() => {
+                setCommandQuery('');
+                setExpandedNotchId(null);
+                setCommandPaletteOpen((v) => !v);
+              }}
+              commandsLabel="Open command palette (/)"
+              contextUsageLabel={`${formatCompactTokens(engineSnapshot.telemetry.activeContextTokens)} / ${formatCompactTokens(engineSnapshot.telemetry.allocatedKvCapacity || engineSnapshot.config.wgslMaxContext)}`}
+              contextUsageTone={
+                (engineSnapshot.telemetry.allocatedKvCapacity ||
+                  engineSnapshot.config.wgslMaxContext) > 0 &&
+                engineSnapshot.telemetry.activeContextTokens /
+                  (engineSnapshot.telemetry.allocatedKvCapacity ||
+                    engineSnapshot.config.wgslMaxContext) >=
+                  0.95
+                  ? 'critical'
+                  : (engineSnapshot.telemetry.allocatedKvCapacity ||
+                        engineSnapshot.config.wgslMaxContext) > 0 &&
+                      engineSnapshot.telemetry.activeContextTokens /
+                        (engineSnapshot.telemetry.allocatedKvCapacity ||
+                          engineSnapshot.config.wgslMaxContext) >=
+                        0.8
+                    ? 'warning'
+                    : 'neutral'
+              }
               ariaLabel="Message Yours local assistant"
             />
           </div>
@@ -2072,9 +2174,56 @@ export function App() {
           pendingApproval={chat.pendingApproval}
           turnTelemetry={chat.telemetry}
           engineTelemetry={engineSnapshot.telemetry}
-          error={chat.error}
+          error={chat.error || recoverableError}
           starters={STARTER_PROMPTS}
           sources={sources}
+          isModelReady={
+            backendKind !== 'wgsl' ||
+            engineSnapshot.telemetry.status === 'ready' ||
+            engineSnapshot.telemetry.status === 'generating' ||
+            engineSnapshot.telemetry.status === 'benchmarking'
+          }
+          isModelLoading={
+            engineSnapshot.telemetry.status === 'downloading' ||
+            engineSnapshot.telemetry.status === 'compiling'
+          }
+          selectedModelLabel={
+            uiModels.find((m) => m.id === selectedModelId)?.label ?? selectedModelId
+          }
+          cacheSizeLabel={
+            uiModels.find((m) => m.id === selectedModelId)?.sizeLabel ?? 'OPFS Verified'
+          }
+          adapterLabel={engineSnapshot.hardwareProfile?.adapterName ?? 'WebGPU'}
+          lastCompaction={
+            chat.lastCompaction
+              ? {
+                  compacted:
+                    chat.lastCompaction.tokensAfter < chat.lastCompaction.tokensBefore ||
+                    chat.lastCompaction.foldedToolCount > 0 ||
+                    Boolean(chat.lastCompaction.rollingSummary),
+                  savedTokens: Math.max(
+                    0,
+                    chat.lastCompaction.tokensBefore - chat.lastCompaction.tokensAfter,
+                  ),
+                }
+              : null
+          }
+          inlineNotice={inlineNotice}
+          diagnosticsText={
+            engineSnapshot.logs
+              .slice(-6)
+              .map((l) => `[${l.level}:${l.source}] ${l.message}`)
+              .join('\n') || undefined
+          }
+          onInitializeModel={() => {
+            userUnloadedRef.current = false;
+            void client.loadModel({ modelId: selectedModelId });
+          }}
+          onSwitchModel={() => {
+            setRecoverableError(null);
+            setExpandedNotchId('models');
+          }}
+          onOpenLab={() => setExpandedNotchId('lab')}
           onSelectStarter={(item) => {
             if (item.prompt) {
               void handleSendText(item.prompt);
@@ -2108,7 +2257,13 @@ export function App() {
           onSelectChoice={(q, choiceId) => {
             void handleSendText(`Selected option "${choiceId}" for: ${q}`);
           }}
-          onRetry={() => void chat.regenerate()}
+          onRetry={() => {
+            setRecoverableError(null);
+            setInlineNotice(null);
+            if (chat.nodes.some((n) => n.message.role === 'user')) {
+              void chat.regenerate();
+            }
+          }}
         />
       </SidePanelShell>
     </div>

@@ -4,7 +4,17 @@ import type { RuntimeAdapter, RuntimeCapabilities } from '@yours/harness';
 import { StreamOutputParser } from '@yours/harness/engine';
 import { selectComputeTier } from '@yours/models/hardware';
 import { toPragmaToolBundle, toQwenToolSchemas } from '@yours/tools/schemas';
-import { CommandPalette, StreamingResponse, ThreadHistoryList } from '@yours/ui';
+import {
+  AudioLevelMeter,
+  CodeBlockCard,
+  CommandPalette,
+  ErrorRecoveryCard,
+  InlineNotice,
+  OnboardingCard,
+  StreamingResponse,
+  ThreadHistoryList,
+  VoiceSessionCard,
+} from '@yours/ui';
 import { VadEngine } from '@yours/voice/vad';
 import { describe, expect, it } from 'vitest';
 import {
@@ -346,6 +356,12 @@ describe('@yours/* Ecosystem Integrations & Strict MV3 CSP', () => {
     expect(typeof StreamingResponse).toBe('function');
     expect(typeof ThreadHistoryList).toBe('function');
     expect(typeof CommandPalette).toBe('function');
+    expect(typeof CodeBlockCard).toBe('function');
+    expect(typeof OnboardingCard).toBe('function');
+    expect(typeof ErrorRecoveryCard).toBe('function');
+    expect(typeof InlineNotice).toBe('function');
+    expect(typeof VoiceSessionCard).toBe('function');
+    expect(typeof AudioLevelMeter).toBe('function');
 
     const genUiSource = fs.readFileSync(
       path.join(ROOT_DIR, 'src', 'sidepanel', 'components', 'GenUiRenderer.tsx'),

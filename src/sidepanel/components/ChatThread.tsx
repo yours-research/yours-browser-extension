@@ -13,9 +13,11 @@ import {
   BranchPicker,
   CitationFootnoteList,
   EmptyPanelState,
-  ErrorRecoveryBanner,
+  ErrorRecoveryCard,
   InlineCitationPopover,
+  InlineNotice,
   MessageSkeleton,
+  OnboardingCard,
   PermissionCard,
   ReasoningTrace,
   SourcesDrawer,
@@ -23,6 +25,7 @@ import {
   UserMessageBubble,
   type CitationFootnoteItem,
   type InlineCitationSource,
+  type InlineNoticeTone,
   type PromptStarterItem,
   type SourceCitation,
   type ToolTraceStep,
@@ -44,6 +47,22 @@ export interface ChatThreadProps {
   error: string | null;
   starters: readonly PromptStarterItem[];
   sources: readonly SourceCitation[];
+  isModelReady?: boolean;
+  isModelLoading?: boolean;
+  selectedModelLabel?: string;
+  cacheSizeLabel?: string;
+  adapterLabel?: string;
+  lastCompaction?: { compacted: boolean; savedTokens: number } | null;
+  inlineNotice?: {
+    message: string;
+    tone?: InlineNoticeTone;
+    actionLabel?: string;
+    onAction?: () => void;
+  } | null;
+  diagnosticsText?: string;
+  onInitializeModel?: () => void;
+  onSwitchModel?: () => void;
+  onOpenLab?: () => void;
   onSelectStarter: (item: PromptStarterItem) => void;
   onEditAndBranch: (nodeId: string, newContent: string) => void;
   onRegenerate: (assistantNodeId?: string) => void;
@@ -146,6 +165,17 @@ export function ChatThread({
   error,
   starters,
   sources,
+  isModelReady = true,
+  isModelLoading = false,
+  selectedModelLabel,
+  cacheSizeLabel,
+  adapterLabel,
+  lastCompaction,
+  inlineNotice,
+  diagnosticsText,
+  onInitializeModel,
+  onSwitchModel,
+  onOpenLab,
   onSelectStarter,
   onEditAndBranch,
   onRegenerate,
@@ -176,31 +206,85 @@ export function ChatThread({
   if (isEmpty) {
     return (
       <div className="ext-stream">
-        <EmptyPanelState
-          title="Ask locally on this page."
-          subtitle="Private WebGPU inference stays inside your browser."
-          starters={starters.map((s) => ({
-            id: s.id,
-            label: s.label,
-            icon: s.icon,
-            prompt: s.prompt,
-          }))}
-          onSelectStarter={(starter) => {
-            onSelectStarter({
-              id: starter.id,
-              label: starter.label,
-              icon: starter.icon,
-              prompt: starter.prompt,
-            });
-          }}
-          privacyLabel="On-device WebGPU · Zero telemetry"
-        />
+        {inlineNotice ? (
+          <InlineNotice
+            tone={inlineNotice.tone ?? 'info'}
+            compact
+            message={inlineNotice.message}
+            actionLabel={inlineNotice.actionLabel}
+            onAction={inlineNotice.onAction}
+          />
+        ) : null}
+        {!isModelReady && onInitializeModel ? (
+          <OnboardingCard
+            checkpointLabel={selectedModelLabel ?? 'Qwen3.5-4B (Q4F16)'}
+            cacheSizeLabel={cacheSizeLabel ?? 'OPFS Verified'}
+            adapterLabel={adapterLabel ?? 'WebGPU'}
+            adapterReady={Boolean(engineTelemetry.computeTier)}
+            loading={isModelLoading}
+            onInitialize={onInitializeModel}
+            secondaryLabel={onSwitchModel ? 'Switch model' : undefined}
+            onSecondaryAction={onSwitchModel}
+          />
+        ) : (
+          <EmptyPanelState
+            title="Ask locally on this page."
+            subtitle="Private WebGPU inference stays inside your browser."
+            starters={starters.map((s) => ({
+              id: s.id,
+              label: s.label,
+              icon: s.icon,
+              prompt: s.prompt,
+            }))}
+            onSelectStarter={(starter) => {
+              onSelectStarter({
+                id: starter.id,
+                label: starter.label,
+                icon: starter.icon,
+                prompt: starter.prompt,
+              });
+            }}
+            privacyLabel="On-device WebGPU · Zero telemetry"
+          />
+        )}
+        {error ? (
+          <ErrorRecoveryCard
+            title="Runtime Initialization Notice"
+            diagnosis={error}
+            badgeLabel={engineTelemetry.status === 'error' ? 'WebGPU Runtime' : 'Recoverable'}
+            diagnostics={diagnosticsText}
+            retryLabel="Retry"
+            switchModelLabel={onSwitchModel ? 'Switch model' : undefined}
+            onRetry={onRetry}
+            onSwitchModel={onSwitchModel}
+            onCopyDiagnostics={onCopyText}
+          />
+        ) : null}
       </div>
     );
   }
 
   return (
     <div className="ext-stream">
+      {inlineNotice ? (
+        <InlineNotice
+          tone={inlineNotice.tone ?? 'info'}
+          compact
+          message={inlineNotice.message}
+          actionLabel={inlineNotice.actionLabel}
+          onAction={inlineNotice.onAction}
+        />
+      ) : null}
+      {lastCompaction?.compacted && lastCompaction.savedTokens > 0 ? (
+        <InlineNotice
+          tone="info"
+          compact
+          icon="sliders"
+          message={`Compacted context to preserve local KV headroom (${lastCompaction.savedTokens} tokens saved).`}
+          actionLabel={onOpenLab ? 'KV Budget' : undefined}
+          onAction={onOpenLab}
+        />
+      ) : null}
       {(() => {
         const rendered: React.ReactNode[] = [];
         for (let i = 0; i < visibleNodes.length; i += 1) {
@@ -486,11 +570,16 @@ export function ChatThread({
       ) : null}
 
       {error ? (
-        <ErrorRecoveryBanner
+        <ErrorRecoveryCard
           title="Generation Interrupted"
-          description={error}
+          diagnosis={error}
+          badgeLabel={engineTelemetry.status === 'error' ? 'WebGPU Runtime' : 'Recoverable'}
+          diagnostics={diagnosticsText}
           retryLabel="Retry"
+          switchModelLabel={onSwitchModel ? 'Switch model' : undefined}
           onRetry={onRetry}
+          onSwitchModel={onSwitchModel}
+          onCopyDiagnostics={onCopyText}
         />
       ) : null}
     </div>

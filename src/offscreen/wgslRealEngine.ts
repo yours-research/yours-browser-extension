@@ -227,6 +227,7 @@ export class WgslQwen35Engine {
   private device: GpuDeviceLike | null = null;
   private wasm: WasmEngineExports | null = null;
   private allocatedBuffers: GpuBufferLike[] = [];
+  private prefillUniformScratch: ArrayBuffer | null = null;
 
   private arch: ModelArchConfig = resolveModelArch();
   private computeTier: WgslComputeTier = 'tier1-f16-subgroups';
@@ -1995,10 +1996,13 @@ export class WgslQwen35Engine {
       pacingOptions?.calibratedPolicy ??
       calibratePacingForHardware(pacingMode, this.displayHz, this.emaDecodeStepMs);
     const fastPrefillBatch = pacingMode !== 'smooth-ui' && this.emaDecodeStepMs < 22;
-    const layersPerSlice = pacingMode === 'max-speed' ? this.arch.numLayers : fastPrefillBatch ? 16 : 4;
+    const layersPerSlice = pacingMode === 'max-speed' || fastPrefillBatch ? this.arch.numLayers : 4;
     device.queue.writeBuffer(this.tokenIdsBuf, 0, new Uint32Array(chunkTokens));
 
-    const uniformTable = new ArrayBuffer(UNIFORM_MAX_SLOTS * 256);
+    if (!this.prefillUniformScratch) {
+      this.prefillUniformScratch = new ArrayBuffer(UNIFORM_MAX_SLOTS * 256);
+    }
+    const uniformTable = this.prefillUniformScratch;
     const u32View = new Uint32Array(uniformTable);
     const f32View = new Float32Array(uniformTable);
     const steps: DispatchStep[] = [];
@@ -2204,7 +2208,7 @@ export class WgslQwen35Engine {
 
     const burstState = pacingOptions?.burstState ?? { gpuBurstMs: 0 };
 
-    device.queue.writeBuffer(this.prefillUniformBuf, 0, uniformTable);
+    device.queue.writeBuffer(this.prefillUniformBuf, 0, uniformTable, 0, nextSlot * 256);
     let stepCursor = 0;
     for (let sIdx = 0; sIdx < layerSplitEnds.length; sIdx++) {
       if (pacingOptions?.abortSignal?.aborted) {
