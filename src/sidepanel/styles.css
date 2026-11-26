@@ -221,21 +221,6 @@ body,
   gap: 4px;
 }
 
-.ext-toast-anchor {
-  position: fixed;
-  left: 12px;
-  right: 12px;
-  bottom: 90px;
-  z-index: 45;
-  display: flex;
-  justify-content: center;
-  pointer-events: none;
-}
-
-.ext-toast-anchor > * {
-  pointer-events: auto;
-}
-
 /* Markdown & GenUI content typography inside AssistantMessage */
 .ext-md-root {
   display: flex;

@@ -11,18 +11,21 @@ import {
   ActionBar,
   AssistantMessage,
   BranchPicker,
+  CitationFootnoteList,
   EmptyPanelState,
   ErrorRecoveryBanner,
   InlineCitationPopover,
   MessageSkeleton,
-  PermissionApprovalCard,
+  PermissionCard,
   ReasoningTrace,
   SourcesDrawer,
-  ToolStepCard,
+  ToolTraceList,
   UserMessageBubble,
+  type CitationFootnoteItem,
   type InlineCitationSource,
   type PromptStarterItem,
   type SourceCitation,
+  type ToolTraceStep,
 } from '@yours/ui';
 import type { TelemetryState } from '../../shared/protocol.ts';
 import { GenUiRenderer } from './GenUiRenderer.tsx';
@@ -107,6 +110,28 @@ function toInlineCitationSource(src: SourceCitation, idx: number): InlineCitatio
   };
 }
 
+function getToolIcon(toolName?: string): ToolTraceStep['icon'] {
+  if (!toolName) return 'sliders';
+  if (toolName.includes('search') || toolName.includes('fetch')) return 'globe';
+  if (toolName.includes('tab')) return 'page-scan';
+  if (toolName.includes('memory')) return 'bookmark';
+  if (toolName.includes('sandbox') || toolName.includes('calc')) return 'compare';
+  return 'sliders';
+}
+
+function toCitationFootnoteItem(src: SourceCitation, idx: number): CitationFootnoteItem {
+  return {
+    id: src.id,
+    index: idx + 1,
+    title: src.title,
+    domain: safeDomainFromUrl(src.url),
+    excerpt: src.subtitle || src.title,
+    url: src.url,
+    highlight: idx % 2 === 0 ? 'mono' : 'warm',
+    source: toInlineCitationSource(src, idx),
+  };
+}
+
 export function ChatThread({
   nodes,
   branchSiblings,
@@ -176,29 +201,125 @@ export function ChatThread({
 
   return (
     <div className="ext-stream">
-      {visibleNodes.map((node) => {
-        const msg = node.message;
-        const siblingInfo = branchSiblings[node.id];
+      {(() => {
+        const rendered: React.ReactNode[] = [];
+        for (let i = 0; i < visibleNodes.length; i += 1) {
+          const node = visibleNodes[i]!;
+          const msg = node.message;
+          const siblingInfo = branchSiblings[node.id];
 
-        if (msg.role === 'user') {
-          const isEditing = editingNodeId === node.id;
-          return (
-            <div key={node.id} className="ext-tool-group">
-              <UserMessageBubble
-                content={msg.content}
-                contextLabel={getContextTagFromMessage(msg)}
-                isEditing={isEditing}
-                onStartEdit={() => setEditingNodeId(node.id)}
-                onCancelEdit={() => setEditingNodeId(null)}
-                onSaveEdit={(next) => {
-                  setEditingNodeId(null);
-                  if (next.trim() && next !== msg.content) {
-                    onEditAndBranch(node.id, next);
+          if (msg.role === 'user') {
+            const isEditing = editingNodeId === node.id;
+            rendered.push(
+              <div key={node.id} className="ext-tool-group">
+                <UserMessageBubble
+                  content={msg.content}
+                  contextLabel={getContextTagFromMessage(msg)}
+                  isEditing={isEditing}
+                  onStartEdit={() => setEditingNodeId(node.id)}
+                  onCancelEdit={() => setEditingNodeId(null)}
+                  onSaveEdit={(next) => {
+                    setEditingNodeId(null);
+                    if (next.trim() && next !== msg.content) {
+                      onEditAndBranch(node.id, next);
+                    }
+                  }}
+                  onCopy={() => onCopyText(msg.content)}
+                />
+                {siblingInfo && siblingInfo.total > 1 ? (
+                  <BranchPicker
+                    currentIndex={siblingInfo.activeIndex}
+                    total={siblingInfo.total}
+                    onPrevious={() => {
+                      const prevIdx =
+                        (siblingInfo.activeIndex - 1 + siblingInfo.total) % siblingInfo.total;
+                      const target = siblingInfo.siblingIds[prevIdx];
+                      if (target) onSwitchBranch(target);
+                    }}
+                    onNext={() => {
+                      const nextIdx = (siblingInfo.activeIndex + 1) % siblingInfo.total;
+                      const target = siblingInfo.siblingIds[nextIdx];
+                      if (target) onSwitchBranch(target);
+                    }}
+                  />
+                ) : null}
+              </div>,
+            );
+            continue;
+          }
+
+          if (msg.role === 'tool') {
+            const groupSteps: ToolTraceStep[] = [];
+            let j = i;
+            while (j < visibleNodes.length) {
+              const cand = visibleNodes[j]!;
+              if (cand.message.role === 'tool') {
+                const tm = cand.message;
+                const isBlocked = /^blocked|denied/i.test(tm.content);
+                const isErr = !isBlocked && /^error\b|failed/i.test(tm.content);
+                const prevCall = j > 0 ? visibleNodes[j - 1]?.message : undefined;
+                groupSteps.push({
+                  id: cand.id,
+                  tool: tm.toolName ?? 'tool',
+                  icon: getToolIcon(tm.toolName),
+                  status: isBlocked ? 'blocked' : isErr ? 'error' : 'done',
+                  input:
+                    prevCall?.role === 'assistant' && prevCall.toolArgs
+                      ? JSON.stringify(prevCall.toolArgs)
+                      : undefined,
+                  output: tm.content.slice(0, 320),
+                });
+                j += 1;
+              } else if (
+                cand.message.role === 'assistant' &&
+                cand.message.toolName &&
+                !extractReasoningAndBody(cand.message.content).body
+              ) {
+                j += 1;
+              } else {
+                break;
+              }
+            }
+            rendered.push(
+              <ToolTraceList
+                key={`trace-${node.id}`}
+                title="Local Tool Trace"
+                summary={`${groupSteps.length} step${groupSteps.length === 1 ? '' : 's'}`}
+                steps={groupSteps}
+                defaultCollapsed={false}
+              />,
+            );
+            i = j - 1;
+            continue;
+          }
+
+          if (msg.role === 'assistant') {
+            const { reasoning: parsedReasoning, body } = extractReasoningAndBody(msg.content);
+            const persistedReasoning =
+              typeof msg.reasoning === 'string' ? msg.reasoning.trim() : '';
+            const combinedReasoning = persistedReasoning || parsedReasoning;
+
+            if (msg.toolName && !body) {
+              if (combinedReasoning) {
+                rendered.push(
+                  <ReasoningTrace key={node.id} status="done" content={combinedReasoning} />,
+                );
+              }
+              continue;
+            }
+
+            const isLastAssistant = node.id === lastAssistantNodeId;
+            const speedMetrics =
+              isLastAssistant && (turnTelemetry || engineTelemetry.tokensPerSec !== null)
+                ? {
+                    tokensPerSec:
+                      turnTelemetry?.tokensPerSec ?? engineTelemetry.tokensPerSec ?? undefined,
+                    ttftMs: turnTelemetry?.ttftMs ?? engineTelemetry.ttftMs ?? undefined,
                   }
-                }}
-                onCopy={() => onCopyText(msg.content)}
-              />
-              {siblingInfo && siblingInfo.total > 1 ? (
+                : undefined;
+
+            const picker =
+              siblingInfo && siblingInfo.total > 1 ? (
                 <BranchPicker
                   currentIndex={siblingInfo.activeIndex}
                   total={siblingInfo.total}
@@ -214,129 +335,86 @@ export function ChatThread({
                     if (target) onSwitchBranch(target);
                   }}
                 />
-              ) : null}
-            </div>
-          );
-        }
+              ) : undefined;
 
-        if (msg.role === 'tool') {
-          const isErr = /^error\b|failed|blocked/i.test(msg.content);
-          return (
-            <ToolStepCard
-              key={node.id}
-              status={isErr ? 'error' : 'done'}
-              title={msg.toolName ?? 'Tool step'}
-              summary={msg.content.slice(0, 96)}
-              details={msg.content}
-            />
-          );
-        }
-
-        if (msg.role === 'assistant') {
-          const { reasoning: parsedReasoning, body } = extractReasoningAndBody(msg.content);
-          const persistedReasoning =
-            typeof msg.reasoning === 'string' ? msg.reasoning.trim() : '';
-          const combinedReasoning = persistedReasoning || parsedReasoning;
-
-          if (msg.toolName && !body) {
-            return combinedReasoning ? (
-              <ReasoningTrace key={node.id} status="done" content={combinedReasoning} />
-            ) : null;
-          }
-
-          const isLastAssistant = node.id === lastAssistantNodeId;
-          const speedMetrics =
-            isLastAssistant && (turnTelemetry || engineTelemetry.tokensPerSec !== null)
-              ? {
-                  tokensPerSec:
-                    turnTelemetry?.tokensPerSec ?? engineTelemetry.tokensPerSec ?? undefined,
-                  ttftMs: turnTelemetry?.ttftMs ?? engineTelemetry.ttftMs ?? undefined,
+            rendered.push(
+              <AssistantMessage
+                key={node.id}
+                footer={
+                  <ActionBar
+                    onCopy={() => onCopyText(body)}
+                    onRegenerate={() => onRegenerate(node.id)}
+                    onSpeak={() => onSpeakText(body)}
+                    onSave={() => onSaveMemory(body)}
+                    onThumbUp={() =>
+                      setFeedbackByNode((prev) => ({
+                        ...prev,
+                        [node.id]: prev[node.id] === 'up' ? null : 'up',
+                      }))
+                    }
+                    onThumbDown={() =>
+                      setFeedbackByNode((prev) => ({
+                        ...prev,
+                        [node.id]: prev[node.id] === 'down' ? null : 'down',
+                      }))
+                    }
+                    feedback={feedbackByNode[node.id] ?? null}
+                    speedMetrics={speedMetrics}
+                    rightSlot={picker}
+                  />
                 }
-              : undefined;
-
-          const picker =
-            siblingInfo && siblingInfo.total > 1 ? (
-              <BranchPicker
-                currentIndex={siblingInfo.activeIndex}
-                total={siblingInfo.total}
-                onPrevious={() => {
-                  const prevIdx =
-                    (siblingInfo.activeIndex - 1 + siblingInfo.total) % siblingInfo.total;
-                  const target = siblingInfo.siblingIds[prevIdx];
-                  if (target) onSwitchBranch(target);
-                }}
-                onNext={() => {
-                  const nextIdx = (siblingInfo.activeIndex + 1) % siblingInfo.total;
-                  const target = siblingInfo.siblingIds[nextIdx];
-                  if (target) onSwitchBranch(target);
-                }}
-              />
-            ) : undefined;
-
-          return (
-            <AssistantMessage
-              key={node.id}
-              footer={
-                <ActionBar
-                  onCopy={() => onCopyText(body)}
-                  onRegenerate={() => onRegenerate(node.id)}
-                  onSpeak={() => onSpeakText(body)}
-                  onSave={() => onSaveMemory(body)}
-                  onThumbUp={() =>
-                    setFeedbackByNode((prev) => ({
-                      ...prev,
-                      [node.id]: prev[node.id] === 'up' ? null : 'up',
-                    }))
-                  }
-                  onThumbDown={() =>
-                    setFeedbackByNode((prev) => ({
-                      ...prev,
-                      [node.id]: prev[node.id] === 'down' ? null : 'down',
-                    }))
-                  }
-                  feedback={feedbackByNode[node.id] ?? null}
-                  speedMetrics={speedMetrics}
-                  rightSlot={picker}
+              >
+                {combinedReasoning ? <ReasoningTrace status="done" content={combinedReasoning} /> : null}
+                <GenUiRenderer
+                  content={body}
+                  status="done"
+                  onCopyText={onCopyText}
+                  onSaveText={onSaveMemory}
+                  onSelectChoice={onSelectChoice}
                 />
-              }
-            >
-              {combinedReasoning ? <ReasoningTrace status="done" content={combinedReasoning} /> : null}
-              <GenUiRenderer
-                content={body}
-                status="done"
-                onCopyText={onCopyText}
-                onSaveText={onSaveMemory}
-                onSelectChoice={onSelectChoice}
-              />
-            </AssistantMessage>
-          );
+              </AssistantMessage>,
+            );
+          }
         }
-
-        return null;
-      })}
+        return rendered;
+      })()}
 
       {pendingApproval ? (
-        <PermissionApprovalCard
-          title={`Approve ${pendingApproval.toolName}`}
-          description={pendingApproval.decision.reason}
-          ruleBadge={pendingApproval.decision.triggeredRule ?? 'IDPI Guard'}
-          approveLabel="Approve"
+        <PermissionCard
+          title={`Allow ${pendingApproval.toolName}?`}
+          domain={
+            safeDomainFromUrl(
+              typeof pendingApproval.arguments?.url === 'string'
+                ? pendingApproval.arguments.url
+                : undefined,
+            ) ?? 'local-extension'
+          }
+          scope={`${pendingApproval.toolName}(${JSON.stringify(pendingApproval.arguments ?? {}).slice(0, 68)})`}
+          reason={pendingApproval.decision.reason}
+          ruleLabel={pendingApproval.decision.triggeredRule ?? 'IDPI Guard'}
+          allowOnceLabel="Allow once"
           denyLabel="Deny"
-          onApprove={onApproveTool}
+          onAllowOnce={onApproveTool}
           onDeny={onDenyTool}
         />
       ) : null}
 
       {isGenerating && (streamingReasoning || streamingText || pendingToolCalls.length > 0) ? (
         <div className="ext-tool-group">
-          {pendingToolCalls.map((tc) => (
-            <ToolStepCard
-              key={tc.id}
-              status="running"
-              title={`Running ${tc.name}`}
-              summary="Executing local MV3 tool..."
+          {pendingToolCalls.length > 0 ? (
+            <ToolTraceList
+              title="Active Tool Call"
+              summary={`${pendingToolCalls.length} running`}
+              defaultCollapsed={false}
+              steps={pendingToolCalls.map((tc) => ({
+                id: tc.id,
+                tool: tc.name,
+                icon: getToolIcon(tc.name),
+                status: 'running',
+                label: 'Executing local MV3 tool',
+              }))}
             />
-          ))}
+          ) : null}
           {streamingReasoning ? (
             <ReasoningTrace
               status={streamingText ? 'done' : 'thinking'}
@@ -389,6 +467,21 @@ export function ChatThread({
             ))}
           </div>
           <SourcesDrawer sources={sources} />
+          <CitationFootnoteList
+            title="Verified Citations"
+            citations={sources.slice(0, 6).map((src, idx) => toCitationFootnoteItem(src, idx))}
+            onShowOnPage={(cit) => {
+              if (
+                cit.url &&
+                /^https?:\/\//i.test(cit.url) &&
+                typeof chrome !== 'undefined' &&
+                chrome.tabs?.create
+              ) {
+                void chrome.tabs.create({ url: cit.url });
+              }
+            }}
+            onCopyQuote={(cit) => onCopyText(`${cit.title}: ${cit.excerpt}`)}
+          />
         </div>
       ) : null}
 

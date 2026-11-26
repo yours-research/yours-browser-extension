@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
+  ContextBudgetMeter,
   DataTableCard,
   HardwareStatusStrip,
   ShortcutSheet,
+  formatCompactTokens,
   type DataTableColumn,
   type DataTableRow,
   type ShortcutGroup,
@@ -45,6 +47,8 @@ interface DiagnosticsDrawerProps {
   onResetContext: () => void;
   onRunBenchmarkSuite: (contextLengths: number[], decodeTokens: number) => void;
   onRunNiah: (targetTokens: number, depthRatio: number) => void;
+  requestedTab?: LabTab;
+  requestedTabNonce?: number;
 }
 
 type LabTab = 'config' | 'spike' | 'bench' | 'shortcuts';
@@ -100,8 +104,15 @@ export function DiagnosticsDrawer({
   onResetContext,
   onRunBenchmarkSuite,
   onRunNiah,
+  requestedTab,
+  requestedTabNonce,
 }: DiagnosticsDrawerProps) {
-  const [tab, setTab] = useState<LabTab>('config');
+  const [tab, setTab] = useState<LabTab>(requestedTab ?? 'config');
+  useEffect(() => {
+    if (requestedTab) {
+      setTab(requestedTab);
+    }
+  }, [requestedTab, requestedTabNonce]);
   const [niahTarget, setNiahTarget] = useState(32768);
   const [niahDepth, setNiahDepth] = useState(0.5);
 
@@ -143,6 +154,24 @@ export function DiagnosticsDrawer({
 
       {tab === 'config' && (
         <div className="lab-body">
+          <ContextBudgetMeter
+            title="Live KV Context Budget"
+            usedTokens={telemetry.activeContextTokens}
+            maxTokens={telemetry.allocatedKvCapacity || config.wgslMaxContext}
+            summaryLabel={`${formatCompactTokens(telemetry.activeContextTokens)} / ${formatCompactTokens(telemetry.allocatedKvCapacity || config.wgslMaxContext)} tok`}
+            segments={[
+              {
+                id: 'kv-used',
+                label: 'Active KV tokens',
+                tokensLabel: `${telemetry.activeContextTokens.toLocaleString()} tok`,
+              },
+              {
+                id: 'kv-mb',
+                label: 'KV + DeltaNet VRAM',
+                tokensLabel: `${(telemetry.kvCacheMb + telemetry.deltaNetStateMb).toFixed(0)} MB`,
+              },
+            ]}
+          />
           <HardwareStatusStrip
             tierLabel={
               telemetry.computeTier ??

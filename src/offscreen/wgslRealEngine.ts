@@ -1990,6 +1990,12 @@ export class WgslQwen35Engine {
     }
 
     const startPos = this.seqPos;
+    const pacingMode = pacingOptions?.pacingMode ?? 'balanced';
+    const calibratedPolicy =
+      pacingOptions?.calibratedPolicy ??
+      calibratePacingForHardware(pacingMode, this.displayHz, this.emaDecodeStepMs);
+    const fastPrefillBatch = pacingMode !== 'smooth-ui' && this.emaDecodeStepMs < 22;
+    const layersPerSlice = pacingMode === 'max-speed' ? this.arch.numLayers : fastPrefillBatch ? 16 : 4;
     device.queue.writeBuffer(this.tokenIdsBuf, 0, new Uint32Array(chunkTokens));
 
     const uniformTable = new ArrayBuffer(UNIFORM_MAX_SLOTS * 256);
@@ -2169,7 +2175,7 @@ export class WgslQwen35Engine {
         push(this.swigluPipe, this.pBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
         push(this.gemmPipe, bgAttnToHidden, [M, H, I, wDown, 0, 0, 1, 0], Math.ceil(H / 64), mTiles);
       }
-      if (l % 4 === 3 || l === L - 1) {
+      if ((l + 1) % layersPerSlice === 0 || l === L - 1) {
         layerSplitEnds.push(steps.length);
       }
     }
@@ -2196,10 +2202,6 @@ export class WgslQwen35Engine {
       }
     }
 
-    const pacingMode = pacingOptions?.pacingMode ?? 'balanced';
-    const calibratedPolicy =
-      pacingOptions?.calibratedPolicy ??
-      calibratePacingForHardware(pacingMode, this.displayHz, this.emaDecodeStepMs);
     const burstState = pacingOptions?.burstState ?? { gpuBurstMs: 0 };
 
     device.queue.writeBuffer(this.prefillUniformBuf, 0, uniformTable);

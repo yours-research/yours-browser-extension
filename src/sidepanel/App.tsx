@@ -7,15 +7,17 @@ import { IndexedDbStore, InMemoryStore, type HarnessStore } from '@yours/harness
 import { CANONICAL_TOOL_DEFINITIONS } from '@yours/tools/schemas';
 import type { FetchedSourceResult } from '@yours/tools';
 import {
+  CommandPalette,
+  ContextBudgetMeter,
   FloatingComposer,
   FloatingComposerProps,
   GlobeIcon,
   HardwareStatusStrip,
-  HookSidebarList,
   LocalVaultExportCard,
   MemoryInspectorList,
   MicIcon,
   ModelDownloadGate,
+  ModelRosterList,
   NotchDrawerSearch,
   PageIcon,
   QuotedContextBanner,
@@ -24,16 +26,22 @@ import {
   SidePanelShell,
   SparkTrendIcon,
   StatusToast,
+  TabContextList,
+  ThreadHistoryList,
   TopNotch,
   VoiceDictationPill,
-  type HookSidebarItem,
+  formatCompactTokens,
+  type CommandPaletteAction,
   type MemoryRecord as UiMemoryRecord,
   type MemoryTier as UiMemoryTier,
   type ModelCatalogChoice as UiModelChoice,
   type ModelDownloadProgress as UiDownloadProgress,
+  type ModelRosterItem,
   type PromptStarterItem,
   type SourceCitation,
   type StatusBadgeTone,
+  type TabContextItem,
+  type ThreadHistoryItem,
   type TopNotchItem,
 } from '@yours/ui';
 import {
@@ -273,8 +281,28 @@ export function App() {
   });
   const [chromeAiAvailable, setChromeAiAvailable] = useState(false);
 
-  const [threads, setThreads] = useState<HookSidebarItem[]>([]);
+  const [threads, setThreads] = useState<ThreadHistoryItem[]>([]);
+  const [pinnedThreadIds, setPinnedThreadIds] = useState<Set<string>>(() => {
+    try {
+      const saved = window.localStorage.getItem('yours-pinned-threads');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return new Set(parsed.filter((v): v is string => typeof v === 'string'));
+        }
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+    return new Set();
+  });
   const [threadSearch, setThreadSearch] = useState('');
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState('');
+  const [labRequestedTab, setLabRequestedTab] = useState<
+    'config' | 'spike' | 'bench' | 'shortcuts' | undefined
+  >(undefined);
+  const [labTabNonce, setLabTabNonce] = useState(0);
   const [memoryRecords, setMemoryRecords] = useState<MemoryRecord[]>([]);
   const [memorySearch, setMemorySearch] = useState('');
   const [memoryTierFilter, setMemoryTierFilter] = useState<UiMemoryTier | 'all'>('all');
@@ -775,27 +803,62 @@ export function App() {
     };
   }, [tabCtrl]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        'yours-pinned-threads',
+        JSON.stringify(Array.from(pinnedThreadIds)),
+      );
+    } catch {
+      // Ignore storage access errors
+    }
+  }, [pinnedThreadIds]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setCommandPaletteOpen((prev) => {
+          const next = !prev;
+          if (next) {
+            setCommandQuery('');
+            setExpandedNotchId(null);
+          }
+          return next;
+        });
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   // Sync threads list when History drawer opens or active thread updates
   const refreshThreadsList = useCallback(async () => {
     try {
       const list = await (threadSearch.trim()
         ? chat.searchThreads(threadSearch.trim(), { limit: 30 }).then((hits) => hits.map((h) => h.thread))
         : chat.listThreads({ limit: 30 }));
-      setThreads(
-        list.map((t) => ({
+      const mapped: ThreadHistoryItem[] = list.map((t) => {
+        const isPinned = pinnedThreadIds.has(t.id);
+        const isLive = t.id === chat.thread?.id && chat.isGenerating;
+        return {
           id: t.id,
           title: t.title || 'Untitled Thread',
-          meta: new Date(t.updatedAt).toLocaleTimeString([], {
+          groupLabel: isPinned ? 'Pinned' : formatMemoryGroupLabel(t.updatedAt),
+          timestamp: new Date(t.updatedAt).toLocaleTimeString([], {
             hour: '2-digit',
             minute: '2-digit',
           }),
-          hasLiveDot: t.id === chat.thread?.id && chat.isGenerating,
-        })),
-      );
+          pinned: isPinned,
+          badge: isLive ? 'Live' : undefined,
+        };
+      });
+      mapped.sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
+      setThreads(mapped);
     } catch {
       setThreads([]);
     }
-  }, [chat, threadSearch]);
+  }, [chat, threadSearch, pinnedThreadIds]);
 
   const refreshMemoryList = useCallback(async () => {
     try {
@@ -1114,6 +1177,65 @@ export function App() {
     [engineSnapshot.telemetry.status, theme],
   );
 
+  const uiRosterModels: ModelRosterItem[] = useMemo(() => {
+    if (engineSnapshot.catalogModels.length > 0) {
+      return engineSnapshot.catalogModels.map((m) => ({
+        id: m.id,
+        name: m.label,
+        quantLabel: `${m.paramsB}B`,
+        sizeLabel: `${m.estimatedSizeGb} GB`,
+        vramLabel: `${(m.contextLength / 1024).toFixed(0)}k ctx`,
+        state:
+          m.id === selectedModelId
+            ? 'active'
+            : m.cachedInOpfs || (BUNDLED_MODEL_IDS as readonly string[]).includes(m.id)
+              ? 'cached'
+              : 'download',
+      }));
+    }
+    return MODEL_PRESETS.map((preset) => {
+      const cached = (BUNDLED_MODEL_IDS as readonly string[]).includes(preset.id);
+      return {
+        id: preset.id,
+        name: preset.label,
+        quantLabel: preset.defaultDtype.toUpperCase(),
+        sizeLabel: `${preset.estimatedWeightGB[preset.defaultDtype]} GB`,
+        state: preset.id === selectedModelId ? 'active' : cached ? 'cached' : 'download',
+      };
+    });
+  }, [engineSnapshot.catalogModels, selectedModelId]);
+
+  const tabContextItems: TabContextItem[] = useMemo(() => {
+    const items: TabContextItem[] = [];
+    if (activePage && activePage.content.trim().length > 0) {
+      let domain = 'active-tab';
+      try {
+        domain = new URL(activePage.url).hostname || domain;
+      } catch {
+        domain = activePage.url || domain;
+      }
+      items.push({
+        id: 'active-tab',
+        domain,
+        title: activePage.title || activePage.url,
+        tokenLabel: `${formatCompactTokens(Math.max(1, Math.round(activePage.content.length / 4)))} tok`,
+        kind: 'tab',
+        muted: !pageEnabled,
+      });
+    }
+    if (quotedSelection && quotedSelection.trim().length > 0) {
+      items.push({
+        id: 'quoted-snippet',
+        domain: 'selection',
+        title: quotedSelection.trim(),
+        tokenLabel: `${formatCompactTokens(Math.max(1, Math.round(quotedSelection.length / 4)))} tok`,
+        kind: 'snippet',
+        muted: false,
+      });
+    }
+    return items;
+  }, [activePage, pageEnabled, quotedSelection]);
+
   const drawerContent = useMemo(() => {
     if (expandedNotchId === 'history') {
       return (
@@ -1124,16 +1246,34 @@ export function App() {
             placeholder="Filter threads..."
             count={threads.length}
           />
-          <HookSidebarList
+          <ThreadHistoryList
             items={threads}
             activeId={chat.thread?.id}
-            label="Threads"
-            dashed
             onSelect={(id) => {
               void chat.loadThread(id);
               setExpandedNotchId(null);
             }}
-            emptyText="No threads yet"
+            onTogglePin={(id) => {
+              setPinnedThreadIds((prev) => {
+                const next = new Set(prev);
+                const wasPinned = next.has(id);
+                if (wasPinned) next.delete(id);
+                else next.add(id);
+                showToast(wasPinned ? 'Thread unpinned' : 'Thread pinned');
+                return next;
+              });
+            }}
+            onDelete={(id) => {
+              void harnessStore.deleteThread(id).then(() => {
+                if (chat.thread?.id === id) {
+                  void chat.createThread({ systemPrompt: modeSystemPrompt });
+                }
+                void refreshThreadsList();
+                showToast('Thread deleted');
+              });
+            }}
+            emptyTitle="No threads yet"
+            emptySubtitle="Start a conversation or ask about the active tab."
           />
           <div className="ext-drawer-actions">
             <button
@@ -1284,6 +1424,51 @@ export function App() {
               onCheckedChange={(next) => client.updateConfig({ enableSpeculative: next })}
             />
           </SettingsSection>
+
+          <ContextBudgetMeter
+            title="Live KV Context"
+            usedTokens={engineSnapshot.telemetry.activeContextTokens}
+            maxTokens={
+              engineSnapshot.telemetry.allocatedKvCapacity ||
+              engineSnapshot.config.wgslMaxContext
+            }
+          />
+
+          <div className="ext-drawer-section">
+            <div className="ext-drawer-heading">
+              <span>Attached Tab Context</span>
+              <span className="ext-kv-val">{tabContextItems.length}</span>
+            </div>
+            <TabContextList
+              items={tabContextItems}
+              onToggleMute={(id) => {
+                if (id === 'active-tab') {
+                  setPageEnabled((v) => !v);
+                }
+              }}
+              onDetach={(id) => {
+                if (id === 'active-tab') {
+                  setPageEnabled(false);
+                  setActivePage(null);
+                } else if (id === 'quoted-snippet') {
+                  setQuotedSelection(null);
+                }
+              }}
+              emptyLabel="No active tab or selection attached."
+            />
+          </div>
+
+          <ModelRosterList
+            models={uiRosterModels}
+            selectedId={selectedModelId}
+            label="Local model checkpoints"
+            onSelectModel={handleSelectModel}
+            onDownloadModel={(modelId) => {
+              setSelectedModelId(modelId);
+              client.updateConfig({ modelId });
+              client.downloadVerifiedModel(modelId);
+            }}
+          />
 
           <ModelDownloadGate
             title="Local Weights & Hardware Fit"
@@ -1557,6 +1742,8 @@ export function App() {
             niahProgress={engineSnapshot.niahProgress}
             lastNiah={engineSnapshot.lastNiah}
             logs={engineSnapshot.logs}
+            requestedTab={labRequestedTab}
+            requestedTabNonce={labTabNonce}
             onUpdateConfig={(patch) => void client.updateConfig(patch)}
             onProbeWebGpu={() => void client.send({ type: 'PROBE_WEBGPU' })}
             onCheckOpfs={() => void client.send({ type: 'CHECK_OPFS' })}
@@ -1588,15 +1775,20 @@ export function App() {
     threadSearch,
     harnessStore,
     refreshThreadsList,
+    modeSystemPrompt,
     backendKind,
     chromeAiAvailable,
     openAiConfig,
     uiModels,
+    uiRosterModels,
+    tabContextItems,
     selectedModelId,
     handleSelectModel,
     hardwareLabel,
     engineSnapshot,
     uiDownloadProgress,
+    labRequestedTab,
+    labTabNonce,
     client,
     memoryRecords,
     memorySearch,
@@ -1681,6 +1873,106 @@ export function App() {
     </div>
   );
 
+  const commandPaletteActions: CommandPaletteAction[] = useMemo(
+    () => [
+      {
+        id: 'new-chat',
+        group: 'Conversation',
+        label: 'New conversation',
+        description: 'Start a fresh thread and clear transient citations',
+        keywords: ['clear', 'reset', 'new', 'thread'],
+        onSelect: () => {
+          void chat.createThread({ systemPrompt: modeSystemPrompt });
+          setSources([]);
+          setExpandedNotchId(null);
+        },
+      },
+      {
+        id: 'toggle-page',
+        group: 'Conversation',
+        label: pageEnabled ? 'Detach active tab context' : 'Attach active tab context',
+        description: activePage?.title
+          ? `Current tab: ${activePage.title}`
+          : 'Ground answers in active browser tab',
+        badge: hasAttachedPage ? 'Attached' : undefined,
+        keywords: ['page', 'tab', 'grounding', 'context'],
+        onSelect: () => setPageEnabled((v) => !v),
+      },
+      {
+        id: 'toggle-thinking',
+        group: 'Conversation',
+        label: engineSnapshot.config.enableThinking
+          ? 'Disable Extended Thinking'
+          : 'Enable Extended Thinking',
+        description: 'Toggle local reasoning trace before final response',
+        keywords: ['think', 'reasoning', 'qwen', 'gemma'],
+        onSelect: () => {
+          const next = !engineSnapshot.config.enableThinking;
+          client.updateConfig({ enableThinking: next });
+          chat.updateOptions({ enableThinking: next });
+        },
+      },
+      {
+        id: 'open-shortcuts',
+        group: 'Navigation',
+        label: 'Open Keyboard Shortcuts',
+        description: 'Inspect side panel & composer shortcuts in Lab drawer',
+        shortcut: 'Ctrl+K',
+        keywords: ['shortcuts', 'keys', 'kbd', 'help', 'lab'],
+        onSelect: () => {
+          setLabRequestedTab('shortcuts');
+          setLabTabNonce((n) => n + 1);
+          setExpandedNotchId('lab');
+        },
+      },
+      {
+        id: 'open-models',
+        group: 'Navigation',
+        label: 'Open Models & Hardware',
+        description: 'Switch WGSL checkpoints, tab context, or KV budget',
+        keywords: ['models', 'qwen', 'gemma', 'webgpu', 'kv'],
+        onSelect: () => setExpandedNotchId('models'),
+      },
+      {
+        id: 'open-memory',
+        group: 'Navigation',
+        label: 'Open Memory & Encrypted Vault',
+        description: 'Inspect local HNSW memory or export .yvlt backup',
+        keywords: ['memory', 'vault', 'forget'],
+        onSelect: () => setExpandedNotchId('memory'),
+      },
+      {
+        id: 'open-threads',
+        group: 'Navigation',
+        label: 'Open Saved Threads',
+        description: 'Browse, pin, or resume persisted conversations',
+        keywords: ['history', 'threads', 'saved'],
+        onSelect: () => setExpandedNotchId('history'),
+      },
+      {
+        id: 'toggle-theme',
+        group: 'Appearance',
+        label:
+          theme === 'dark'
+            ? 'Switch to Cotton Paper (Light)'
+            : 'Switch to Anodized Obsidian (Dark)',
+        description: 'Change side panel visual theme',
+        keywords: ['theme', 'light', 'dark', 'paper', 'obsidian'],
+        onSelect: () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark')),
+      },
+    ],
+    [
+      chat,
+      modeSystemPrompt,
+      pageEnabled,
+      activePage?.title,
+      hasAttachedPage,
+      engineSnapshot.config.enableThinking,
+      client,
+      theme,
+    ],
+  );
+
   const composerPlaceholder: FloatingComposerProps['placeholder'] = pageEnabled && activePage?.title
     ? `Ask about "${activePage.title.slice(0, 32)}"...`
     : 'Ask locally...';
@@ -1691,19 +1983,48 @@ export function App() {
         theme={theme}
         bleed
         scrollEdgeFade
-        veilOpen={expandedNotchId !== null}
-        onVeilClick={() => setExpandedNotchId(null)}
+        veilOpen={expandedNotchId !== null || commandPaletteOpen}
+        onVeilClick={() => {
+          setExpandedNotchId(null);
+          setCommandPaletteOpen(false);
+        }}
         notch={
           <TopNotch
             items={notchItems}
             expandedId={expandedNotchId}
             onSelectItem={(id) => {
               if (id === 'theme') return;
+              setCommandPaletteOpen(false);
               setExpandedNotchId((prev) => (prev === id ? null : id));
             }}
             onClose={() => setExpandedNotchId(null)}
             drawerContent={drawerContent}
           />
+        }
+        overlay={
+          commandPaletteOpen ? (
+            <CommandPalette
+              open
+              actions={commandPaletteActions}
+              query={commandQuery}
+              onQueryChange={setCommandQuery}
+              onSelectAction={() => setCommandPaletteOpen(false)}
+              onClose={() => setCommandPaletteOpen(false)}
+            />
+          ) : undefined
+        }
+        toast={
+          toastState ? (
+            <StatusToast
+              open
+              message={toastState.message}
+              detail={toastState.detail}
+              tone={toastState.tone ?? 'local'}
+              undoLabel={toastState.undoLabel}
+              onUndo={toastState.onUndo}
+              onDismiss={() => setToastState(null)}
+            />
+          ) : undefined
         }
         footer={
           <div className="ext-footer-stack">
@@ -1790,19 +2111,6 @@ export function App() {
           onRetry={() => void chat.regenerate()}
         />
       </SidePanelShell>
-      {toastState ? (
-        <div className="ext-toast-anchor">
-          <StatusToast
-            open
-            message={toastState.message}
-            detail={toastState.detail}
-            tone={toastState.tone ?? 'local'}
-            undoLabel={toastState.undoLabel}
-            onUndo={toastState.onUndo}
-            onDismiss={() => setToastState(null)}
-          />
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -257,10 +257,43 @@ function extractFetchedSourcesFromData(
   data: unknown,
   canonicalToolName: CanonicalToolName,
 ): FetchedSourceResult[] {
-  if (canonicalToolName !== 'search_web_tab' && canonicalToolName !== 'fetch_background_tab') {
+  if (!data || typeof data !== 'object') {
     return [];
   }
-  if (!data || typeof data !== 'object') {
+  if (canonicalToolName === 'read_tab' || canonicalToolName === 'read_active_tab') {
+    const rec = data as {
+      url?: unknown;
+      title?: unknown;
+      excerpt?: unknown;
+      content?: unknown;
+      text?: unknown;
+    };
+    if (typeof rec.url === 'string' && rec.url.length > 0) {
+      const rawText =
+        typeof rec.excerpt === 'string'
+          ? rec.excerpt
+          : typeof rec.content === 'string'
+            ? rec.content
+            : typeof rec.text === 'string'
+              ? rec.text
+              : typeof rec.title === 'string'
+                ? rec.title
+                : rec.url;
+      const cleanBody = rawText.trim();
+      return [
+        {
+          url: rec.url,
+          title: typeof rec.title === 'string' && rec.title.length > 0 ? rec.title : rec.url,
+          excerpt: cleanBody.slice(0, 140),
+          markdown: cleanBody,
+          charCount: cleanBody.length,
+          fromHiddenTab: canonicalToolName === 'read_tab',
+        },
+      ];
+    }
+    return [];
+  }
+  if (canonicalToolName !== 'search_web_tab' && canonicalToolName !== 'fetch_background_tab') {
     return [];
   }
   if (Array.isArray(data)) {

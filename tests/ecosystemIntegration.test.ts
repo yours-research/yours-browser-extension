@@ -4,7 +4,7 @@ import type { RuntimeAdapter, RuntimeCapabilities } from '@yours/harness';
 import { StreamOutputParser } from '@yours/harness/engine';
 import { selectComputeTier } from '@yours/models/hardware';
 import { toPragmaToolBundle, toQwenToolSchemas } from '@yours/tools/schemas';
-import { HookSidebarList, StreamingResponse } from '@yours/ui';
+import { CommandPalette, StreamingResponse, ThreadHistoryList } from '@yours/ui';
 import { VadEngine } from '@yours/voice/vad';
 import { describe, expect, it } from 'vitest';
 import {
@@ -308,11 +308,12 @@ describe('@yours/* Ecosystem Integrations & Strict MV3 CSP', () => {
     expect(appSource).toContain('ActiveTabSpeculativePrefillController');
     expect(appSource).toContain('shouldAutoPreloadModel');
     expect(appSource).toContain('groundingText');
-    expect(appSource).toContain('label="Threads"');
+    expect(appSource).toContain('ThreadHistoryList');
+    expect(appSource).toContain('CommandPalette');
     expect(appSource).not.toMatch(/nextMessages\[0\]/);
   });
 
-  it('parses Qwen3.5 XML & Gemma 4 native tool calls cleanly and wires StreamingResponse/HookSidebarList', () => {
+  it('parses Qwen3.5 XML & Gemma 4 native tool calls cleanly and wires StreamingResponse/ThreadHistoryList', () => {
     const qwenParser = new StreamOutputParser({ stopOnToolCall: true });
     const q1 = qwenParser.pushText('<tool_call><function=search_web_tab><parameter=query>');
     const q2 = qwenParser.pushText('webgpu bench</parameter><parameter=limit>3</parameter></function></tool_call>');
@@ -343,7 +344,8 @@ describe('@yours/* Ecosystem Integrations & Strict MV3 CSP', () => {
     ).toBe('Checking');
 
     expect(typeof StreamingResponse).toBe('function');
-    expect(typeof HookSidebarList).toBe('function');
+    expect(typeof ThreadHistoryList).toBe('function');
+    expect(typeof CommandPalette).toBe('function');
 
     const genUiSource = fs.readFileSync(
       path.join(ROOT_DIR, 'src', 'sidepanel', 'components', 'GenUiRenderer.tsx'),
