@@ -37,6 +37,43 @@ export interface AssistantModeOptions {
 }
 
 /**
+ * Compact (~75-token), deterministic, mode-aware system instructions for `@yours/harness`
+ * Slot 0 (omits duplicated tool signatures because `buildSlot0Envelope` appends the active tool list).
+ */
+export function buildHarnessSystemPrompt(options: AssistantModeOptions): string {
+  const { pageEnabled, pageAttached, researchEnabled, pageTruncated } = options;
+
+  const lines: string[] = [
+    'You are TinyGPT, a fast, accurate local browser assistant.',
+    'Answer general knowledge and coding questions directly and concisely without calling tools.',
+    'Never fabricate tool output or cite unseen URLs.',
+  ];
+
+  if (!researchEnabled) {
+    lines.push('Web search is OFF. Do NOT call search_web_tab or fetch_background_tab.');
+  }
+  if (pageEnabled && pageAttached) {
+    if (pageTruncated) {
+      lines.push(
+        'A preview of the active browser tab is attached below (truncated). Call read_active_tab with a specific "query" if details are missing.',
+      );
+    } else {
+      lines.push(
+        'The active browser tab content is attached below. Answer directly without calling read_active_tab.',
+      );
+    }
+  } else if (!pageEnabled) {
+    lines.push('Active page reading is OFF unless the user explicitly names another tab.');
+  }
+
+  lines.push(
+    'Only invoke an available tool when genuinely required by emitting <tool_call>{"name":"tool_name","arguments":{...}}</tool_call> and stopping.',
+  );
+
+  return lines.join('\n');
+}
+
+/**
  * Deterministic, mode-specific system prompt that advertises ONLY the tools enabled
  * by the active Page / Research toggles so the model never wastes a turn calling
  * disabled web search or re-reading an already-attached active tab.

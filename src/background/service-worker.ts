@@ -1,15 +1,14 @@
 import {
   checkResearchPermission,
-  executeToolCall,
   extractActiveTabPreview,
   requestResearchPermission,
 } from '../tools/browserTools.ts';
 import { inPageExtractScript } from '../tools/pageExtractor.ts';
 import type { ChromiumSerpResponse, HiddenTabHtmlResponse, SearchResultItem } from '../tools/types.ts';
 import { unwrapBingRedirectUrl } from '../tools/webSearch.ts';
+import { createExtensionToolRuntime, type ExtensionToolRuntime } from '../tools/yoursToolRuntime.ts';
 
 const OFFSCREEN_PATH = 'offscreen.html';
-const HIDDEN_TAB_IDLE_MS = 45_000;
 const HIDDEN_TAB_NAV_TIMEOUT_MS = 10_000;
 const SERP_NAV_TIMEOUT_MS = 7_500;
 
@@ -18,6 +17,21 @@ let hiddenResearchWindowId: number | null = null;
 let hiddenResearchTabId: number | null = null;
 let hiddenTabIdleTimer: ReturnType<typeof setTimeout> | null = null;
 let hiddenTabLock: Promise<unknown> = Promise.resolve();
+let swToolRuntime: ExtensionToolRuntime | null = null;
+
+function getSwToolRuntime(): ExtensionToolRuntime {
+  if (!swToolRuntime) {
+    swToolRuntime = createExtensionToolRuntime({
+      adapter: {
+        preferHeadlessFetch: true,
+        defaultEngine: 'ddg',
+        searchViaChromiumSerp: runChromiumSerpSearch,
+        openHiddenTabAndExtract,
+      },
+    });
+  }
+  return swToolRuntime;
+}
 
 async function configureSidePanelBehavior(): Promise<void> {
   try {
@@ -43,36 +57,47 @@ export async function ensureOffscreenDocument(): Promise<void> {
     return;
   }
 
-  creatingOffscreen = chrome.offscreen
-    .createDocument({
-      url: OFFSCREEN_PATH,
-      reasons: [chrome.offscreen.Reason.WORKERS],
-      justification:
-        'Host persistent WebGPU LLM inference engine, elevated GPU device, and OPFS weight cache.',
-    })
-    .finally(() => {
-      creatingOffscreen = null;
-    });
+  const requestedReasons = [
+    chrome.offscreen.Reason.WORKERS,
+    chrome.offscreen.Reason.USER_MEDIA,
+    chrome.offscreen.Reason.AUDIO_PLAYBACK,
+    chrome.offscreen.Reason.DOM_PARSER,
+  ];
+
+  creatingOffscreen = (async () => {
+    try {
+      await chrome.offscreen.createDocument({
+        url: OFFSCREEN_PATH,
+        reasons: requestedReasons,
+        justification:
+          'Host persistent WebGPU LLM inference engine, local audio/voice pipeline, elevated GPU device, and OPFS weight cache.',
+      });
+    } catch {
+      await chrome.offscreen.createDocument({
+        url: OFFSCREEN_PATH,
+        reasons: [chrome.offscreen.Reason.WORKERS],
+        justification:
+          'Host persistent WebGPU LLM inference engine, elevated GPU device, and OPFS weight cache.',
+      });
+    }
+  })().finally(() => {
+    creatingOffscreen = null;
+  });
 
   await creatingOffscreen;
 }
 
-function scheduleHiddenTabCleanup(): void {
+function closeHiddenResearchTabNow(): void {
   if (hiddenTabIdleTimer !== null) {
     clearTimeout(hiddenTabIdleTimer);
-  }
-  hiddenTabIdleTimer = setTimeout(() => {
     hiddenTabIdleTimer = null;
-    const winId = hiddenResearchWindowId;
-    const tabId = hiddenResearchTabId;
-    hiddenResearchWindowId = null;
-    hiddenResearchTabId = null;
-    if (winId !== null && chrome.windows?.remove) {
-      void chrome.windows.remove(winId).catch(() => {});
-    } else if (tabId !== null) {
-      void chrome.tabs.remove(tabId).catch(() => {});
-    }
-  }, HIDDEN_TAB_IDLE_MS);
+  }
+  const tabId = hiddenResearchTabId;
+  hiddenResearchWindowId = null;
+  hiddenResearchTabId = null;
+  if (tabId !== null) {
+    void chrome.tabs.remove(tabId).catch(() => {});
+  }
 }
 
 async function getOrCreateHiddenResearchTab(): Promise<number> {
@@ -86,27 +111,9 @@ async function getOrCreateHiddenResearchTab(): Promise<number> {
     }
   }
 
-  if (chrome.windows?.create) {
-    try {
-      const win = await chrome.windows.create({
-        url: 'about:blank',
-        type: 'popup',
-        state: 'minimized',
-      });
-      const firstTabId = win?.tabs?.[0]?.id;
-      if (win?.id !== undefined && firstTabId !== undefined) {
-        hiddenResearchWindowId = win.id;
-        hiddenResearchTabId = firstTabId;
-        return firstTabId;
-      }
-    } catch {
-      // Fall back to inactive tab if popup window creation is unsupported
-    }
-  }
-
   const created = await chrome.tabs.create({ url: 'about:blank', active: false });
   if (created.id === undefined) {
-    throw new Error('Failed to create hidden background research tab.');
+    throw new Error('Failed to create inactive background research tab.');
   }
   hiddenResearchWindowId = created.windowId ?? null;
   hiddenResearchTabId = created.id;
@@ -368,8 +375,8 @@ async function runChromiumSerpSearch(
     const clampedLimit = Math.max(1, Math.min(8, Math.round(limit)));
     const q = encodeURIComponent(query);
     const engines: Array<{ engine: 'bing' | 'ddg' | 'startpage'; url: string }> = [
-      { engine: 'bing', url: `https://www.bing.com/search?q=${q}` },
       { engine: 'ddg', url: `https://duckduckgo.com/?q=${q}` },
+      { engine: 'bing', url: `https://www.bing.com/search?q=${q}` },
       { engine: 'startpage', url: `https://www.startpage.com/do/search?q=${q}` },
     ];
 
@@ -382,60 +389,62 @@ async function runChromiumSerpSearch(
     let anyBlocked = false;
     let lastError = 'No organic results found.';
 
-    for (const candidate of engines) {
-      try {
-        await navigateHiddenTabAndWait(tabId, candidate.url, SERP_NAV_TIMEOUT_MS);
-        const injections = await chrome.scripting.executeScript({
-          target: { tabId },
-          func: inPageSerpExtractScript,
-          args: [candidate.engine, clampedLimit],
-        });
-        const res = injections?.[0]?.result as
-          | {
-              blockedByCaptcha: boolean;
-              rawResults: Array<{ title: string; href: string; snippet: string }>;
-            }
-          | undefined;
-        if (!res) {
-          lastError = `${candidate.engine}: script returned no result.`;
-          continue;
-        }
-        if (res.blockedByCaptcha) {
-          anyBlocked = true;
-          lastError = `${candidate.engine}: anti-bot/CAPTCHA gate encountered.`;
-          continue;
-        }
-        const normalized = normalizeSerpResults(candidate.engine, res.rawResults, clampedLimit);
-        if (normalized.length > 0) {
-          scheduleHiddenTabCleanup();
-          return {
-            ok: true,
-            engine: candidate.engine,
-            query,
-            results: normalized,
-            elapsedMs: Date.now() - startMs,
-          };
-        }
-      } catch (err: unknown) {
-        lastError = `${candidate.engine}: ${err instanceof Error ? err.message : String(err)}`;
-      }
-    }
-
-    scheduleHiddenTabCleanup();
-    return {
-      ok: false,
-      engine: 'startpage',
-      query,
-      results: [],
-      elapsedMs: Date.now() - startMs,
-      ...(anyBlocked
-        ? {
-            blockedByCaptcha: true,
-            manualUrl: `https://duckduckgo.com/?q=${q}`,
-            error: 'Search engines requested human verification (CAPTCHA). Open manually.',
+    try {
+      for (const candidate of engines) {
+        try {
+          await navigateHiddenTabAndWait(tabId, candidate.url, SERP_NAV_TIMEOUT_MS);
+          const injections = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: inPageSerpExtractScript,
+            args: [candidate.engine, clampedLimit],
+          });
+          const res = injections?.[0]?.result as
+            | {
+                blockedByCaptcha: boolean;
+                rawResults: Array<{ title: string; href: string; snippet: string }>;
+              }
+            | undefined;
+          if (!res) {
+            lastError = `${candidate.engine}: script returned no result.`;
+            continue;
           }
-        : { error: lastError }),
-    };
+          if (res.blockedByCaptcha) {
+            anyBlocked = true;
+            lastError = `${candidate.engine}: anti-bot/CAPTCHA gate encountered.`;
+            continue;
+          }
+          const normalized = normalizeSerpResults(candidate.engine, res.rawResults, clampedLimit);
+          if (normalized.length > 0) {
+            return {
+              ok: true,
+              engine: candidate.engine,
+              query,
+              results: normalized,
+              elapsedMs: Date.now() - startMs,
+            };
+          }
+        } catch (err: unknown) {
+          lastError = `${candidate.engine}: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+
+      return {
+        ok: false,
+        engine: 'ddg',
+        query,
+        results: [],
+        elapsedMs: Date.now() - startMs,
+        ...(anyBlocked
+          ? {
+              blockedByCaptcha: true,
+              manualUrl: `https://duckduckgo.com/?q=${q}`,
+              error: 'Search engines requested human verification (CAPTCHA). Open manually.',
+            }
+          : { error: lastError }),
+      };
+    } finally {
+      closeHiddenResearchTabNow();
+    }
   };
 
   const next = hiddenTabLock.then(run, run);
@@ -462,46 +471,48 @@ async function openHiddenTabAndExtract(url: string): Promise<HiddenTabHtmlRespon
     }
 
     const tabId = await getOrCreateHiddenResearchTab();
-    await navigateHiddenTabAndWait(tabId, parsed.toString(), HIDDEN_TAB_NAV_TIMEOUT_MS);
-
-    const domRes = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: readHiddenTabDomScript,
-    });
-    const payload = (domRes?.[0]?.result as HiddenTabHtmlResponse | undefined) ?? {
-      html: '',
-      title: '',
-      url: parsed.toString(),
-    };
-
-    // Extract live visibility-aware Firecrawl-grade Markdown inside the hydrated background tab
-    let markdown = '';
-    let extractedTitle = payload.title ?? '';
-    let extractedUrl = payload.url ?? parsed.toString();
     try {
-      const mdRes = await chrome.scripting.executeScript({
+      await navigateHiddenTabAndWait(tabId, parsed.toString(), HIDDEN_TAB_NAV_TIMEOUT_MS);
+
+      const domRes = await chrome.scripting.executeScript({
         target: { tabId },
-        func: inPageExtractScript,
-        args: ['article', 24000],
+        func: readHiddenTabDomScript,
       });
-      const page = mdRes?.[0]?.result;
-      if (page) {
-        markdown = page.fullContent || page.content || '';
-        extractedTitle = page.title || extractedTitle;
-        extractedUrl = page.url || extractedUrl;
+      const payload = (domRes?.[0]?.result as HiddenTabHtmlResponse | undefined) ?? {
+        html: '',
+        title: '',
+        url: parsed.toString(),
+      };
+
+      // Extract live visibility-aware Firecrawl-grade Markdown inside the hydrated background tab
+      let markdown = '';
+      let extractedTitle = payload.title ?? '';
+      let extractedUrl = payload.url ?? parsed.toString();
+      try {
+        const mdRes = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: inPageExtractScript,
+          args: ['article', 24000],
+        });
+        const page = mdRes?.[0]?.result;
+        if (page) {
+          markdown = page.fullContent || page.content || '';
+          extractedTitle = page.title || extractedTitle;
+          extractedUrl = page.url || extractedUrl;
+        }
+      } catch {
+        // Fall back to outerHTML distillation if in-page extractor fails
       }
-    } catch {
-      // Fall back to outerHTML distillation if in-page extractor fails
+
+      return {
+        html: payload.html,
+        title: extractedTitle,
+        url: extractedUrl,
+        ...(markdown ? { markdown } : {}),
+      };
+    } finally {
+      closeHiddenResearchTabNow();
     }
-
-    scheduleHiddenTabCleanup();
-
-    return {
-      html: payload.html,
-      title: extractedTitle,
-      url: extractedUrl,
-      ...(markdown ? { markdown } : {}),
-    };
   };
 
   // Serialize hidden-tab navigation so concurrent URL fallbacks reuse the single tab safely
@@ -543,7 +554,11 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     return false;
   }
 
-  const msg = message as { type: string; call?: { name: string; arguments?: Record<string, unknown> } };
+  const msg = message as {
+    type: string;
+    call?: { name: string; arguments?: Record<string, unknown> };
+    skipSpotlight?: boolean;
+  };
 
   if (msg.type === 'ENSURE_OFFSCREEN') {
     ensureOffscreenDocument()
@@ -560,10 +575,12 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       sendResponse({ ok: false, error: 'Missing tool call payload.' });
       return false;
     }
-    executeToolCall(msg.call, {
-      searchViaChromiumSerp: runChromiumSerpSearch,
-      openHiddenTabAndExtract,
-    })
+    getSwToolRuntime()
+      .execute(msg.call, {
+        environment: 'chrome-mv3',
+        sessionId: 'sw-exec',
+        skipSpotlight: Boolean(msg.skipSpotlight),
+      })
       .then((result) => sendResponse(result))
       .catch((err: unknown) => {
         const errorMessage = err instanceof Error ? err.message : String(err);

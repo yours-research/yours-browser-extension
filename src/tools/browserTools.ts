@@ -1,7 +1,10 @@
+import { resolveToolAlias } from '@yours/tools/schemas';
 import { rankPassagesBm25 } from './bm25Ranker.ts';
+import { sanitizeUntrustedText } from './guardBridge.ts';
 import { runJsCalc } from './jsCalc.ts';
 import { extractTabContent } from './pageExtractor.ts';
 import { validateToolCall } from './toolProtocol.ts';
+import { createExtensionToolRuntime } from './yoursToolRuntime.ts';
 import type {
   ExtractedPageContent,
   FetchedSourceResult,
@@ -97,7 +100,16 @@ export async function extractActiveTabPreview(maxChars = 5000): Promise<Extracte
       error: 'No active browser tab found.',
     };
   }
-  return extractTabContent(tabId, { mode: 'auto', maxChars });
+  const page = await extractTabContent(tabId, { mode: 'auto', maxChars });
+  if (page.content) {
+    const sanitized = sanitizeUntrustedText(page.content, page.url);
+    return {
+      ...page,
+      content: sanitized.cleanText,
+      charCount: sanitized.cleanText.length,
+    };
+  }
+  return page;
 }
 
 export interface ExecuteToolOptions {
@@ -108,10 +120,33 @@ export interface ExecuteToolOptions {
   onSourceReady?: (src: FetchedSourceResult) => void;
 }
 
+const LEGACY_TIER1_NAMES = new Set([
+  'read_active_page',
+  'list_open_tabs',
+  'read_tab',
+  'js_calc',
+  'web_search',
+  'fetch_and_read_url',
+]);
+
 export async function executeToolCall(
   rawCall: { name: string; arguments?: Record<string, unknown> },
   options?: ExecuteToolOptions,
 ): Promise<ToolExecutionResult> {
+  if (!LEGACY_TIER1_NAMES.has(rawCall.name) && resolveToolAlias(rawCall.name)) {
+    const runtime = createExtensionToolRuntime({
+      adapter: {
+        hasPermission: options?.hasPermission,
+        searchViaChromiumSerp: options?.searchViaChromiumSerp,
+        fetchFn: options?.fetchFn,
+        openHiddenTabAndExtract: options?.openHiddenTabAndExtract,
+        onSourceReady: options?.onSourceReady,
+      },
+    });
+    const res = await runtime.execute(rawCall);
+    return res as unknown as ToolExecutionResult;
+  }
+
   const validation = validateToolCall({
     name: rawCall.name,
     arguments: rawCall.arguments ?? {},
@@ -142,9 +177,10 @@ export async function executeToolCall(
         return { ok: false, toolName: 'read_active_page', data: page, error: page.error };
       }
       const searchable = page.fullContent || page.content;
-      const formatted = query
+      const rawFormatted = query
         ? `[${page.mode.toUpperCase()}: MATCHED FOR "${query}"] ${page.title}\nURL: ${page.url}\n\n${rankPassagesBm25(searchable, query, maxChars).excerpt}`
         : `[${page.mode.toUpperCase()}] ${page.title}\nURL: ${page.url}\n\n${page.content}`;
+      const formatted = sanitizeUntrustedText(rawFormatted, page.url).cleanText;
       return { ok: true, toolName: 'read_active_page', data: page, formatted };
     }
 
@@ -169,9 +205,10 @@ export async function executeToolCall(
         return { ok: false, toolName: 'read_tab', data: page, error: page.error };
       }
       const searchable = page.fullContent || page.content;
-      const formatted = query
+      const rawFormatted = query
         ? `[${page.mode.toUpperCase()}: MATCHED FOR "${query}"] ${page.title}\nURL: ${page.url}\n\n${rankPassagesBm25(searchable, query, maxChars).excerpt}`
         : `[${page.mode.toUpperCase()}] ${page.title}\nURL: ${page.url}\n\n${page.content}`;
+      const formatted = sanitizeUntrustedText(rawFormatted, page.url).cleanText;
       return { ok: true, toolName: 'read_tab', data: page, formatted };
     }
 
@@ -263,13 +300,18 @@ export async function executeToolCall(
               ok: true,
               toolName: 'web_search',
               data: res,
-              formatted: `${formattedResults}\n\n## Top Source Excerpts\n\n${excerptBlock}`,
+              formatted: sanitizeUntrustedText(`${formattedResults}\n\n## Top Source Excerpts\n\n${excerptBlock}`).cleanText,
             };
           }
         }
       }
 
-      return { ok: true, toolName: 'web_search', data: res, formatted: formattedResults };
+      return {
+        ok: true,
+        toolName: 'web_search',
+        data: res,
+        formatted: sanitizeUntrustedText(formattedResults).cleanText,
+      };
     }
 
     case 'fetch_and_read_url': {
@@ -296,7 +338,7 @@ export async function executeToolCall(
 
       const anySuccess = sources.some((s) => !s.error && s.excerpt.length > 0);
       const captchaBlocked = sources.find((s) => s.blockedByCaptcha);
-      const formatted = sources
+      const rawFormatted = sources
         .map((s) => {
           if (s.error) {
             return `### ${s.url}\nError: ${s.error}${s.manualUrl ? ` (Manual URL: ${s.manualUrl})` : ''}`;
@@ -304,6 +346,7 @@ export async function executeToolCall(
           return `### ${s.title || s.url}\nURL: ${s.url}\n\n${s.excerpt}`;
         })
         .join('\n\n---\n\n');
+      const formatted = sanitizeUntrustedText(rawFormatted).cleanText;
 
       return {
         ok: anySuccess,

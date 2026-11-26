@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Yours — Microphone Permission</title>
+    <link rel="stylesheet" href="/src/permissions/styles.css" />
+  </head>
+  <body>
+    <main class="perm-card">
+      <h1 class="perm-title">Enable Local Microphone</h1>
+      <p class="perm-copy">
+        Yours processes voice locally on-device. Grant microphone access so the offscreen audio capture pipeline can listen when you click Dictate.
+      </p>
+      <div class="perm-actions">
+        <button id="grant-mic-btn" type="button" class="perm-btn">Grant Microphone Access</button>
+      </div>
+      <p id="perm-status" class="perm-status" role="status"></p>
+    </main>
+    <script type="module" src="/src/permissions/main.ts"></script>
+  </body>
+</html>

@@ -1,3 +1,17 @@
+import {
+  CANONICAL_TOOL_DEFINITIONS,
+  CANONICAL_TOOL_MAP,
+  formatToolsForSystemPrompt,
+  resolveToolAlias,
+  toPragmaToolBundle,
+  toQwenToolSchemas,
+  validateCanonicalToolCall,
+} from '@yours/tools/schemas';
+import {
+  detectPendingToolCall as detectPendingCanonicalToolCall,
+  parseOpenAIToolCalls,
+  parseToolCalls as parseCanonicalToolCalls,
+} from '@yours/tools/protocol';
 import type {
   ParsedToolCall,
   PendingToolDetection,
@@ -5,6 +19,19 @@ import type {
   ToolDefinition,
   ToolExecutionResult,
 } from './types.ts';
+
+export {
+  CANONICAL_TOOL_DEFINITIONS,
+  CANONICAL_TOOL_MAP,
+  detectPendingCanonicalToolCall,
+  formatToolsForSystemPrompt,
+  parseCanonicalToolCalls,
+  parseOpenAIToolCalls,
+  resolveToolAlias,
+  toPragmaToolBundle,
+  toQwenToolSchemas,
+  validateCanonicalToolCall,
+};
 
 export const TIER1_TOOL_DEFINITIONS: ToolDefinition[] = [
   {

@@ -355,6 +355,8 @@ export interface WebSearchDeps {
   fetchFn?: typeof fetch;
   openHiddenTabAndExtract?: (url: string) => Promise<HiddenTabHtmlResponse>;
   timeoutMs?: number;
+  defaultEngine?: 'ddg' | 'bing' | 'startpage';
+  preferHeadlessFetch?: boolean;
 }
 
 async function defaultCheckPermission(): Promise<boolean> {
@@ -392,56 +394,59 @@ export async function runWebSearch(
     };
   }
 
-  // Path 0 (Production Chromium Extension): Zero-key minimized-window direct SERP parsing
-  if (deps?.searchViaChromiumSerp) {
-    try {
-      const serp = await deps.searchViaChromiumSerp(cleanQuery, clampedLimit);
-      return {
-        ok: serp.ok,
-        query: cleanQuery,
-        results: serp.results ?? [],
-        fromHiddenTab: true,
-        engine: serp.engine,
-        elapsedMs: serp.elapsedMs,
-        ...(serp.blockedByCaptcha ? { blockedByCaptcha: true, manualUrl: serp.manualUrl } : {}),
-        ...(serp.error ? { error: serp.error } : {}),
-      };
-    } catch (err: unknown) {
-      return {
-        ok: false,
-        query: cleanQuery,
-        results: [],
-        fromHiddenTab: true,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
-  }
-
   const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(cleanQuery)}`;
-  const fetchFn = deps?.fetchFn ?? fetch;
+  const liteUrl = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(cleanQuery)}`;
+  const fetchFn = deps?.fetchFn ?? (typeof fetch === 'function' ? fetch : undefined);
   const timeoutMs = deps?.timeoutMs ?? 10000;
+  const preferHeadless = deps?.preferHeadlessFetch !== false;
 
   let pathAStatus: number | undefined;
   let pathAHtml = '';
+  let headlessBlocked = false;
 
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetchFn(searchUrl, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: {
-          Accept: 'text/html,application/xhtml+xml',
-        },
-      });
-      pathAStatus = response.status;
-      pathAHtml = await response.text();
-    } finally {
-      clearTimeout(timer);
+  // Path 0 (Default Headless DuckDuckGo HTML -> Lite fetch with zero visible windows/tabs)
+  if (preferHeadless && fetchFn) {
+    for (const url of [searchUrl, liteUrl]) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const response = await fetchFn(url, {
+            method: 'GET',
+            signal: controller.signal,
+            headers: {
+              Accept: 'text/html,application/xhtml+xml',
+            },
+          });
+          pathAStatus = response.status;
+          pathAHtml = await response.text();
+        } finally {
+          clearTimeout(timer);
+        }
+
+        if (detectAntiBotChallenge(pathAHtml, pathAStatus)) {
+          headlessBlocked = true;
+          continue;
+        }
+
+        if (pathAStatus >= 200 && pathAStatus < 400) {
+          const parsed = parseDuckDuckGoHtmlResults(pathAHtml, clampedLimit);
+          if (parsed.length > 0) {
+            return {
+              ok: true,
+              query: cleanQuery,
+              results: parsed,
+              engine: 'ddg',
+              fromHiddenTab: false,
+            };
+          }
+        }
+      } catch {
+        // Try Lite or fallback cleanly
+      }
     }
 
-    if (detectAntiBotChallenge(pathAHtml, pathAStatus)) {
+    if (headlessBlocked && !deps?.searchViaChromiumSerp && !deps?.openHiddenTabAndExtract) {
       return {
         ok: false,
         query: cleanQuery,
@@ -451,23 +456,71 @@ export async function runWebSearch(
         error: 'DuckDuckGo returned an anti-bot/CAPTCHA challenge. Please open manually.',
       };
     }
+  }
 
-    if (pathAStatus >= 200 && pathAStatus < 400) {
-      const parsed = parseDuckDuckGoHtmlResults(pathAHtml, clampedLimit);
-      if (parsed.length > 0) {
+  // Path 1: Inactive background-tab SERP parsing only if headless DuckDuckGo failed
+  if (deps?.searchViaChromiumSerp) {
+    try {
+      const serp = await deps.searchViaChromiumSerp(cleanQuery, clampedLimit);
+      if (serp.ok && (serp.results?.length ?? 0) > 0) {
         return {
           ok: true,
           query: cleanQuery,
-          results: parsed,
-          fromHiddenTab: false,
+          results: serp.results,
+          fromHiddenTab: true,
+          engine: serp.engine,
+          elapsedMs: serp.elapsedMs,
+        };
+      }
+      if (serp.blockedByCaptcha) {
+        return {
+          ok: false,
+          query: cleanQuery,
+          results: [],
+          fromHiddenTab: true,
+          engine: serp.engine,
+          elapsedMs: serp.elapsedMs,
+          blockedByCaptcha: true,
+          manualUrl: serp.manualUrl,
+          error: serp.error,
+        };
+      }
+      if (!preferHeadless) {
+        return {
+          ok: serp.ok,
+          query: cleanQuery,
+          results: serp.results ?? [],
+          fromHiddenTab: true,
+          engine: serp.engine,
+          elapsedMs: serp.elapsedMs,
+          ...(serp.error ? { error: serp.error } : {}),
+        };
+      }
+    } catch (err: unknown) {
+      if (!preferHeadless) {
+        return {
+          ok: false,
+          query: cleanQuery,
+          results: [],
+          fromHiddenTab: true,
+          error: err instanceof Error ? err.message : String(err),
         };
       }
     }
-  } catch {
-    // Fall through to hidden-tab fallback if available
   }
 
-  // Path B: Reusable hidden background tab fallback (ONLY when needed, never bypassing CAPTCHAs)
+  if (headlessBlocked && !deps?.openHiddenTabAndExtract) {
+    return {
+      ok: false,
+      query: cleanQuery,
+      results: [],
+      blockedByCaptcha: true,
+      manualUrl: searchUrl,
+      error: 'DuckDuckGo returned an anti-bot/CAPTCHA challenge. Please open manually.',
+    };
+  }
+
+  // Path 2: Inactive background tab fallback for DuckDuckGo when headless fetch failed
   if (deps?.openHiddenTabAndExtract) {
     try {
       const tabRes = await deps.openHiddenTabAndExtract(searchUrl);

@@ -57,7 +57,7 @@ describe('manifest Option A & MV3 CSP compliance', () => {
     expect(manifest.optional_host_permissions).toEqual(['https://*/*']);
     expect(manifest.host_permissions).toBeUndefined();
     expect(manifest.content_security_policy?.extension_pages).toBe(
-      "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';",
+      "script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; object-src 'self';",
     );
   });
 
@@ -633,5 +633,46 @@ describe('browserTools Option A & offline execution', () => {
     expect(pageSearch.ok).toBe(true);
     expect(pageSearch.formatted).toContain('MATCHED FOR "Enterprise plan $490/mo req/min"');
     expect(pageSearch.formatted).toContain('$490/mo');
+  });
+
+  it('executes headless DuckDuckGo search before browser SERP or hidden tabs when fetch succeeds', async () => {
+    const fetchedUrls: string[] = [];
+    const serpSpy = vi.fn(async () => ({
+      ok: true,
+      engine: 'bing' as const,
+      query: 'rust ownership',
+      results: [],
+      elapsedMs: 1,
+    }));
+    const hiddenTabSpy = vi.fn(async () => ({
+      html: '',
+      url: 'https://html.duckduckgo.com',
+    }));
+
+    const ddgHtml = `
+      <div class="result">
+        <a class="result__a" href="/l/?uddg=https%3A%2F%2Fdoc.rust-lang.org%2Fbook%2F">The Rust Book</a>
+        <a class="result__snippet">Learn Rust programming &amp; ownership.</a>
+      </div>
+    `;
+
+    const res = await runWebSearch('rust ownership', 5, {
+      hasPermission: async () => true,
+      fetchFn: async (input) => {
+        fetchedUrls.push(String(input));
+        return new Response(ddgHtml, { status: 200 });
+      },
+      searchViaChromiumSerp: serpSpy,
+      openHiddenTabAndExtract: hiddenTabSpy,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.engine).toBe('ddg');
+    expect(res.fromHiddenTab).toBe(false);
+    expect(res.results).toHaveLength(1);
+    expect(res.results[0].url).toBe('https://doc.rust-lang.org/book/');
+    expect(fetchedUrls[0]).toContain('https://html.duckduckgo.com/html/?q=');
+    expect(serpSpy).not.toHaveBeenCalled();
+    expect(hiddenTabSpy).not.toHaveBeenCalled();
   });
 });

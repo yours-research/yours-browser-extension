@@ -1,0 +1,76 @@
+:root {
+  color-scheme: light dark;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f2efe9;
+  color: #141413;
+  padding: 20px;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #111113;
+    color: #f4f3ef;
+  }
+  .perm-card {
+    background: #18181b;
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+  .perm-btn {
+    background: #f4f3ef;
+    color: #111113;
+  }
+}
+
+.perm-card {
+  max-width: 380px;
+  background: #ffffff;
+  border: 1px solid rgba(20, 20, 19, 0.08);
+  border-radius: 16px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.perm-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.perm-copy {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+
+.perm-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.perm-btn {
+  border: none;
+  border-radius: 9999px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  background: #141413;
+  color: #faf8f5;
+}
+
+.perm-status {
+  margin: 0;
+  font-size: 12px;
+  min-height: 16px;
+}

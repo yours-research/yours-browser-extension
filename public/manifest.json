@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "TinyGPT Extension (v0.1 POC)",
+  "name": "Yours Browser Extension",
   "version": "0.1.0",
-  "description": "Offline bundled Qwen3.5-4B local WebGPU LLM (Custom Rust/WGSL INT8 128K engine in Dedicated Worker).",
+  "description": "Local-first WebGPU AI assistant powered by @yours/* packages and offline Rust/WGSL engines (Qwen3.5-4B & Gemma 4 E4B).",
   "permissions": [
     "sidePanel",
     "offscreen",
@@ -16,7 +16,7 @@
     "https://*/*"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; object-src 'self';"
   },
   "side_panel": {
     "default_path": "sidepanel.html"
@@ -26,7 +26,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Open TinyGPT Side Panel"
+    "default_title": "Open Yours Side Panel"
   },
   "icons": {
     "16": "icons/icon16.png",

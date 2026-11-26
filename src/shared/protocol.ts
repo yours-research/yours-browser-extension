@@ -15,7 +15,7 @@ export interface ModelPreset {
 export const MODEL_PRESETS: ModelPreset[] = [
   {
     id: 'onnx-community/Qwen3.5-4B-ONNX-OPT',
-    label: 'Qwen3.5-4B (OPT, Hybrid DeltaNet+Attn)',
+    label: 'Qwen3.5-4B (Custom WGSL)',
     defaultDtype: 'q4f16',
     supportedDtypes: ['q4f16', 'q4'],
     estimatedWeightGB: {
@@ -23,7 +23,19 @@ export const MODEL_PRESETS: ModelPreset[] = [
       q4: 2.96,
       fp16: 8.5,
     },
-    notes: 'Primary POC target. 24 Gated DeltaNet + 8 Full Attention layers.',
+    notes: 'Primary Qwen3.5 hybrid baseline. 24 Gated DeltaNet + 8 Full Attention layers.',
+  },
+  {
+    id: 'onnx-community/gemma-4-E4B-it-qat-mobile-ONNX',
+    label: 'Gemma 4 E4B QAT (Custom WGSL)',
+    defaultDtype: 'q4f16',
+    supportedDtypes: ['q4f16', 'q4'],
+    estimatedWeightGB: {
+      q4f16: 2.1,
+      q4: 2.3,
+      fp16: 8.0,
+    },
+    notes: 'Gemma 4 E4B QAT offline WGSL runtime. 35 sliding + 7 global layers, 18 KV-shared, PLE hot cache.',
   },
   {
     id: 'onnx-community/Qwen3.5-0.8B-ONNX',
@@ -51,9 +63,68 @@ export const MODEL_PRESETS: ModelPreset[] = [
   },
 ];
 
+export const BUNDLED_MODEL_IDS = [
+  'onnx-community/Qwen3.5-4B-ONNX-OPT',
+  'onnx-community/gemma-4-E4B-it-qat-mobile-ONNX',
+] as const;
+
+export type BundledModelId = (typeof BUNDLED_MODEL_IDS)[number];
+
+export function isGemma4ModelId(modelId: string): boolean {
+  return modelId.toLowerCase().includes('gemma-4') || modelId.toLowerCase().includes('gemma4');
+}
+
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  toolName?: string;
+  toolCallId?: string;
+  toolArgs?: Record<string, unknown>;
+}
+
+export interface HardwareProfileSnapshot {
+  adapterName: string;
+  vendor: string;
+  architecture: string;
+  deviceMemoryGb: number | null;
+  hasF16: boolean;
+  hasSubgroups: boolean;
+  recommendedTier: WgslComputeTier;
+  maxBufferSizeMb: number;
+  maxStorageBindingMb: number;
+  recommendedModelId: string;
+  probedAt: number;
+}
+
+export interface ModelCatalogChoice {
+  id: string;
+  label: string;
+  family: string;
+  paramsB: number;
+  estimatedSizeGb: number;
+  contextLength: number;
+  source: 'bundled' | 'verified-manifest' | 'custom';
+  cachedInOpfs: boolean;
+  bundled: boolean;
+  manifestVerified: boolean;
+  notes?: string;
+}
+
+export interface ModelDownloadProgressInfo {
+  modelId: string;
+  phase:
+    | 'probing'
+    | 'verifying-manifest'
+    | 'downloading'
+    | 'verifying-sha'
+    | 'writing-opfs'
+    | 'complete'
+    | 'error';
+  bytesDownloaded: number;
+  totalBytes: number;
+  pct: number;
+  mbPerSec: number;
+  error?: string;
 }
 
 export type EngineBackend = 'ort' | 'wgsl';
@@ -365,7 +436,7 @@ export type BackgroundResponse =
   | { ok: false; error: string };
 
 export type WgslGemvVariant = 'q4-scalar' | 'q4-vec4-f16' | 'q4-subgroups-f16';
-export type WgslKvMode = 'fp16' | 'int8';
+export type WgslKvMode = 'fp16' | 'int8' | 'int4';
 
 export interface WgslBenchConfig {
   gemvVariant: WgslGemvVariant;
@@ -448,13 +519,15 @@ export type ClientToEngineMessage =
   | { type: 'SET_DISPLAY_HZ'; hz: number }
   | {
       type: 'PREFILL_BACKGROUND';
+      requestId?: string;
       slotKey: string;
       messages: ChatMessage[];
       isDraft?: boolean;
       url?: string;
       contentHash?: string;
     }
-  | { type: 'ABORT_BACKGROUND_PREFILL' }
+  | { type: 'ABORT_BACKGROUND_PREFILL'; requestId?: string; slotKey?: string }
+  | { type: 'EVICT_SLOT'; requestId: string; slotKey: string }
   | {
       type: 'GENERATE';
       requestId: string;
@@ -462,7 +535,16 @@ export type ClientToEngineMessage =
       config?: Partial<EngineConfig>;
       groundingText?: string;
       stopOnToolCall?: boolean;
+      prefixSlotKey?: string;
+      tools?: unknown;
     }
+  | { type: 'PROBE_HARDWARE_CATALOG' }
+  | {
+      type: 'DOWNLOAD_VERIFIED_MODEL';
+      modelId: string;
+      manifestUrl?: string;
+    }
+  | { type: 'CANCEL_MODEL_DOWNLOAD'; modelId?: string }
   | { type: 'ABORT'; requestId: string }
   | {
       type: 'RUN_BENCHMARK_SUITE';
@@ -497,8 +579,12 @@ export type EngineToClientMessage =
       lastWgslOpfs: WgslOpfsLoadResult | null;
       logs: LogEntry[];
     }
-  | { type: 'TELEMETRY_UPDATE'; telemetry: TelemetryState }
+  | { type: 'TELEMETRY_UPDATE'; requestId?: string; telemetry: TelemetryState }
   | { type: 'CONFIG_UPDATE'; config: EngineConfig }
+  | { type: 'HARDWARE_PROFILE_UPDATE'; hardwareProfile: HardwareProfileSnapshot; catalog: ModelCatalogChoice[] }
+  | { type: 'MODEL_DOWNLOAD_PROGRESS'; progress: ModelDownloadProgressInfo }
+  | { type: 'MODEL_DOWNLOAD_COMPLETE'; modelId: string; cachedInOpfs: boolean; catalog: ModelCatalogChoice[] }
+  | { type: 'MODEL_DOWNLOAD_ERROR'; modelId: string; error: string }
   | { type: 'WEBGPU_PROBE_RESULT'; probeInfo: WebGpuProbeInfo }
   | { type: 'OPFS_STATUS'; opfsStatus: OpfsStatusInfo }
   | { type: 'OPFS_SPIKE_PROGRESS'; message: string; pct: number }
@@ -511,6 +597,9 @@ export type EngineToClientMessage =
   | { type: 'WGSL_BENCH_RESULT'; result: WgslBenchResult }
   | { type: 'WGSL_OPFS_BENCH_RESULT'; result: WgslOpfsLoadResult }
   | { type: 'LOG'; entry: LogEntry }
-  | { type: 'TOKEN_DELTA'; requestId: string; delta: string; tokenCount: number }
+  | { type: 'PREFILL_COMPLETE'; requestId: string; slotKey: string; tokens: number; elapsedMs: number }
+  | { type: 'PREFILL_ERROR'; requestId: string; slotKey: string; error: string }
+  | { type: 'EVICT_COMPLETE'; requestId: string; slotKey: string }
+  | { type: 'TOKEN_DELTA'; requestId: string; delta: string; tokenCount: number; isReasoning?: boolean }
   | { type: 'GENERATION_COMPLETE'; requestId: string; finishReason: 'stop' | 'length' | 'abort' }
   | { type: 'GENERATION_ERROR'; requestId: string; error: string };

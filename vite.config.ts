@@ -6,23 +6,33 @@ import { defineConfig, type Plugin } from 'vite';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-function syncModelBundleToDist(bundleDir: string, destDir: string): void {
+function syncModelBundleToDist(
+  bundleDir: string,
+  destDir: string,
+  skipNames = new Set<string>(),
+): void {
   fs.mkdirSync(destDir, { recursive: true });
-  const srcFiles = fs
+  const entries = fs
     .readdirSync(bundleDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && !entry.name.endsWith('.tmp'))
-    .map((entry) => entry.name);
-  const srcFileSet = new Set(srcFiles);
+    .filter((entry) => !entry.name.endsWith('.tmp') && !skipNames.has(entry.name));
+  const keepNames = new Set(entries.map((entry) => entry.name));
 
   for (const existing of fs.readdirSync(destDir)) {
-    if (!srcFileSet.has(existing)) {
+    if (!keepNames.has(existing)) {
       fs.rmSync(path.join(destDir, existing), { recursive: true, force: true });
     }
   }
 
-  for (const fileName of srcFiles) {
-    const srcPath = path.join(bundleDir, fileName);
-    const destPath = path.join(destDir, fileName);
+  for (const entry of entries) {
+    const srcPath = path.join(bundleDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      syncModelBundleToDist(srcPath, destPath);
+      continue;
+    }
+    if (!entry.isFile()) {
+      continue;
+    }
     const srcSize = fs.statSync(srcPath).size;
     let needsSync = !fs.existsSync(destPath);
     if (!needsSync) {
@@ -84,6 +94,15 @@ function prepareDistAndAssetsPlugin(): Plugin {
       if (fs.existsSync(path.join(bundleDir, 'manifest.json'))) {
         syncModelBundleToDist(bundleDir, path.join(outDir, 'models', 'qwen35-4b'));
       }
+
+      const gemma4Dir = path.resolve(__dirname, 'model-bundle/gemma4-e4b');
+      if (fs.existsSync(path.join(gemma4Dir, 'manifest.json'))) {
+        syncModelBundleToDist(
+          gemma4Dir,
+          path.join(outDir, 'models', 'gemma4-e4b'),
+          new Set(['embed_tokens_q2.bin', 'ple_tokens_q2.bin']),
+        );
+      }
     },
   };
 }
@@ -103,6 +122,7 @@ export default defineConfig({
       input: {
         sidepanel: path.resolve(__dirname, 'sidepanel.html'),
         offscreen: path.resolve(__dirname, 'offscreen.html'),
+        permissions: path.resolve(__dirname, 'permissions.html'),
         background: path.resolve(__dirname, 'src/background/service-worker.ts'),
       },
       output: {
