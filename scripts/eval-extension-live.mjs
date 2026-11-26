@@ -295,6 +295,31 @@ function buildFixtureServer() {
     </article>
   </body></html>`,
 
+    '/checkout-2fa': `${baseHead('Secure Verification Checkpoint')}
+  <body>
+    <article>
+      <h1>Two-Factor Checkout Verification</h1>
+      <p id="handoff-status">2FA verification required — complete manual step before continuing.</p>
+      <button id="complete-2fa-btn" type="button">Complete 2FA Step</button>
+    </article>
+    <script>
+      document.getElementById('complete-2fa-btn').addEventListener('click', () => {
+        document.getElementById('handoff-status').innerHTML =
+          'Verification Complete: <strong>CHECKOUT-VERIFIED-904</strong>.';
+      });
+    </script>
+  </body></html>`,
+
+    '/spec-edge': `${baseHead('Edge Cache Runtime Spec')}
+  <body>
+    <article>
+      <h1>Edge Cache Speculative KV Architecture</h1>
+      <p>Verification Token: <strong>EDGE-KV-RELOAD-774</strong>.</p>
+      <p>Target Warm Prefill Latency: <strong>18 ms</strong>.</p>
+      <div id="scroller">${paragraphs}</div>
+    </article>
+  </body></html>`,
+
     '/spec-gamma': `${baseHead('Gamma Cluster Spec')}
   <body>
     <article>
@@ -2698,7 +2723,7 @@ async function main() {
               leakCount: mixTurn.leakedTags.length,
             },
             ...(mixScore < 1
-              ? { error: `Checks=${JSON.stringify(mixChecks)} tools=${JSON.stringify(mixTurn.toolMessages.map((t) => t.toolName))} ans=${JSON.stringify(mixTurn.answerText.slice(0, 220))}` }
+              ? { error: `Checks=${JSON.stringify(mixChecks)} tools=${JSON.stringify(mixTurn.toolMessages.map((t) => t.toolName))} chatError=${JSON.stringify(mixTurn.metrics?.chatError)} postClick=${JSON.stringify(mixTurn.postClickState)} ans=${JSON.stringify(mixTurn.answerText.slice(0, 220))}` }
               : {}),
           },
           mixTurn,
@@ -2980,7 +3005,7 @@ async function main() {
               ttftMs: round(gfmTurn.metrics?.ttftMs ?? 0, 1),
               leakCount: gfmTurn.leakedTags.length,
             },
-            ...(gfmScore < 1 ? { error: `Checks=${JSON.stringify(gfmChecks)} layout=${JSON.stringify(gfmLayout)} ans=${JSON.stringify(gfmTurn.answerText.slice(0, 200))}` } : {}),
+            ...(gfmScore < 1 ? { error: `Checks=${JSON.stringify(gfmChecks)} layout=${JSON.stringify(gfmLayout)} chatError=${JSON.stringify(gfmTurn.metrics?.chatError)} postClick=${JSON.stringify(gfmTurn.postClickState)} ans=${JSON.stringify(gfmTurn.answerText.slice(0, 200))}` } : {}),
           },
           gfmTurn,
         );
@@ -3343,9 +3368,11 @@ async function main() {
         });
         await waitForUiMetrics(
           sidePanel,
-          (m) => Boolean(m.activePage?.url?.includes('/article-quantum')),
+          (m) =>
+            Boolean(m.activePage?.url?.includes('/article-quantum')) &&
+            m.backgroundPrefillState === 'warm',
           { timeoutMs: 12000, pollMs: 100 },
-        );
+        ).catch(() => {});
 
         const composerEl = sidePanel.locator('.yui-composer-input');
         await composerEl.click();
@@ -4227,6 +4254,560 @@ async function main() {
         if (origViewportV8Code) {
           await sidePanel.setViewportSize(origViewportV8Code).catch(() => {});
         }
+      }
+
+      // ------------------------------------------------------------------
+      // Case 45 (v11): SitePermissionsList Off/Once/Site/Locked/Revoke @ 340px
+      // ------------------------------------------------------------------
+      let v11SiteTab = null;
+      const origViewportV11Site = sidePanel.viewportSize();
+      try {
+        const errorsBeforeSite = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/home`, { waitUntil: 'domcontentloaded' });
+        v11SiteTab = await context.newPage();
+        attachPageDiagnostics(v11SiteTab, 'v11SiteTab', runtimeErrors);
+        await v11SiteTab.goto(`${baseUrl}/spec-alpha`, { waitUntil: 'domcontentloaded' });
+
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', true);
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await sidePanel.evaluate(async ({ url }) => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          window.__TINYGPT_UI__.revokeAllSitePermissions();
+          window.__TINYGPT_UI__.setSitePermission('https://bank.chase.com/accounts', 'site');
+          window.__TINYGPT_UI__.setSitePermission('https://shop.example.com/checkout', 'site');
+          window.__TINYGPT_UI__.setSitePermission(url, 'off');
+          await window.__TINYGPT_UI__.clearChat();
+        }, { url: baseUrl });
+
+        // Open Lab drawer and verify locked sensitive origins + Off/Once/Site controls at 340px
+        await sidePanel.locator('button.yui-notch-btn[aria-label="Lab"]').click();
+        const spl = sidePanel.locator('[data-slot="site-permissions-list"]');
+        await spl.waitFor({ state: 'visible', timeout: 6000 });
+        const initialPermDom = await sidePanel.evaluate(() => {
+          const root = document.querySelector('[data-slot="site-permissions-list"]');
+          const rows = Array.from(root?.querySelectorAll('[data-permission-id]') ?? []);
+          const bankRow = rows.find((r) => (r.getAttribute('data-permission-id') || '').includes('bank.chase.com'));
+          const checkoutRow = rows.find((r) => (r.getAttribute('data-permission-id') || '').includes('shop.example.com'));
+          const bankSiteBtn = bankRow
+            ? Array.from(bankRow.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Site')
+            : null;
+          const checkoutSiteBtn = checkoutRow
+            ? Array.from(checkoutRow.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Site')
+            : null;
+          const styledNodes = root
+            ? Array.from(root.querySelectorAll('[style]')).length + (root.getAttribute('style') ? 1 : 0)
+            : -1;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          return {
+            rowCount: rows.length,
+            bankMode: bankRow?.getAttribute('data-mode') ?? null,
+            checkoutMode: checkoutRow?.getAttribute('data-mode') ?? null,
+            bankSiteDisabled: Boolean(bankSiteBtn?.disabled),
+            checkoutSiteDisabled: Boolean(checkoutSiteBtn?.disabled),
+            styledNodes,
+            overflowPx,
+          };
+        });
+        await sidePanel.locator('button.yui-notch-btn[aria-label="Lab"]').click();
+        await spl.waitFor({ state: 'hidden', timeout: 5000 });
+
+        // 1) 'off' blocks read_tab on local server origin
+        const offTurn = await runUiTurn(
+          sidePanel,
+          'Use list_tabs and read_tab on Alpha Cluster Spec and state the exact ALPHA-TOKEN identifier.',
+          { timeoutMs: 90000 },
+        );
+        const offToolText = offTurn.toolMessages.map((m) => m.contentPreview || '').join('\n');
+        const offBlocked =
+          !/ALPHA-TOKEN-718/i.test(offToolText) &&
+          !/ALPHA-TOKEN-718/i.test(offTurn.answerText);
+
+        // 2) Switch local server origin to 'once' via Lab drawer UI -> 1st call succeeds & resets to 'off'
+        await sidePanel.locator('button.yui-notch-btn[aria-label="Lab"]').click();
+        await spl.waitFor({ state: 'visible', timeout: 5000 });
+        const localRow = spl.locator(`[data-permission-id="${baseUrl}"]`);
+        await localRow.locator('button:has-text("Once")').click();
+        await sidePanel.locator('button.yui-notch-btn[aria-label="Lab"]').click();
+        await spl.waitFor({ state: 'hidden', timeout: 5000 });
+
+        await sidePanel.evaluate(async () => {
+          await window.__TINYGPT_UI__.clearChat();
+        });
+        const onceTurn = await runUiTurn(
+          sidePanel,
+          'Use list_tabs and read_tab on Alpha Cluster Spec and state ALPHA-TOKEN and its req/s number.',
+          { timeoutMs: 90000 },
+        );
+        const afterOncePerms = await sidePanel.evaluate(() => window.__TINYGPT_UI__.getSitePermissions());
+        const localAfterOnce = afterOncePerms.find((p) => p.origin === baseUrl);
+
+        // 3) Switch local server origin to 'site' in UI, revoke 1 row, then revoke all
+        await sidePanel.locator('button.yui-notch-btn[aria-label="Lab"]').click();
+        await spl.waitFor({ state: 'visible', timeout: 5000 });
+        await localRow.locator('button:has-text("Site")').click();
+        const siteModeSet = await localRow.getAttribute('data-mode');
+        await spl.locator('button[aria-label="Revoke https://bank.chase.com"]').click();
+        const countAfterSingleRevoke = await spl.locator('[data-permission-id]').count();
+        await spl.locator('button:has-text("Revoke all")').click();
+        const countAfterRevokeAll = await spl.locator('[data-permission-id]').count();
+        const storageAfterRevokeAll = await sidePanel.evaluate(() =>
+          window.localStorage.getItem('yours-site-permissions'),
+        );
+        await sidePanel.locator('button.yui-notch-btn[aria-label="Lab"]').click();
+        await spl.waitFor({ state: 'hidden', timeout: 5000 });
+
+        const permChecks = {
+          lockedSensitiveAndCheckout:
+            initialPermDom.rowCount === 3 &&
+            initialPermDom.bankMode === 'once' &&
+            initialPermDom.checkoutMode === 'once' &&
+            initialPermDom.bankSiteDisabled &&
+            initialPermDom.checkoutSiteDisabled,
+          offModeBlockedTool: offBlocked,
+          onceModeAllowedAndAutoReset:
+            /ALPHA-TOKEN-718/i.test(onceTurn.answerText) && localAfterOnce?.mode === 'off',
+          siteModeToggleAndRevokeAllClean:
+            siteModeSet === 'site' &&
+            countAfterSingleRevoke === 2 &&
+            countAfterRevokeAll === 0 &&
+            storageAfterRevokeAll === '[]',
+          zeroInlineStylesAndOverflow:
+            initialPermDom.styledNodes === 0 && initialPermDom.overflowPx === 0,
+          zeroLeaks: offTurn.leakedTags.length === 0 && onceTurn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeSite,
+        };
+        const permScore =
+          Object.values(permChecks).filter(Boolean).length / Object.keys(permChecks).length;
+        recordCase(
+          {
+            id: 'V11_site_permissions_list_off_once_site_locked_and_revoke_340px',
+            suite: 'guard',
+            passed: permScore === 1,
+            score: permScore,
+            latencyMs: onceTurn.elapsedMs,
+            metrics: {
+              rowCount: initialPermDom.rowCount,
+              bankSiteDisabled: initialPermDom.bankSiteDisabled,
+              checkoutSiteDisabled: initialPermDom.checkoutSiteDisabled,
+              offBlocked,
+              modeAfterOnce: localAfterOnce?.mode ?? null,
+              countAfterRevokeAll,
+              styledNodes: initialPermDom.styledNodes,
+              overflowPx: initialPermDom.overflowPx,
+              ttftMs: round(onceTurn.metrics?.ttftMs ?? 0, 1),
+              leakCount: offTurn.leakedTags.length + onceTurn.leakedTags.length,
+            },
+            ...(permScore < 1
+              ? {
+                  error: `Checks=${JSON.stringify(permChecks)} init=${JSON.stringify(initialPermDom)} onceAns=${JSON.stringify(onceTurn.answerText.slice(0, 120))}`,
+                }
+              : {}),
+          },
+          onceTurn,
+        );
+      } finally {
+        await sidePanel
+          .evaluate(() => {
+            window.__TINYGPT_UI__?.revokeAllSitePermissions();
+            if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+              chrome.storage.local.remove('yours-site-permissions');
+            }
+          })
+          .catch(() => {});
+        if (v11SiteTab) {
+          await v11SiteTab.close().catch(() => {});
+        }
+        if (origViewportV11Site) {
+          await sidePanel.setViewportSize(origViewportV11Site).catch(() => {});
+        }
+        await toggleChip(sidePanel, 'Page', false).catch(() => {});
+      }
+
+      // ------------------------------------------------------------------
+      // Case 46 (v11): AgentHandoffCard Pause, TakeOver, Resume & Cancel @ 340px
+      // ------------------------------------------------------------------
+      let v11HandoffTab = null;
+      const origViewportV11Handoff = sidePanel.viewportSize();
+      try {
+        const errorsBeforeHandoff = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/home`, { waitUntil: 'domcontentloaded' });
+        v11HandoffTab = await context.newPage();
+        attachPageDiagnostics(v11HandoffTab, 'v11HandoffTab', runtimeErrors);
+        await v11HandoffTab.goto(`${baseUrl}/checkout-2fa`, { waitUntil: 'domcontentloaded' });
+
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', true);
+        await homePage.bringToFront();
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          window.__TINYGPT_UI__.refreshActiveTab();
+          await window.__TINYGPT_UI__.clearChat();
+        });
+        await waitForUiMetrics(
+          sidePanel,
+          (m) => Boolean(m.activePage?.url?.includes('/home')),
+          { timeoutMs: 12000, pollMs: 100 },
+        );
+
+        // Start live turn targeting /checkout-2fa; execution must pause at AgentHandoffCard BEFORE read
+        const resumeTurnPromise = runUiTurn(
+          sidePanel,
+          'Use list_tabs and read_tab on Secure Verification Checkpoint, then report the exact CHECKOUT-VERIFIED confirmation code.',
+          { timeoutMs: 90000 },
+        );
+
+        const handoffCard = sidePanel.locator('[data-slot="agent-handoff-card"]');
+        try {
+          await handoffCard.waitFor({ state: 'visible', timeout: 30000 });
+        } catch (waitErr) {
+          const diag = await sidePanel
+            .evaluate(() => ({
+              metrics: window.__TINYGPT_UI__.getMetrics(),
+              handoff: window.__TINYGPT_UI__.getHandoffState(),
+              msgs: window.__TINYGPT_UI__.getTrajectory().messages.map((m) => ({
+                role: m.role,
+                toolName: m.toolName,
+                toolArgs: m.toolArgs,
+                preview: String(m.content || '').slice(0, 140),
+              })),
+            }))
+            .catch(() => ({}));
+          throw new Error(`${waitErr.message} | Case46 diag=${JSON.stringify(diag)}`);
+        }
+
+        const waitingInspect = await sidePanel.evaluate(() => {
+          const card = document.querySelector('[data-slot="agent-handoff-card"]');
+          const state = card?.getAttribute('data-state') ?? null;
+          const text = card?.textContent ?? '';
+          const styledNodes = card
+            ? Array.from(card.querySelectorAll('[style]')).length + (card.getAttribute('style') ? 1 : 0)
+            : -1;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          const traj = window.__TINYGPT_UI__.getTrajectory();
+          return {
+            state,
+            hasOrigin: /127\.0\.0\.1/.test(text),
+            styledNodes,
+            overflowPx,
+            isGenerating: traj.isGenerating,
+            hasReadToolOutputYet: traj.messages.some(
+              (m) => m.role === 'tool' && m.toolName === 'read_tab',
+            ),
+          };
+        });
+
+        // Take over tab -> state shifts to 'user-active', still halted until user completes 2FA + clicks Resume
+        await handoffCard.locator('button:has-text("Take over tab")').click();
+        await sidePanel.waitForFunction(
+          () =>
+            document.querySelector('[data-slot="agent-handoff-card"]')?.getAttribute('data-state') ===
+            'user-active',
+          null,
+          { timeout: 5000 },
+        );
+        const takeOverBtnGone =
+          (await handoffCard.locator('button:has-text("Take over tab")').count()) === 0;
+        await v11HandoffTab.locator('#complete-2fa-btn').click();
+        await sidePanel.waitForTimeout(150);
+        const stillPausedAfterDomChange = await sidePanel.evaluate(
+          () => window.__TINYGPT_UI__.getHandoffState().active,
+        );
+
+        // Resume -> tool now reads updated /checkout-2fa DOM and Qwen completes turn with code
+        await handoffCard.locator('button:has-text("Resume")').click();
+        const resumeTurn = await resumeTurnPromise;
+
+        // Cancel flow -> clear, re-trigger handoff on /checkout-2fa, and Cancel immediately
+        await sidePanel.evaluate(async () => {
+          await window.__TINYGPT_UI__.clearChat();
+        });
+        const cancelTurnPromise = runUiTurn(
+          sidePanel,
+          'Use list_tabs and read_tab on Secure Verification Checkpoint and tell me the verification status.',
+          { timeoutMs: 90000 },
+        );
+        try {
+          await handoffCard.waitFor({ state: 'visible', timeout: 30000 });
+        } catch (cancelWaitErr) {
+          const diag2 = await sidePanel
+            .evaluate(() => ({
+              metrics: window.__TINYGPT_UI__.getMetrics(),
+              handoff: window.__TINYGPT_UI__.getHandoffState(),
+              msgs: window.__TINYGPT_UI__.getTrajectory().messages.map((m) => ({
+                role: m.role,
+                toolName: m.toolName,
+                toolArgs: m.toolArgs,
+                preview: String(m.content || '').slice(0, 140),
+              })),
+            }))
+            .catch(() => ({}));
+          throw new Error(`${cancelWaitErr.message} | Case46-Cancel diag=${JSON.stringify(diag2)}`);
+        }
+        await handoffCard.locator('button:has-text("Cancel")').click();
+        await handoffCard.waitFor({ state: 'hidden', timeout: 8000 });
+        const cancelTurn = await cancelTurnPromise;
+        const postCancelState = await sidePanel.evaluate(() => ({
+          handoff: window.__TINYGPT_UI__.getHandoffState(),
+          metrics: window.__TINYGPT_UI__.getMetrics(),
+        }));
+
+        const handoffChecks = {
+          pausedBeforePageRead:
+            waitingInspect.state === 'waiting' &&
+            waitingInspect.hasOrigin &&
+            !waitingInspect.hasReadToolOutputYet,
+          takeOverThenUserActiveHalted:
+            takeOverBtnGone && Boolean(stillPausedAfterDomChange),
+          resumedAndReadVerifiedCode: /CHECKOUT-VERIFIED-904/i.test(resumeTurn.answerText),
+          cancelledCleanly:
+            !postCancelState.handoff.active &&
+            (postCancelState.metrics.turnState === 'idle' ||
+              postCancelState.metrics.turnState === 'aborted') &&
+            !postCancelState.metrics.isGenerating &&
+            !/CHECKOUT-VERIFIED-904/i.test(cancelTurn.answerText),
+          zeroInlineStylesAndOverflow:
+            waitingInspect.styledNodes === 0 && waitingInspect.overflowPx === 0,
+          zeroLeaks: resumeTurn.leakedTags.length === 0 && cancelTurn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeHandoff,
+        };
+        const handoffScore =
+          Object.values(handoffChecks).filter(Boolean).length / Object.keys(handoffChecks).length;
+        recordCase(
+          {
+            id: 'V11_agent_handoff_card_pause_takeover_resume_and_cancel_live_qwen_340px',
+            suite: 'guard',
+            passed: handoffScore === 1,
+            score: handoffScore,
+            latencyMs: resumeTurn.elapsedMs,
+            metrics: {
+              pausedBeforeRead: !waitingInspect.hasReadToolOutputYet,
+              takeOverBtnGone,
+              resumedCodeOk: /CHECKOUT-VERIFIED-904/i.test(resumeTurn.answerText),
+              cancelledToIdle: postCancelState.metrics.turnState === 'idle',
+              styledNodes: waitingInspect.styledNodes,
+              overflowPx: waitingInspect.overflowPx,
+              ttftMs: round(resumeTurn.metrics?.ttftMs ?? 0, 1),
+              leakCount: resumeTurn.leakedTags.length + cancelTurn.leakedTags.length,
+            },
+            ...(handoffScore < 1
+              ? {
+                  error: `Checks=${JSON.stringify(handoffChecks)} waiting=${JSON.stringify(waitingInspect)} resumeAns=${JSON.stringify(resumeTurn.answerText.slice(0, 120))} cancelAns=${JSON.stringify(cancelTurn.answerText.slice(0, 120))}`,
+                }
+              : {}),
+          },
+          resumeTurn,
+        );
+      } finally {
+        await sidePanel
+          .evaluate(async () => {
+            await window.__TINYGPT_UI__?.clearChat();
+          })
+          .catch(() => {});
+        if (v11HandoffTab) {
+          await v11HandoffTab.close().catch(() => {});
+        }
+        if (origViewportV11Handoff) {
+          await sidePanel.setViewportSize(origViewportV11Handoff).catch(() => {});
+        }
+        await toggleChip(sidePanel, 'Page', false).catch(() => {});
+      }
+
+      // ------------------------------------------------------------------
+      // Case 47 (v11): RTL Sidepanel Layout (dir="rtl") + Live Qwen Turn @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV11Rtl = sidePanel.viewportSize();
+      try {
+        const errorsBeforeRtl = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/article-quantum`, { waitUntil: 'domcontentloaded' });
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', true);
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await homePage.bringToFront();
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setDirection('rtl');
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          window.__TINYGPT_UI__.refreshActiveTab();
+          await window.__TINYGPT_UI__.clearChat();
+        });
+        await waitForUiMetrics(
+          sidePanel,
+          (m) =>
+            Boolean(m.activePage?.url?.includes('/article-quantum')) &&
+            m.backgroundPrefillState === 'warm',
+          { timeoutMs: 12000, pollMs: 100 },
+        ).catch(() => {});
+
+        const rtlTurn = await runUiTurn(
+          sidePanel,
+          'Summarize QUANTUM-ANCHOR-8821 and BUDGET-CAP-49M in a 2-bullet list followed by a 2-row GFM table.',
+          { timeoutMs: 90000 },
+        );
+
+        const rtlInspect = await sidePanel.evaluate(() => {
+          const root = document.querySelector('.ext-root');
+          const styledNodes = root
+            ? Array.from(root.querySelectorAll('[style]')).length + (root.getAttribute('style') ? 1 : 0)
+            : -1;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          const composerBox = document.querySelector('.yui-composer')?.getBoundingClientRect();
+          const lastMsg = Array.from(document.querySelectorAll('.yui-assistant-turn')).pop();
+          const hasListOrTable = Boolean(
+            lastMsg?.querySelector('ul, ol, table, .yui-sr-table'),
+          );
+          return {
+            htmlDir: document.documentElement.dir,
+            rootDir: root?.getAttribute('dir') ?? null,
+            computedDir: root ? getComputedStyle(root).direction : null,
+            styledNodes,
+            overflowPx,
+            hasListOrTable,
+            composerWithinViewport:
+              Boolean(composerBox) &&
+              composerBox.left >= -1 &&
+              composerBox.right <= window.innerWidth + 1,
+          };
+        });
+
+        const rtlChecks = {
+          rtlDirectionActive:
+            rtlInspect.htmlDir === 'rtl' &&
+            rtlInspect.rootDir === 'rtl' &&
+            rtlInspect.computedDir === 'rtl',
+          answerAccurateAndFormatted:
+            /QUANTUM-ANCHOR-8821/i.test(rtlTurn.answerText) &&
+            /BUDGET-CAP-49M|49\s*million/i.test(rtlTurn.answerText) &&
+            rtlInspect.hasListOrTable,
+          composerFitsAt340px: rtlInspect.composerWithinViewport,
+          zeroInlineStylesAndOverflow:
+            rtlInspect.styledNodes === 0 && rtlInspect.overflowPx === 0,
+          zeroLeaks: rtlTurn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeRtl,
+        };
+        const rtlScore =
+          Object.values(rtlChecks).filter(Boolean).length / Object.keys(rtlChecks).length;
+        recordCase(
+          {
+            id: 'V11_rtl_sidepanel_layout_and_live_qwen_turn_340px',
+            suite: 'harness',
+            passed: rtlScore === 1,
+            score: rtlScore,
+            latencyMs: rtlTurn.elapsedMs,
+            metrics: {
+              computedDir: rtlInspect.computedDir,
+              composerWithinViewport: rtlInspect.composerWithinViewport,
+              styledNodes: rtlInspect.styledNodes,
+              overflowPx: rtlInspect.overflowPx,
+              ttftMs: round(rtlTurn.metrics?.ttftMs ?? 0, 1),
+              leakCount: rtlTurn.leakedTags.length,
+            },
+            ...(rtlScore < 1
+              ? {
+                  error: `Checks=${JSON.stringify(rtlChecks)} inspect=${JSON.stringify(rtlInspect)} ans=${JSON.stringify(rtlTurn.answerText.slice(0, 140))}`,
+                }
+              : {}),
+          },
+          rtlTurn,
+        );
+      } finally {
+        await sidePanel
+          .evaluate(() => {
+            window.__TINYGPT_UI__?.setDirection('ltr');
+          })
+          .catch(() => {});
+        await toggleChip(sidePanel, 'Page', false).catch(() => {});
+        if (origViewportV11Rtl) {
+          await sidePanel.setViewportSize(origViewportV11Rtl).catch(() => {});
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Case 48 (v11): Post-Reload Active-Tab Speculative KV Warmup + Sub-500ms TTFT
+      // ------------------------------------------------------------------
+      try {
+        const errorsBeforeReloadKv = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/spec-edge`, { waitUntil: 'domcontentloaded' });
+        await homePage.bringToFront();
+        await sidePanel.evaluate(async () => {
+          await window.__TINYGPT_UI__.clearChat();
+        });
+        await sidePanel.reload({ waitUntil: 'domcontentloaded' });
+        await waitForUiMetrics(sidePanel, (m) => m.status === 'ready', {
+          timeoutMs: 60000,
+          pollMs: 120,
+        });
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', true);
+        await homePage.bringToFront();
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          window.__TINYGPT_UI__.refreshActiveTab();
+          await window.__TINYGPT_UI__.clearChat();
+        });
+        try {
+          await waitForUiMetrics(
+            sidePanel,
+            (m) =>
+              Boolean(m.activePage?.url?.includes('/spec-edge')) &&
+              m.backgroundPrefillState === 'warm' &&
+              typeof m.activePrefixSlot === 'string' &&
+              m.activePrefixSlot.startsWith('tab:'),
+            { timeoutMs: 25000, pollMs: 120 },
+          );
+        } catch (waitErr) {
+          const logs = await sidePanel
+            .evaluate(() =>
+              (window.__TINYGPT_CLIENT__?.getSnapshot().logs ?? []).slice(-10),
+            )
+            .catch(() => []);
+          throw new Error(`${waitErr.message} | logs=${JSON.stringify(logs)}`);
+        }
+
+        const reloadKvTurn = await runUiTurn(
+          sidePanel,
+          'What is the exact verification token and target warm prefill latency on this active page?',
+          { timeoutMs: 60000 },
+        );
+
+        const reloadKvChecks = {
+          prefixReusedAfterReload: reloadKvTurn.metrics?.prefixReused === true,
+          warmTtftSub500Ms:
+            typeof reloadKvTurn.metrics?.ttftMs === 'number' &&
+            reloadKvTurn.metrics.ttftMs > 0 &&
+            reloadKvTurn.metrics.ttftMs < 500,
+          factsAccurate:
+            /EDGE-KV-RELOAD-774/i.test(reloadKvTurn.answerText) &&
+            /18\s*ms/i.test(reloadKvTurn.answerText),
+          zeroLeaks: reloadKvTurn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeReloadKv,
+        };
+        const reloadKvScore =
+          Object.values(reloadKvChecks).filter(Boolean).length / Object.keys(reloadKvChecks).length;
+        recordCase(
+          {
+            id: 'V11_post_reload_active_tab_speculative_kv_ttft_live',
+            suite: 'harness',
+            passed: reloadKvScore === 1,
+            score: reloadKvScore,
+            latencyMs: reloadKvTurn.elapsedMs,
+            metrics: {
+              prefixReused: reloadKvTurn.metrics?.prefixReused ?? null,
+              activePrefixSlot: reloadKvTurn.metrics?.activePrefixSlot ?? null,
+              ttftMs: round(reloadKvTurn.metrics?.ttftMs ?? 0, 1),
+              decodeTokPerSec: round(reloadKvTurn.metrics?.tokensPerSec ?? 0, 2),
+              leakCount: reloadKvTurn.leakedTags.length,
+            },
+            ...(reloadKvScore < 1
+              ? {
+                  error: `Checks=${JSON.stringify(reloadKvChecks)} metrics=${JSON.stringify(reloadKvTurn.metrics)} ans=${JSON.stringify(reloadKvTurn.answerText.slice(0, 140))}`,
+                }
+              : {}),
+          },
+          reloadKvTurn,
+        );
+      } finally {
+        await toggleChip(sidePanel, 'Page', false).catch(() => {});
       }
     } catch (caseErr) {
       recordCase({
