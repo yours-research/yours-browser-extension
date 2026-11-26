@@ -108,10 +108,19 @@ import {
 } from './voiceController.ts';
 import { extractUrlsFromArguments } from '@yours/guard/policy';
 import {
+  OfflineStatusBanner,
+  SessionCheckpointCard,
   SitePermissionsList,
   type AgentHandoffState,
   type SitePermissionMode,
 } from '@yours/ui';
+import {
+  createCheckpointSnapshot,
+  loadSavedCheckpoints,
+  persistSavedCheckpoints,
+  upsertCheckpointRecord,
+  type SessionCheckpointRecord,
+} from './sessionCheckpoints.ts';
 import {
   createSitePermissionEntry,
   loadLocalSitePermissions,
@@ -248,6 +257,13 @@ declare global {
         origin: string | null;
         title: string | null;
       };
+      getOfflineState: () => {
+        isOnline: boolean;
+        localOnlyMode: boolean;
+      };
+      setLocalOnlyMode: (active: boolean) => void;
+      saveCheckpoint: (label?: string) => SessionCheckpointRecord | null;
+      loadModelConfig: (patch: Partial<EngineConfig>) => Promise<void>;
     };
   }
 }
@@ -765,6 +781,38 @@ export function App() {
   const [chromeAiAvailable, setChromeAiAvailable] = useState(false);
 
   const [threads, setThreads] = useState<ThreadHistoryItem[]>([]);
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true,
+  );
+  const [localOnlyMode, setLocalOnlyMode] = useState(false);
+  const [offlineRetrying, setOfflineRetrying] = useState(false);
+  const isOnlineRef = useRef(isOnline);
+  isOnlineRef.current = isOnline;
+  const localOnlyModeRef = useRef(localOnlyMode);
+  localOnlyModeRef.current = localOnlyMode;
+  const [checkpoints, setCheckpoints] = useState<SessionCheckpointRecord[]>(() =>
+    loadSavedCheckpoints(),
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleOnline = () => {
+      isOnlineRef.current = true;
+      setIsOnline(true);
+      setOfflineRetrying(false);
+    };
+    const handleOffline = () => {
+      isOnlineRef.current = false;
+      setIsOnline(false);
+      setOfflineRetrying(false);
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
   const [pinnedThreadIds, setPinnedThreadIds] = useState<Set<string>>(() => {
     try {
       const saved = window.localStorage.getItem('yours-pinned-threads');
@@ -1438,6 +1486,30 @@ export function App() {
         };
 
         try {
+          if (
+            (!isOnlineRef.current || localOnlyModeRef.current) &&
+            (name === 'search_web_tab' ||
+              name === 'fetch_background_tab' ||
+              name === 'web_search' ||
+              name === 'fetch_and_read_url')
+          ) {
+            recordNetworkAuditRef.current(
+              name,
+              'Paused web tool while offline / local-only mode is active',
+              'blocked',
+            );
+            return finalizeExecution(
+              {
+                ok: false,
+                toolName: name,
+                formatted:
+                  'Web tools paused (Offline / Local-only mode): 100% local WebGPU inference remains available.',
+                tainted: false,
+                error: 'Web tools paused while offline or local-only mode is active.',
+              },
+              true,
+            );
+          }
 
         if (!handoffApprovedTurnRef.current) {
           let targetTabId: number | undefined;
@@ -2490,6 +2562,64 @@ export function App() {
     }
   }, [expandedNotchId, refreshThreadsList, refreshMemoryList]);
 
+  const saveCurrentThreadCheckpoint = useCallback(
+    (label?: string): SessionCheckpointRecord | null => {
+      const threadId = chat.thread?.id;
+      if (!threadId) return null;
+      const kvTotal =
+        engineSnapshot.telemetry.allocatedKvCapacity || engineSnapshot.config.wgslMaxContext;
+      const record = createCheckpointSnapshot({
+        threadId,
+        nodes: chat.nodes,
+        pinnedTabCount: pageEnabled && activePage?.content.trim() ? 1 : 0,
+        contextSnapshot: `${formatCompactTokens(engineSnapshot.telemetry.activeContextTokens)} / ${formatCompactTokens(kvTotal)} tok`,
+        label,
+      });
+      if (!record) return null;
+      setCheckpoints((prev) => {
+        const next = upsertCheckpointRecord(prev, record);
+        persistSavedCheckpoints(next);
+        return next;
+      });
+      showToast(`Saved ${record.title}`);
+      return record;
+    },
+    [
+      chat.thread?.id,
+      chat.nodes,
+      engineSnapshot.telemetry.allocatedKvCapacity,
+      engineSnapshot.telemetry.activeContextTokens,
+      engineSnapshot.config.wgslMaxContext,
+      pageEnabled,
+      activePage?.content,
+      showToast,
+    ],
+  );
+
+  const restoreThreadCheckpoint = useCallback(
+    async (cp: SessionCheckpointRecord) => {
+      if (chat.isGenerating) return;
+      await harnessStore.updateThread(cp.threadId, { activeLeafNodeId: cp.leafNodeId });
+      await chat.loadThread(cp.threadId);
+      await client.resetContext(false);
+      setExpandedNotchId(null);
+      showToast(`Restored ${cp.title}`);
+    },
+    [chat, harnessStore, client, showToast],
+  );
+
+  const branchFromThreadCheckpoint = useCallback(
+    async (cp: SessionCheckpointRecord) => {
+      if (chat.isGenerating) return;
+      await harnessStore.updateThread(cp.threadId, { activeLeafNodeId: cp.leafNodeId });
+      await chat.loadThread(cp.threadId);
+      await client.resetContext(false);
+      setExpandedNotchId(null);
+      showToast(`Branched from Turn ${cp.turnCount} — send a prompt to create a branch`);
+    },
+    [chat, harnessStore, client, showToast],
+  );
+
   const handleSendText = useCallback(
     async (rawText: string) => {
       const trimmed = rawText.trim();
@@ -2756,6 +2886,19 @@ export function App() {
         origin: agentHandoff?.origin ?? null,
         title: agentHandoff?.title ?? null,
       }),
+      getOfflineState: () => ({
+        isOnline: isOnlineRef.current,
+        localOnlyMode: localOnlyModeRef.current,
+      }),
+      setLocalOnlyMode: (active: boolean) => setLocalOnlyMode(active),
+      saveCheckpoint: (label?: string) => saveCurrentThreadCheckpoint(label),
+      loadModelConfig: async (patch: Partial<EngineConfig>) => {
+        userUnloadedRef.current = false;
+        if (typeof patch.modelId === 'string' && patch.modelId.trim()) {
+          setSelectedModelId(patch.modelId);
+        }
+        await client.loadModel(patch);
+      },
     };
   }, [
     client,
@@ -2778,6 +2921,7 @@ export function App() {
     revokeAllSitePermissions,
     agentHandoff,
     voiceController,
+    saveCurrentThreadCheckpoint,
   ]);
 
   const handleToggleResearch = useCallback(async () => {
@@ -3018,6 +3162,16 @@ export function App() {
             >
               + New chat
             </button>
+            <button
+              type="button"
+              className="yui-chip-btn"
+              disabled={chat.isGenerating || chat.nodes.filter((n) => n.message.role !== 'system').length === 0}
+              onClick={() => {
+                saveCurrentThreadCheckpoint();
+              }}
+            >
+              Save checkpoint
+            </button>
             {chat.thread?.id && threads.length > 1 ? (
               <button
                 type="button"
@@ -3033,6 +3187,46 @@ export function App() {
               </button>
             ) : null}
           </div>
+          {(() => {
+            const activeThreadId = chat.thread?.id ?? '';
+            const savedForThread = checkpoints.filter((c) => c.threadId === activeThreadId);
+            const fallbackLiveCheckpoint =
+              savedForThread.length === 0 && activeThreadId
+                ? createCheckpointSnapshot({
+                    threadId: activeThreadId,
+                    nodes: chat.nodes,
+                    pinnedTabCount: pageEnabled && activePage?.content.trim() ? 1 : 0,
+                    contextSnapshot: `${formatCompactTokens(engineSnapshot.telemetry.activeContextTokens)} / ${formatCompactTokens(engineSnapshot.telemetry.allocatedKvCapacity || engineSnapshot.config.wgslMaxContext)} tok`,
+                    label: 'Current thread checkpoint',
+                  })
+                : null;
+            const visibleCheckpoints =
+              savedForThread.length > 0
+                ? savedForThread.slice(0, 2)
+                : fallbackLiveCheckpoint
+                  ? [fallbackLiveCheckpoint]
+                  : [];
+            if (visibleCheckpoints.length === 0) return null;
+            return visibleCheckpoints.map((cp) => (
+              <SessionCheckpointCard
+                key={cp.id}
+                title={cp.title}
+                summary={cp.summary}
+                timestamp={cp.timestampLabel}
+                turnCount={cp.turnCount}
+                pinnedTabCount={cp.pinnedTabCount}
+                contextSnapshot={cp.contextSnapshot}
+                confirmRestore
+                disabled={chat.isGenerating}
+                onRestore={() => {
+                  void restoreThreadCheckpoint(cp);
+                }}
+                onBranch={() => {
+                  void branchFromThreadCheckpoint(cp);
+                }}
+              />
+            ));
+          })()}
           {(() => {
             const threadTitle = chat.thread?.title || 'Yours Local Conversation';
             const exportBundle = buildSessionExportPayload({
@@ -4423,6 +4617,38 @@ export function App() {
               }
               onClose={closeFindBar}
               autoFocus
+            />
+          </div>
+        ) : null}
+        {!isOnline || localOnlyMode ? (
+          <div className="ext-tool-group">
+            <OfflineStatusBanner
+              status={
+                !isOnline
+                  ? localOnlyMode
+                    ? 'offline-degraded'
+                    : 'offline-ready'
+                  : 'sync-paused'
+              }
+              localOnlyActive={localOnlyMode}
+              retrying={offlineRetrying}
+              onLocalOnly={() => setLocalOnlyMode((prev) => !prev)}
+              onRetry={() => {
+                setOfflineRetrying(true);
+                const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : true;
+                isOnlineRef.current = onlineNow;
+                setIsOnline(onlineNow);
+                window.setTimeout(() => {
+                  setOfflineRetrying(false);
+                  if (onlineNow) {
+                    localOnlyModeRef.current = false;
+                    setLocalOnlyMode(false);
+                    showToast('Back online · Web tools ready');
+                  } else {
+                    showToast('Still offline · Local WebGPU stays ready');
+                  }
+                }, 160);
+              }}
             />
           </div>
         ) : null}

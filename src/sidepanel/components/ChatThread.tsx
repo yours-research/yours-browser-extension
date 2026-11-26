@@ -163,6 +163,29 @@ function toCitationFootnoteItem(src: SourceCitation, idx: number): CitationFootn
   };
 }
 
+function renderBranchPicker(
+  siblingInfo: BranchSiblingInfo | undefined,
+  onSwitchBranch: (branchNodeId: string) => void,
+) {
+  if (!siblingInfo || siblingInfo.total <= 1) return undefined;
+  return (
+    <BranchPicker
+      currentIndex={siblingInfo.activeIndex + 1}
+      total={siblingInfo.total}
+      onPrevious={() => {
+        const prevIdx = (siblingInfo.activeIndex - 1 + siblingInfo.total) % siblingInfo.total;
+        const target = siblingInfo.siblingIds[prevIdx];
+        if (target) onSwitchBranch(target);
+      }}
+      onNext={() => {
+        const nextIdx = (siblingInfo.activeIndex + 1) % siblingInfo.total;
+        const target = siblingInfo.siblingIds[nextIdx];
+        if (target) onSwitchBranch(target);
+      }}
+    />
+  );
+}
+
 export function ChatThread({
   nodes,
   branchSiblings,
@@ -331,23 +354,7 @@ export function ChatThread({
                   }}
                   onCopy={() => onCopyText(msg.content)}
                 />
-                {siblingInfo && siblingInfo.total > 1 ? (
-                  <BranchPicker
-                    currentIndex={siblingInfo.activeIndex}
-                    total={siblingInfo.total}
-                    onPrevious={() => {
-                      const prevIdx =
-                        (siblingInfo.activeIndex - 1 + siblingInfo.total) % siblingInfo.total;
-                      const target = siblingInfo.siblingIds[prevIdx];
-                      if (target) onSwitchBranch(target);
-                    }}
-                    onNext={() => {
-                      const nextIdx = (siblingInfo.activeIndex + 1) % siblingInfo.total;
-                      const target = siblingInfo.siblingIds[nextIdx];
-                      if (target) onSwitchBranch(target);
-                    }}
-                  />
-                ) : null}
+                {renderBranchPicker(siblingInfo, onSwitchBranch)}
               </div>,
             );
             continue;
@@ -422,24 +429,7 @@ export function ChatThread({
                   }
                 : undefined;
 
-            const picker =
-              siblingInfo && siblingInfo.total > 1 ? (
-                <BranchPicker
-                  currentIndex={siblingInfo.activeIndex}
-                  total={siblingInfo.total}
-                  onPrevious={() => {
-                    const prevIdx =
-                      (siblingInfo.activeIndex - 1 + siblingInfo.total) % siblingInfo.total;
-                    const target = siblingInfo.siblingIds[prevIdx];
-                    if (target) onSwitchBranch(target);
-                  }}
-                  onNext={() => {
-                    const nextIdx = (siblingInfo.activeIndex + 1) % siblingInfo.total;
-                    const target = siblingInfo.siblingIds[nextIdx];
-                    if (target) onSwitchBranch(target);
-                  }}
-                />
-              ) : undefined;
+            const picker = renderBranchPicker(siblingInfo, onSwitchBranch);
 
             rendered.push(
               <AssistantMessage

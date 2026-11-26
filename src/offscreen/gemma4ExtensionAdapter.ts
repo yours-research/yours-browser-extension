@@ -17,6 +17,7 @@ import { sampleNextToken, type SamplingOptions } from './sampling.ts';
 
 export interface WgslRuntimeLoadOptions {
   assetBaseUrl?: string;
+  bundleBaseUrl?: string | null;
   modelId?: string;
   kvMode?: WgslKvMode;
   maxContext?: number;

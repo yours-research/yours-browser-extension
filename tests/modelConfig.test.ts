@@ -75,6 +75,31 @@ describe('modelConfig geometry & partitioning', () => {
 
     const resolved2B = resolveModelArch({ arch: QWEN35_2B_ARCH });
     expect(resolved2B).toEqual(QWEN35_2B_ARCH);
+
+    const exp003cManifest = JSON.parse(
+      fs.readFileSync(
+        'D:/yours-pragma-lab/05_wgsl_bundles/EXP-003c-tool-qad/manifest.json',
+        'utf8',
+      ),
+    );
+    const resolvedExp003c = resolveModelArch(exp003cManifest);
+    expect(resolvedExp003c.vocabSize).toBe(81920);
+    expect(resolvedExp003c.hiddenSize).toBe(2560);
+    expect(resolvedExp003c.intermediateSize).toBe(9216);
+    expect(resolvedExp003c.numLayers).toBe(32);
+    expect(resolvedExp003c.fullAttnLayers).toEqual([3, 7, 11, 15, 19, 23, 27, 31]);
+
+    const exp003cVocabSlices = partitionVocabRowsIntoSlabs(
+      resolvedExp003c.vocabSize,
+      resolvedExp003c.hiddenSize,
+      256 * MIB,
+    );
+    expect(exp003cVocabSlices).toHaveLength(1);
+    expect(exp003cVocabSlices[0]?.byteSize).toBe(exp003cManifest.slab2Bytes);
+    expect(exp003cVocabSlices[0]?.byteSize).toBe(131072000);
+    const exp003cLayers = computeLayerWeightByteSizes(resolvedExp003c).reduce((a, b) => a + b, 0);
+    expect(exp003cLayers).toBe(exp003cManifest.slab0Bytes + exp003cManifest.slab1Bytes);
+    expect(computeAuxLayout(resolvedExp003c).totalF32s * 4).toBe(exp003cManifest.auxBytes);
   });
 
   it('computes derived geometry helpers accurately for 4B, pruned 4B, and 2B', () => {

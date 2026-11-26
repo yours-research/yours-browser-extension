@@ -1,4 +1,4 @@
-import { AutoTokenizer, env, type PreTrainedTokenizer } from '@huggingface/transformers';
+import { AutoTokenizer, PreTrainedTokenizer, env } from '@huggingface/transformers';
 import { buildSlot0Envelope } from '@yours/harness/compaction';
 import { CANONICAL_TOOL_DEFINITIONS } from '@yours/tools/schemas';
 import {
@@ -271,9 +271,18 @@ export class InferenceEngine {
         ? patch.forceComputeTier
         : (this.config.forceComputeTier ?? null);
     const tierChanged = nextForceTier !== (this.config.forceComputeTier ?? null);
+    const nextBundleBaseUrl =
+      patch.bundleBaseUrl !== undefined
+        ? (typeof patch.bundleBaseUrl === 'string' && patch.bundleBaseUrl.trim().length > 0
+            ? patch.bundleBaseUrl.trim().replace(/\/+$/, '')
+            : null)
+        : (this.config.bundleBaseUrl ?? null);
+    const bundleChanged = nextBundleBaseUrl !== (this.config.bundleBaseUrl ?? null);
     const nextModelId =
       typeof patch.modelId === 'string' &&
-      (BUNDLED_MODEL_IDS as readonly string[]).includes(patch.modelId)
+      patch.modelId.trim().length > 0 &&
+      ((BUNDLED_MODEL_IDS as readonly string[]).includes(patch.modelId) ||
+        Boolean(nextBundleBaseUrl))
         ? patch.modelId
         : this.config.modelId;
     const modelChanged = nextModelId !== this.config.modelId;
@@ -285,12 +294,13 @@ export class InferenceEngine {
       wgslKvMode: 'int8',
       wgslMaxContext: nextMaxContext,
       forceComputeTier: nextForceTier,
+      bundleBaseUrl: nextBundleBaseUrl,
       modelId: nextModelId,
       dtype: 'q4f16',
     };
     this.callbacks.onConfig(this.config);
 
-    if ((modelChanged || contextCapChanged || tierChanged) && this.wgslEngine) {
+    if ((modelChanged || bundleChanged || contextCapChanged || tierChanged) && this.wgslEngine) {
       this.log('info', 'offscreen', 'WGSL engine model/geometry/tier config changed; unloading active session.');
       await this.unloadModel();
     } else {
@@ -417,10 +427,76 @@ export class InferenceEngine {
       );
 
       const tokStartMs = performance.now();
-      const tokenizerUrl = resolveExtensionAssetUrl(assetSubdir, this.assetBaseUrl);
-      const tokenizer = await AutoTokenizer.from_pretrained(tokenizerUrl, {
-        local_files_only: true,
-      });
+      const customBundleUrl =
+        typeof this.config.bundleBaseUrl === 'string' && this.config.bundleBaseUrl.trim().length > 0
+          ? this.config.bundleBaseUrl.trim().replace(/\/+$/, '')
+          : null;
+      const tokenizerUrl = customBundleUrl ?? resolveExtensionAssetUrl(assetSubdir, this.assetBaseUrl);
+      let extraEosIds: number[] = [];
+      let tokenizer: PreTrainedTokenizer;
+      try {
+        tokenizer = await AutoTokenizer.from_pretrained(tokenizerUrl, {
+          local_files_only: !customBundleUrl,
+        });
+      } catch (tokErr) {
+        if (!customBundleUrl) {
+          throw tokErr;
+        }
+        const tokJsonRes = await fetch(`${tokenizerUrl}/tokenizer.json`);
+        if (!tokJsonRes.ok) {
+          throw new Error(`Failed loading tokenizer.json from ${tokenizerUrl} (${tokJsonRes.status}).`);
+        }
+        const tokJson = (await tokJsonRes.json()) as Record<string, unknown>;
+        let tokCfg: Record<string, unknown> = {
+          tokenizer_class: 'Qwen2Tokenizer',
+          eos_token: '<|im_end|>',
+          pad_token: '<|endoftext|>',
+        };
+        try {
+          const fallbackCfgRes = await fetch(
+            resolveExtensionAssetUrl('models/qwen35-4b/tokenizer_config.json', this.assetBaseUrl),
+          );
+          if (fallbackCfgRes.ok) {
+            const qwenCfg = (await fallbackCfgRes.json()) as Record<string, unknown>;
+            if (typeof qwenCfg.chat_template === 'string') {
+              tokCfg.chat_template = qwenCfg.chat_template;
+            }
+          }
+        } catch {
+          // Ignore fallback chat_template fetch failure
+        }
+        try {
+          const customCfgRes = await fetch(`${tokenizerUrl}/tokenizer_config.json`);
+          if (customCfgRes.ok) {
+            const parsedCustomCfg = (await customCfgRes.json()) as Record<string, unknown>;
+            tokCfg = { ...tokCfg, ...parsedCustomCfg };
+          }
+        } catch {
+          // tokenizer_config.json is optional on standalone WGSL bundles
+        }
+        tokenizer = new PreTrainedTokenizer(
+          tokJson as unknown as ConstructorParameters<typeof PreTrainedTokenizer>[0],
+          tokCfg as unknown as ConstructorParameters<typeof PreTrainedTokenizer>[1],
+        );
+      }
+
+      if (customBundleUrl) {
+        try {
+          const genCfgRes = await fetch(`${tokenizerUrl}/generation_config.json`);
+          if (genCfgRes.ok) {
+            const genCfg = (await genCfgRes.json()) as { eos_token_id?: number | number[] };
+            if (typeof genCfg.eos_token_id === 'number') {
+              extraEosIds.push(genCfg.eos_token_id);
+            } else if (Array.isArray(genCfg.eos_token_id)) {
+              for (const id of genCfg.eos_token_id) {
+                if (typeof id === 'number' && Number.isFinite(id)) extraEosIds.push(id);
+              }
+            }
+          }
+        } catch {
+          // Ignore optional generation_config.json error
+        }
+      }
       if (isGemma4) {
         const jinjaUrl = `${tokenizerUrl.replace(/\/+$/, '')}/chat_template.jinja`;
         const jinjaRes = await fetch(jinjaUrl);
@@ -445,6 +521,7 @@ export class InferenceEngine {
       wgslEngine.setDisplayHz(this.displayHz);
       const stats = await wgslEngine.load(null, {
         assetBaseUrl: this.assetBaseUrl,
+        bundleBaseUrl: customBundleUrl,
         modelId: this.config.modelId,
         kvMode: 'int8',
         maxContext: this.config.wgslMaxContext,
@@ -464,12 +541,27 @@ export class InferenceEngine {
       this.tokenizer = tokenizer;
       this.wgslEngine = wgslEngine;
       this.eosTokenIds = this.collectEosTokenIds(tokenizer);
+      for (const extraId of extraEosIds) {
+        this.eosTokenIds.add(extraId);
+      }
       if (isGemma4) {
         this.eosTokenIds.add(1);
         this.eosTokenIds.add(106);
       } else {
-        this.eosTokenIds.add(248044);
-        this.eosTokenIds.add(248046);
+        for (const stopTok of ['<|im_end|>', '<|endoftext|>']) {
+          try {
+            const encoded = tokenizer.encode(stopTok, { add_special_tokens: false });
+            if (encoded.length === 1 && Number.isFinite(encoded[0])) {
+              this.eosTokenIds.add(encoded[0]!);
+            }
+          } catch {
+            // Ignore unmapped stop token
+          }
+        }
+        if (this.eosTokenIds.size === 0) {
+          this.eosTokenIds.add(248044);
+          this.eosTokenIds.add(248046);
+        }
       }
       this.prefixCache = new PrefixCacheManager(wgslEngine, { maxTabSlots: 8 });
 

@@ -5520,6 +5520,243 @@ async function main() {
         await v13AlphaPage?.close().catch(() => {});
         await v13BetaPage?.close().catch(() => {});
       }
+
+      // ------------------------------------------------------------------
+      // Case 54 (v14): OfflineStatusBanner + Local WebGPU Inference @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV14Offline = sidePanel.viewportSize();
+      try {
+        const errorsBeforeV14Off = runtimeErrors.length;
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await context.setOffline(false);
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          window.__TINYGPT_UI__.setLocalOnlyMode(false);
+          await window.__TINYGPT_UI__.clearChat();
+        });
+
+        const bannerCountOnline = await sidePanel
+          .locator('[data-slot="offline-status-banner"]')
+          .count();
+
+        await context.setOffline(true);
+        const banner = sidePanel.locator('[data-slot="offline-status-banner"]').first();
+        await banner.waitFor({ state: 'visible', timeout: 5000 });
+
+        const offlineReadyAttrs = await banner.evaluate((el) => ({
+          status: el.getAttribute('data-status'),
+          text: (el.textContent || '').trim(),
+          styledNodes:
+            Array.from(el.querySelectorAll('[style]')).length + (el.getAttribute('style') ? 1 : 0),
+          overflowPx: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
+        }));
+
+        await banner.locator('button:has-text("Local-only")').click();
+        const afterLocalOnlyAttrs = await banner.evaluate((el) => ({
+          status: el.getAttribute('data-status'),
+          pressed: el.querySelector('button[aria-pressed]')?.getAttribute('aria-pressed'),
+        }));
+
+        await banner.locator('button:has-text("Retry")').click();
+        await new Promise((r) => setTimeout(r, 220));
+
+        const offlineTurn = await runUiTurn(
+          sidePanel,
+          'Reply with exactly OFFLINE-LOCAL-OK.',
+          { timeoutMs: 45000 },
+        );
+
+        await context.setOffline(false);
+        await sidePanel.evaluate(() => {
+          window.__TINYGPT_UI__.setLocalOnlyMode(false);
+        });
+        await banner.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+        const bannerCountAfterOnline = await sidePanel
+          .locator('[data-slot="offline-status-banner"]')
+          .count();
+
+        const v14OffChecks = {
+          hiddenWhenOnline: bannerCountOnline === 0 && bannerCountAfterOnline === 0,
+          offlineReadyVisible:
+            offlineReadyAttrs.status === 'offline-ready' &&
+            /Offline/i.test(offlineReadyAttrs.text) &&
+            /WebGPU/i.test(offlineReadyAttrs.text),
+          localOnlyToggledDegraded:
+            afterLocalOnlyAttrs.status === 'offline-degraded' &&
+            afterLocalOnlyAttrs.pressed === 'true',
+          zeroInlineStylesAnd340pxFit:
+            offlineReadyAttrs.styledNodes === 0 && offlineReadyAttrs.overflowPx === 0,
+          localWebGpuWorksOffline:
+            /OFFLINE-LOCAL-OK/i.test(offlineTurn.answerText) &&
+            offlineTurn.leakedTags.length === 0,
+          zeroErrors: runtimeErrors.length === errorsBeforeV14Off,
+        };
+        const v14OffScore =
+          Object.values(v14OffChecks).filter(Boolean).length / Object.keys(v14OffChecks).length;
+        recordCase(
+          {
+            id: 'V14_offline_status_banner_and_local_inference_340px',
+            suite: 'harness',
+            passed: v14OffScore === 1,
+            score: v14OffScore,
+            latencyMs: offlineTurn.elapsedMs,
+            metrics: {
+              styledNodes: offlineReadyAttrs.styledNodes,
+              overflowPx: offlineReadyAttrs.overflowPx,
+              ttftMs: round(offlineTurn.metrics?.ttftMs ?? 0, 1),
+              decodeTokPerSec: round(offlineTurn.metrics?.tokensPerSec ?? 0, 2),
+              leakCount: offlineTurn.leakedTags.length,
+            },
+            ...(v14OffScore < 1
+              ? {
+                  error: `Checks=${JSON.stringify(v14OffChecks)} ready=${JSON.stringify(offlineReadyAttrs)} localOnly=${JSON.stringify(afterLocalOnlyAttrs)} ans=${JSON.stringify(offlineTurn.answerText.slice(0, 140))}`,
+                }
+              : {}),
+          },
+          offlineTurn,
+        );
+      } finally {
+        await context.setOffline(false).catch(() => {});
+        await sidePanel
+          .evaluate(() => window.__TINYGPT_UI__?.setLocalOnlyMode(false))
+          .catch(() => {});
+        if (origViewportV14Offline) {
+          await sidePanel.setViewportSize(origViewportV14Offline).catch(() => {});
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Case 55 (v14): SessionCheckpointCard Restore & Branch @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV14Ckpt = sidePanel.viewportSize();
+      try {
+        const errorsBeforeV14Ckpt = runtimeErrors.length;
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', true);
+        await homePage.bringToFront();
+        await sidePanel.evaluate(async () => {
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          window.__TINYGPT_UI__.refreshActiveTab();
+          await window.__TINYGPT_UI__.clearChat();
+        });
+
+        const turn1 = await runUiTurn(sidePanel, 'Reply with exactly CKPT-ALPHA-101.', {
+          timeoutMs: 45000,
+        });
+
+        const threadsBtn = sidePanel.locator('button.yui-notch-btn[aria-label="Threads"]');
+        await threadsBtn.click();
+        const saveBtn = sidePanel.locator('button:has-text("Save checkpoint")');
+        await saveBtn.waitFor({ state: 'visible', timeout: 5000 });
+        await saveBtn.click();
+
+        const ckptCard = sidePanel.locator('[data-slot="session-checkpoint-card"]').first();
+        await ckptCard.waitFor({ state: 'visible', timeout: 5000 });
+        const ckptCardMeta = await ckptCard.evaluate((el) => ({
+          text: (el.textContent || '').trim(),
+          styledNodes:
+            Array.from(el.querySelectorAll('[style]')).length + (el.getAttribute('style') ? 1 : 0),
+          overflowPx: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
+        }));
+        await threadsBtn.click();
+
+        const turn2 = await runUiTurn(sidePanel, 'Reply with exactly CKPT-BETA-202.', {
+          timeoutMs: 45000,
+        });
+
+        await threadsBtn.click();
+        await ckptCard.waitFor({ state: 'visible', timeout: 5000 });
+        await ckptCard.locator('button:has-text("Restore checkpoint")').click();
+        const confirmState = await ckptCard.evaluate((el) => ({
+          confirming: el.getAttribute('data-confirming'),
+          hasConfirmBtn: Boolean(
+            Array.from(el.querySelectorAll('button')).find((b) =>
+              /Confirm restore/i.test(b.textContent || ''),
+            ),
+          ),
+        }));
+        await ckptCard.locator('button:has-text("Confirm restore")').click();
+        await waitForUiMetrics(sidePanel, (m) => m.messageCount === 2, {
+          timeoutMs: 8000,
+          pollMs: 80,
+        });
+        const afterRestoreMetrics = await sidePanel.evaluate(() =>
+          window.__TINYGPT_UI__.getMetrics(),
+        );
+
+        await threadsBtn.click();
+        await ckptCard.waitFor({ state: 'visible', timeout: 5000 });
+        await ckptCard.locator('button:has-text("Branch from here")').click();
+        await ckptCard.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+
+        const turnBranch = await runUiTurn(sidePanel, 'Reply with exactly CKPT-BRANCH-303.', {
+          timeoutMs: 45000,
+        });
+        const branchPickerInfo = await sidePanel.evaluate(() => {
+          const picker = document.querySelector('.yui-branch-picker');
+          const styledNodes = picker ? Array.from(picker.querySelectorAll('[style]')).length : 0;
+          return {
+            visible: Boolean(picker),
+            text: picker?.textContent?.trim() ?? '',
+            styledNodes,
+            overflowPx: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
+          };
+        });
+
+        const v14CkptChecks = {
+          savedCardMetadataClean:
+            /1 turn/i.test(ckptCardMeta.text) &&
+            /1 pinned/i.test(ckptCardMeta.text) &&
+            ckptCardMeta.styledNodes === 0 &&
+            ckptCardMeta.overflowPx === 0,
+          inlineConfirmWorkedAndRestoredTurn1:
+            confirmState.confirming === 'true' &&
+            confirmState.hasConfirmBtn &&
+            turn2.metrics.messageCount === 4 &&
+            afterRestoreMetrics.messageCount === 2 &&
+            /CKPT-ALPHA-101/i.test(afterRestoreMetrics.lastAssistantText),
+          branchFromHereCreatedSiblingPicker:
+            /CKPT-BRANCH-303/i.test(turnBranch.answerText) &&
+            branchPickerInfo.visible &&
+            /2\s*\/\s*2/.test(branchPickerInfo.text) &&
+            branchPickerInfo.styledNodes === 0 &&
+            branchPickerInfo.overflowPx === 0,
+          zeroLeaksAndZeroErrors:
+            turn1.leakedTags.length + turn2.leakedTags.length + turnBranch.leakedTags.length === 0 &&
+            runtimeErrors.length === errorsBeforeV14Ckpt,
+        };
+        const v14CkptScore =
+          Object.values(v14CkptChecks).filter(Boolean).length /
+          Object.keys(v14CkptChecks).length;
+        recordCase(
+          {
+            id: 'V14_session_checkpoint_card_restore_and_branch_340px',
+            suite: 'harness',
+            passed: v14CkptScore === 1,
+            score: v14CkptScore,
+            latencyMs: turn1.elapsedMs + turn2.elapsedMs + turnBranch.elapsedMs,
+            metrics: {
+              styledNodes: ckptCardMeta.styledNodes + branchPickerInfo.styledNodes,
+              overflowPx: Math.max(ckptCardMeta.overflowPx, branchPickerInfo.overflowPx),
+              branchPickerText: branchPickerInfo.text,
+              ttftMs: round(turnBranch.metrics?.ttftMs ?? 0, 1),
+              leakCount:
+                turn1.leakedTags.length + turn2.leakedTags.length + turnBranch.leakedTags.length,
+            },
+            ...(v14CkptScore < 1
+              ? {
+                  error: `Checks=${JSON.stringify(v14CkptChecks)} meta=${JSON.stringify(ckptCardMeta)} confirm=${JSON.stringify(confirmState)} restored=${JSON.stringify(afterRestoreMetrics)} picker=${JSON.stringify(branchPickerInfo)}`,
+                }
+              : {}),
+          },
+          turnBranch,
+        );
+      } finally {
+        if (origViewportV14Ckpt) {
+          await sidePanel.setViewportSize(origViewportV14Ckpt).catch(() => {});
+        }
+      }
     } catch (caseErr) {
       recordCase({
         id: `FATAL_REMAINING_CASES_${caseResults.length + 1}`,

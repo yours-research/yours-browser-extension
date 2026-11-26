@@ -193,6 +193,8 @@ export interface EngineConfig {
   enableSpeculative: boolean;
   /** Optional compute tier override ('tier1-f16-subgroups' | 'tier2-f16-shared' | 'tier3-f32-universal') */
   forceComputeTier?: WgslComputeTier | null;
+  /** Optional external/local HTTP base URL serving a WGSL slab bundle (used for model benchmarking) */
+  bundleBaseUrl?: string | null;
 }
 
 export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
@@ -220,6 +222,7 @@ export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
   executionHost: 'worker',
   enableSpeculative: true,
   forceComputeTier: null,
+  bundleBaseUrl: null,
 };
 
 export interface LoadBreakdown {

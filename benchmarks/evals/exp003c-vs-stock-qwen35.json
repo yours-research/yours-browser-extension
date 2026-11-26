@@ -1,0 +1,89 @@
+{
+  "timestampIso": "2026-11-26T19:28:58.000Z",
+  "runtimeErrors": [],
+  "bundleComparison": {
+    "stockVocab": 248320,
+    "exp003cVocab": 81920,
+    "stockSlab2Bytes": 397312000,
+    "exp003cSlab2Bytes": 131072000,
+    "slab2ReductionMiB": -253.91,
+    "lmHeadCompressionRatio": 3.03,
+    "vramDeltaMb": -253.89,
+    "meanDecodeSpeedupPct": 14.09,
+    "meanTtftDeltaMs": -69.4
+  },
+  "stock": {
+    "label": "Stock Qwen3.5-4B (v248320)",
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "computeTier": "tier1-f16-subgroups",
+    "coldLoadMs": 7393.9,
+    "estVramMb": 2567.36,
+    "allocatedKvCapacity": 33280,
+    "direct": {
+      "passed": true,
+      "ttftMs": 323.4,
+      "decodeTokPerSec": 80.55,
+      "avgFps": 144.01,
+      "jankPct": 0,
+      "leaks": 0
+    },
+    "thinking": {
+      "passed": true,
+      "ttftMs": 133,
+      "decodeTokPerSec": 69.26,
+      "reasoningChars": 411,
+      "avgFps": 144,
+      "jankPct": 0,
+      "leaks": 0
+    },
+    "tools": {
+      "passed": true,
+      "toolSteps": 4,
+      "ttftMs": 81.5,
+      "decodeTokPerSec": 77.52,
+      "avgFps": 144,
+      "jankPct": 0,
+      "leaks": 0,
+      "answerSample": "1050"
+    },
+    "meanDecodeTokPerSec": 75.78,
+    "meanTtftMs": 179.3
+  },
+  "exp003c": {
+    "label": "EXP-003c Pragma-1-4B (v81920)",
+    "modelId": "jtaylorexe/pragma-exp003c-tool-qad",
+    "computeTier": "tier1-f16-subgroups",
+    "coldLoadMs": 7301,
+    "estVramMb": 2313.47,
+    "allocatedKvCapacity": 33280,
+    "direct": {
+      "passed": true,
+      "ttftMs": 77.1,
+      "decodeTokPerSec": 109.12,
+      "avgFps": 144.21,
+      "jankPct": 0,
+      "leaks": 0
+    },
+    "thinking": {
+      "passed": true,
+      "ttftMs": 75.1,
+      "decodeTokPerSec": 94.12,
+      "reasoningChars": 217,
+      "avgFps": 144.11,
+      "jankPct": 0,
+      "leaks": 0
+    },
+    "tools": {
+      "passed": true,
+      "toolSteps": 4,
+      "ttftMs": 177.4,
+      "decodeTokPerSec": 56.13,
+      "avgFps": 144.18,
+      "jankPct": 0,
+      "leaks": 0,
+      "answerSample": "Alpha (415 req/s) + Beta (635 req/s) = 1050 req/s."
+    },
+    "meanDecodeTokPerSec": 86.46,
+    "meanTtftMs": 109.9
+  }
+}

@@ -444,11 +444,22 @@ export class WgslQwen35Engine {
     }
   }
 
-  private async fetchBundledManifest(assetBaseUrl?: string): Promise<WgslSlabManifest> {
-    const manifestUrl = resolveExtensionAssetUrl(
-      'models/qwen35-4b/manifest.json',
-      assetBaseUrl,
-    );
+  private resolveBundleFileUrl(
+    fileName: string,
+    assetBaseUrl?: string,
+    bundleBaseUrl?: string | null,
+  ): string {
+    if (bundleBaseUrl && bundleBaseUrl.trim().length > 0) {
+      return `${bundleBaseUrl.trim().replace(/\/+$/, '')}/${fileName}`;
+    }
+    return resolveExtensionAssetUrl(`models/qwen35-4b/${fileName}`, assetBaseUrl);
+  }
+
+  private async fetchBundledManifest(
+    assetBaseUrl?: string,
+    bundleBaseUrl?: string | null,
+  ): Promise<WgslSlabManifest> {
+    const manifestUrl = this.resolveBundleFileUrl('manifest.json', assetBaseUrl, bundleBaseUrl);
     let res: Response;
     try {
       res = await fetch(manifestUrl);
@@ -486,6 +497,7 @@ export class WgslQwen35Engine {
     _opfsCache: OpfsModelCache | null,
     options: {
       assetBaseUrl?: string;
+      bundleBaseUrl?: string | null;
       modelId: string;
       kvMode?: WgslKvMode;
       maxContext?: number;
@@ -512,7 +524,10 @@ export class WgslQwen35Engine {
       this.device = device;
       this.maxBufferSize = maxBufferSize;
 
-      const manifest = await this.fetchBundledManifest(options.assetBaseUrl);
+      const manifest = await this.fetchBundledManifest(
+        options.assetBaseUrl,
+        options.bundleBaseUrl,
+      );
       this.arch = resolveModelArch(manifest);
       this.kvMode = options.kvMode ?? 'int8';
       this.auxLayout = computeAuxLayout(this.arch);
@@ -685,9 +700,10 @@ export class WgslQwen35Engine {
         let logicalOffset = 0;
         for (const shard of group.shards) {
           const segs = mapSpanToSegments(group.targets, logicalOffset, shard.bytes);
-          const url = resolveExtensionAssetUrl(
-            `models/qwen35-4b/${shard.file}`,
+          const url = this.resolveBundleFileUrl(
+            shard.file,
             options.assetBaseUrl,
+            options.bundleBaseUrl,
           );
           await streamUrlToGpuSegments(device, url, segs, shard.bytes, {
             yieldMs: policy.loadChunkYieldMs,

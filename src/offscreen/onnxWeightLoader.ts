@@ -2,6 +2,7 @@ import {
   getDeltaNetConvDim,
   getFullAttnLayerSet,
   QWEN35_4B_DEFAULT_ARCH,
+  type ManifestArchitectureSpec,
   type ModelArchConfig,
 } from './modelConfig.ts';
 import type { OpfsModelCache } from './opfsCache.ts';
@@ -67,6 +68,7 @@ export interface WgslSlabManifest {
   modelId: string;
   complete: boolean;
   arch?: Partial<ModelArchConfig>;
+  architecture?: ManifestArchitectureSpec;
   slab0Bytes: number;
   slab1Bytes: number;
   slab2Bytes: number;

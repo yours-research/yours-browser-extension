@@ -17,6 +17,24 @@ export interface ModelArchConfig {
   ropeTheta: number;
 }
 
+export interface ManifestArchitectureSpec {
+  hidden_size?: number;
+  intermediate_size?: number;
+  num_hidden_layers?: number;
+  vocab_size?: number;
+  layer_types?: string[];
+  full_attention_interval?: number;
+  linear_num_key_heads?: number;
+  linear_num_value_heads?: number;
+  linear_key_head_dim?: number;
+  linear_conv_kernel_dim?: number;
+  num_attention_heads?: number;
+  num_key_value_heads?: number;
+  head_dim?: number;
+  partial_rotary_factor?: number;
+  rope_theta?: number;
+}
+
 export const QWEN35_4B_DEFAULT_ARCH: ModelArchConfig = {
   hiddenSize: 2560,
   intermediateSize: 9216,
@@ -34,8 +52,54 @@ export const QWEN35_4B_DEFAULT_ARCH: ModelArchConfig = {
   ropeTheta: 10000000,
 };
 
-export function resolveModelArch(manifest?: { arch?: Partial<ModelArchConfig> }): ModelArchConfig {
-  const partial = manifest?.arch;
+function resolveSnakeCaseArch(arch?: ManifestArchitectureSpec): Partial<ModelArchConfig> | undefined {
+  if (!arch) return undefined;
+  let fullAttnLayers: number[] | undefined;
+  if (Array.isArray(arch.layer_types) && arch.layer_types.length > 0) {
+    fullAttnLayers = [];
+    for (let i = 0; i < arch.layer_types.length; i++) {
+      if (arch.layer_types[i] === 'full_attention') {
+        fullAttnLayers.push(i);
+      }
+    }
+  } else if (
+    typeof arch.full_attention_interval === 'number' &&
+    arch.full_attention_interval > 0 &&
+    typeof arch.num_hidden_layers === 'number'
+  ) {
+    fullAttnLayers = [];
+    for (let i = arch.full_attention_interval - 1; i < arch.num_hidden_layers; i += arch.full_attention_interval) {
+      fullAttnLayers.push(i);
+    }
+  }
+  const attnHeadDim = arch.head_dim;
+  const ropeDim =
+    typeof attnHeadDim === 'number' && typeof arch.partial_rotary_factor === 'number'
+      ? Math.round(attnHeadDim * arch.partial_rotary_factor)
+      : undefined;
+  return {
+    hiddenSize: arch.hidden_size,
+    intermediateSize: arch.intermediate_size,
+    numLayers: arch.num_hidden_layers,
+    vocabSize: arch.vocab_size,
+    fullAttnLayers,
+    dnKeyHeads: arch.linear_num_key_heads,
+    dnValHeads: arch.linear_num_value_heads,
+    dnHeadDim: arch.linear_key_head_dim,
+    dnConvKernel: arch.linear_conv_kernel_dim,
+    attnQHeads: arch.num_attention_heads,
+    attnKvHeads: arch.num_key_value_heads,
+    attnHeadDim,
+    ropeDim,
+    ropeTheta: arch.rope_theta,
+  };
+}
+
+export function resolveModelArch(manifest?: {
+  arch?: Partial<ModelArchConfig>;
+  architecture?: ManifestArchitectureSpec;
+}): ModelArchConfig {
+  const partial = manifest?.arch ?? resolveSnakeCaseArch(manifest?.architecture);
   return {
     hiddenSize: partial?.hiddenSize ?? QWEN35_4B_DEFAULT_ARCH.hiddenSize,
     intermediateSize: partial?.intermediateSize ?? QWEN35_4B_DEFAULT_ARCH.intermediateSize,
