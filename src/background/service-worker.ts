@@ -1,6 +1,7 @@
 import {
   checkResearchPermission,
   extractActiveTabPreview,
+  highlightActiveTabSelection,
   requestResearchPermission,
 } from '../tools/browserTools.ts';
 import { inPageExtractScript } from '../tools/pageExtractor.ts';
@@ -11,6 +12,23 @@ import { createExtensionToolRuntime, type ExtensionToolRuntime } from '../tools/
 const OFFSCREEN_PATH = 'offscreen.html';
 const HIDDEN_TAB_NAV_TIMEOUT_MS = 10_000;
 const SERP_NAV_TIMEOUT_MS = 7_500;
+const SCRIPT_EXEC_TIMEOUT_MS = 6_500;
+
+function raceWithTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (val) => {
+        clearTimeout(id);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(id);
+        reject(err);
+      },
+    );
+  });
+}
 
 let creatingOffscreen: Promise<void> | null = null;
 let hiddenResearchWindowId: number | null = null;
@@ -393,11 +411,15 @@ async function runChromiumSerpSearch(
       for (const candidate of engines) {
         try {
           await navigateHiddenTabAndWait(tabId, candidate.url, SERP_NAV_TIMEOUT_MS);
-          const injections = await chrome.scripting.executeScript({
-            target: { tabId },
-            func: inPageSerpExtractScript,
-            args: [candidate.engine, clampedLimit],
-          });
+          const injections = await raceWithTimeout(
+            chrome.scripting.executeScript({
+              target: { tabId },
+              func: inPageSerpExtractScript,
+              args: [candidate.engine, clampedLimit],
+            }),
+            SCRIPT_EXEC_TIMEOUT_MS,
+            `${candidate.engine} SERP extract`,
+          );
           const res = injections?.[0]?.result as
             | {
                 blockedByCaptcha: boolean;
@@ -474,10 +496,14 @@ async function openHiddenTabAndExtract(url: string): Promise<HiddenTabHtmlRespon
     try {
       await navigateHiddenTabAndWait(tabId, parsed.toString(), HIDDEN_TAB_NAV_TIMEOUT_MS);
 
-      const domRes = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: readHiddenTabDomScript,
-      });
+      const domRes = await raceWithTimeout(
+        chrome.scripting.executeScript({
+          target: { tabId },
+          func: readHiddenTabDomScript,
+        }),
+        SCRIPT_EXEC_TIMEOUT_MS,
+        'Hidden tab DOM extract',
+      );
       const payload = (domRes?.[0]?.result as HiddenTabHtmlResponse | undefined) ?? {
         html: '',
         title: '',
@@ -558,6 +584,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     type: string;
     call?: { name: string; arguments?: Record<string, unknown> };
     skipSpotlight?: boolean;
+    text?: string;
   };
 
   if (msg.type === 'ENSURE_OFFSCREEN') {
@@ -612,6 +639,19 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       .then((page) => sendResponse({ ok: true, page }))
       .catch((err: unknown) => {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      });
+    return true;
+  }
+
+  if (msg.type === 'HIGHLIGHT_ACTIVE_TAB_SELECTION') {
+    highlightActiveTabSelection(typeof msg.text === 'string' ? msg.text : '')
+      .then((result) => sendResponse(result))
+      .catch((err: unknown) => {
+        sendResponse({
+          ok: false,
+          found: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
       });
     return true;
   }

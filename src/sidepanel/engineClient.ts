@@ -484,6 +484,27 @@ export class OffscreenEngineClient {
     }
   }
 
+  async highlightActiveTabSelection(
+    text: string,
+  ): Promise<{ ok: boolean; found: boolean; url?: string; error?: string }> {
+    if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
+      return { ok: false, found: false, error: 'Chrome extension runtime messaging is unavailable.' };
+    }
+    try {
+      const res = (await chrome.runtime.sendMessage({
+        type: 'HIGHLIGHT_ACTIVE_TAB_SELECTION',
+        text,
+      })) as { ok: boolean; found: boolean; url?: string; error?: string } | undefined;
+      return res ?? { ok: false, found: false, error: 'No response from service worker.' };
+    } catch (err) {
+      return {
+        ok: false,
+        found: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   abortGeneration(requestId: string): void {
     const stream = this.activeStreams.get(requestId);
     if (this.port) {

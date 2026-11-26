@@ -112,6 +112,133 @@ export async function extractActiveTabPreview(maxChars = 5000): Promise<Extracte
   return page;
 }
 
+/**
+ * Scrolls to and visually selects a matching text excerpt inside the active web tab
+ * while respecting `prefers-reduced-motion: reduce`.
+ */
+export async function highlightActiveTabSelection(
+  text: string,
+): Promise<{ ok: boolean; found: boolean; url?: string; error?: string }> {
+  const snippet = text.replace(/\s+/g, ' ').trim();
+  if (!snippet) {
+    return { ok: false, found: false, error: 'Selection excerpt is empty.' };
+  }
+  const tabId = await getActiveTabId();
+  if (tabId === null) {
+    return { ok: false, found: false, error: 'No active browser tab found.' };
+  }
+  if (typeof chrome === 'undefined' || !chrome.scripting?.executeScript) {
+    return { ok: false, found: false, error: 'chrome.scripting API is unavailable.' };
+  }
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    args: [snippet],
+    func: (rawNeedle: string) => {
+      const root = document.body || document.documentElement;
+      if (!root) return { found: false, url: location.href };
+
+      const normalizedNeedle = rawNeedle.replace(/\s+/g, ' ').trim().toLowerCase();
+      const shortNeedle =
+        normalizedNeedle.length > 96 ? normalizedNeedle.slice(0, 96).trim() : normalizedNeedle;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          const parent = node.parentElement;
+          if (!parent) return NodeFilter.FILTER_REJECT;
+          const tag = parent.tagName;
+          if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') {
+            return NodeFilter.FILTER_REJECT;
+          }
+          if (!node.textContent || !node.textContent.trim()) {
+            return NodeFilter.FILTER_SKIP;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      });
+
+      let targetRange: Range | null = null;
+      let targetEl: HTMLElement | null = null;
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        const rawText = node.textContent ?? '';
+        const lowerText = rawText.toLowerCase();
+        let idx = lowerText.indexOf(normalizedNeedle);
+        let matchLen = normalizedNeedle.length;
+        if (idx < 0 && shortNeedle.length >= 8) {
+          idx = lowerText.indexOf(shortNeedle);
+          matchLen = shortNeedle.length;
+        }
+        if (idx >= 0) {
+          const r = document.createRange();
+          r.setStart(node, idx);
+          r.setEnd(node, Math.min(rawText.length, idx + matchLen));
+          targetRange = r;
+          targetEl = node.parentElement;
+          break;
+        }
+      }
+
+      if (!targetRange && typeof (window as unknown as { find?: (q: string) => boolean }).find === 'function') {
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        const found = (window as unknown as { find: (q: string) => boolean }).find(
+          rawNeedle.slice(0, 96),
+        );
+        if (found && sel && sel.rangeCount > 0) {
+          targetRange = sel.getRangeAt(0);
+          const container = targetRange.commonAncestorContainer;
+          targetEl = container.nodeType === 1 ? (container as HTMLElement) : container.parentElement;
+        }
+      }
+
+      if (!targetRange) {
+        return { found: false, url: location.href };
+      }
+
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(targetRange);
+      }
+
+      const reduced =
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const scrollTarget = targetEl ?? targetRange.commonAncestorContainer.parentElement;
+      if (scrollTarget && typeof scrollTarget.scrollIntoView === 'function') {
+        scrollTarget.scrollIntoView({
+          behavior: reduced ? 'auto' : 'smooth',
+          block: 'center',
+        });
+      }
+
+      const styleId = 'yours-ext-highlight-style';
+      if (!document.getElementById(styleId) && document.head) {
+        const st = document.createElement('style');
+        st.id = styleId;
+        st.textContent =
+          '.yours-ext-highlight-pulse{outline:2px solid #2563eb;outline-offset:3px;border-radius:4px;}';
+        document.head.appendChild(st);
+      }
+      if (scrollTarget) {
+        scrollTarget.classList.add('yours-ext-highlight-pulse');
+        window.setTimeout(() => {
+          scrollTarget.classList.remove('yours-ext-highlight-pulse');
+        }, 1800);
+      }
+
+      return { found: true, url: location.href };
+    },
+  });
+
+  const first = results?.[0]?.result as { found?: boolean; url?: string } | undefined;
+  return {
+    ok: true,
+    found: Boolean(first?.found),
+    ...(first?.url ? { url: first.url } : {}),
+  };
+}
+
 export interface ExecuteToolOptions {
   hasPermission?: () => Promise<boolean>;
   searchViaChromiumSerp?: WebSearchDeps['searchViaChromiumSerp'];

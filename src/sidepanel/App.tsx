@@ -8,7 +8,9 @@ import { CANONICAL_TOOL_DEFINITIONS } from '@yours/tools/schemas';
 import type { FetchedSourceResult } from '@yours/tools';
 import {
   CommandPalette,
+  ConfirmActionCard,
   ContextBudgetMeter,
+  DeviceCapabilityCard,
   ExportSessionCard,
   FindInThreadBar,
   FloatingComposer,
@@ -24,8 +26,9 @@ import {
   NetworkAuditCard,
   NotchDrawerSearch,
   PageIcon,
+  PageSelectionCard,
   PromptTemplateList,
-  QuotedContextBanner,
+  SegmentedControl,
   SettingsSection,
   SettingsToggleRow,
   SidePanelShell,
@@ -38,6 +41,10 @@ import {
   VoiceSessionCard,
   formatCompactTokens,
   type CommandPaletteAction,
+  type ConfirmActionSummaryRow,
+  type DeviceCapabilityHeadroom,
+  type DeviceCapabilityStatus,
+  type DeviceCapabilityTierOption,
   type ExportSessionFormat,
   type ExportSessionOptions,
   type GpuPacingMode as UiGpuPacingMode,
@@ -251,6 +258,48 @@ interface ToastBannerState {
   undoLabel?: string;
   onUndo?: () => void;
 }
+
+interface LiveGpuProbeSnapshot {
+  adapterName: string;
+  vendor: string;
+  architecture: string;
+  hasWebGpu: boolean;
+  hasF16: boolean;
+  hasSubgroups: boolean;
+  maxBufferMb: number | null;
+  ramGb: number | null;
+  probing: boolean;
+}
+
+type PendingConfirmAction =
+  | {
+      kind: 'opfs-purge';
+      drawer: 'models';
+      title: string;
+      description: string;
+      rows: ConfirmActionSummaryRow[];
+    }
+  | {
+      kind: 'clear-weights';
+      drawer: 'models';
+      title: string;
+      description: string;
+      rows: ConfirmActionSummaryRow[];
+    }
+  | {
+      kind: 'wipe-memory';
+      drawer: 'models' | 'memory';
+      title: string;
+      description: string;
+      rows: ConfirmActionSummaryRow[];
+    }
+  | {
+      kind: 'revoke-all-permissions';
+      drawer: 'lab';
+      title: string;
+      description: string;
+      rows: ConfirmActionSummaryRow[];
+    };
 
 const PINNED_TEMPLATES_STORAGE_KEY = 'yours-pinned-templates';
 const MODEL_PARAMS_STORAGE_KEY = 'yours-model-params';
@@ -785,6 +834,24 @@ export function App() {
   const findPrevFocusRef = useRef<HTMLElement | null>(null);
   const streamWrapRef = useRef<HTMLDivElement | null>(null);
   const [storageEstimate, setStorageEstimate] = useState<{ usage: number; quota: number } | null>(
+    null,
+  );
+  const [liveGpuProbe, setLiveGpuProbe] = useState<LiveGpuProbeSnapshot>({
+    adapterName: 'Probing WebGPU...',
+    vendor: '',
+    architecture: '',
+    hasWebGpu: typeof navigator !== 'undefined' && 'gpu' in navigator,
+    hasF16: false,
+    hasSubgroups: false,
+    maxBufferMb: null,
+    ramGb:
+      typeof navigator !== 'undefined' &&
+      typeof (navigator as unknown as { deviceMemory?: number }).deviceMemory === 'number'
+        ? (navigator as unknown as { deviceMemory: number }).deviceMemory
+        : null,
+    probing: false,
+  });
+  const [pendingConfirmAction, setPendingConfirmAction] = useState<PendingConfirmAction | null>(
     null,
   );
   const [sha256VerifyState, setSha256VerifyState] = useState<{
@@ -1939,13 +2006,95 @@ export function App() {
     }
   }, []);
 
+  const runLiveDeviceProbe = useCallback(async () => {
+    const nav =
+      typeof navigator !== 'undefined'
+        ? (navigator as unknown as {
+            gpu?: {
+              requestAdapter?: (opts?: { powerPreference?: string }) => Promise<{
+                info?: { description?: string; device?: string; vendor?: string; architecture?: string };
+                features?: { has?: (feat: string) => boolean };
+                limits?: { maxBufferSize?: number };
+              } | null>;
+            };
+            deviceMemory?: number;
+          })
+        : undefined;
+    const ramGb = typeof nav?.deviceMemory === 'number' ? nav.deviceMemory : null;
+    setLiveGpuProbe((prev) => ({ ...prev, ramGb, probing: true }));
+    client.probeHardwareCatalog();
+    void client.send({ type: 'CHECK_OPFS' });
+    await refreshStorageEstimate();
+    if (!nav?.gpu?.requestAdapter) {
+      setLiveGpuProbe({
+        adapterName: 'WebGPU unavailable',
+        vendor: '',
+        architecture: '',
+        hasWebGpu: false,
+        hasF16: false,
+        hasSubgroups: false,
+        maxBufferMb: null,
+        ramGb,
+        probing: false,
+      });
+      return;
+    }
+    try {
+      const adapter = await nav.gpu.requestAdapter({ powerPreference: 'high-performance' });
+      if (!adapter) {
+        setLiveGpuProbe({
+          adapterName: 'No WebGPU adapter',
+          vendor: '',
+          architecture: '',
+          hasWebGpu: false,
+          hasF16: false,
+          hasSubgroups: false,
+          maxBufferMb: null,
+          ramGb,
+          probing: false,
+        });
+        return;
+      }
+      const info = adapter.info ?? {};
+      const maxBytes = adapter.limits?.maxBufferSize ?? 0;
+      setLiveGpuProbe({
+        adapterName:
+          info.description || info.device || info.vendor || 'WebGPU Adapter',
+        vendor: info.vendor || '',
+        architecture: info.architecture || '',
+        hasWebGpu: true,
+        hasF16: Boolean(adapter.features?.has?.('shader-f16')),
+        hasSubgroups: Boolean(adapter.features?.has?.('subgroups')),
+        maxBufferMb: maxBytes > 0 ? Math.round((maxBytes / (1024 * 1024)) * 10) / 10 : null,
+        ramGb,
+        probing: false,
+      });
+    } catch {
+      setLiveGpuProbe((prev) => ({ ...prev, probing: false }));
+    }
+  }, [client, refreshStorageEstimate]);
+
   useEffect(() => {
+    void runLiveDeviceProbe();
+  }, [runLiveDeviceProbe]);
+
+  useEffect(() => {
+    setPendingConfirmAction(null);
     void refreshStorageEstimate();
     if (expandedNotchId === 'models') {
-      void refreshStorageEstimate();
-      void client.send({ type: 'CHECK_OPFS' });
+      void runLiveDeviceProbe();
     }
-  }, [expandedNotchId, refreshStorageEstimate, client]);
+  }, [expandedNotchId, refreshStorageEstimate, runLiveDeviceProbe]);
+
+  const handleLocateSelection = useCallback(async () => {
+    if (!quotedSelection) return;
+    const res = await client.highlightActiveTabSelection(quotedSelection);
+    if (res.ok && res.found) {
+      showToast('Scrolled to selection on page');
+    } else {
+      showToast(res.error ?? 'Selection text not matched on active tab');
+    }
+  }, [quotedSelection, client, showToast]);
 
   const applyModelParams = useCallback(
     (next: ModelParametersValue, persist = true) => {
@@ -2843,6 +2992,64 @@ export function App() {
     }
 
     if (expandedNotchId === 'models') {
+      const quotaBytes = storageEstimate?.quota || 4 * 1024 * 1024 * 1024;
+      const spikeBytes = (engineSnapshot.opfsStatus?.spikeFiles ?? []).reduce(
+        (acc, f) => acc + f.sizeBytes,
+        0,
+      );
+      const opfsBytes = (engineSnapshot.opfsStatus?.modelCacheBytes ?? 0) + spikeBytes;
+      const vaultBytes = memoryRecords.reduce(
+        (acc, r) => acc + r.content.length * 2 + 128,
+        0,
+      );
+      const historyBytes = chat.nodes.reduce(
+        (acc, n) => acc + (n.message.content?.length ?? 0) * 2 + 96,
+        Math.max(0, threads.length * 512),
+      );
+      const totalUsed = Math.max(
+        storageEstimate?.usage ?? 0,
+        opfsBytes + vaultBytes + historyBytes,
+      );
+      const freeBytes = Math.max(0, quotaBytes - totalUsed);
+      const hw = engineSnapshot.hardwareProfile;
+      const effectiveAdapterName =
+        liveGpuProbe.adapterName !== 'Probing WebGPU...' &&
+        liveGpuProbe.adapterName !== 'No WebGPU adapter' &&
+        liveGpuProbe.adapterName !== 'WebGPU Adapter'
+          ? liveGpuProbe.adapterName
+          : (hw?.adapterName || liveGpuProbe.adapterName);
+      const maxBufferMb = liveGpuProbe.maxBufferMb ?? hw?.maxBufferSizeMb ?? 0;
+      const ramGb = liveGpuProbe.ramGb ?? hw?.deviceMemoryGb ?? null;
+      const hasF16 = liveGpuProbe.hasF16 || Boolean(hw?.hasF16);
+      const hasSubgroups = liveGpuProbe.hasSubgroups || Boolean(hw?.hasSubgroups);
+      const activeChoice = uiModels.find((m) => m.id === selectedModelId) ?? uiModels[0];
+      const activePreset = MODEL_PRESETS.find((m) => m.id === selectedModelId) ?? MODEL_PRESETS[0];
+      const neededGb = activePreset
+        ? activePreset.estimatedWeightGB[activePreset.defaultDtype]
+        : 2.8;
+      const totalGb = Math.max(1, quotaBytes / (1024 * 1024 * 1024));
+      const usedGb = Math.max(0, totalUsed / (1024 * 1024 * 1024));
+      const freeGb = Math.max(0, freeBytes / (1024 * 1024 * 1024));
+      const deviceStatus: DeviceCapabilityStatus =
+        !liveGpuProbe.hasWebGpu && !hw
+          ? 'unsupported'
+          : freeGb < neededGb || (maxBufferMb > 0 && maxBufferMb < 1024)
+            ? 'tight'
+            : 'ready';
+      const capHeadroom: DeviceCapabilityHeadroom = {
+        usedGb,
+        freeGb,
+        neededGb,
+        totalGb,
+        unitLabel: 'GB',
+      };
+      const capTiers: DeviceCapabilityTierOption[] = uiModels.map((m) => ({
+        id: m.id,
+        label: m.label,
+        detail: `${m.sizeLabel ?? ''} · ${m.cached ? 'Ready' : 'Download'}`,
+        recommended: Boolean(m.recommended),
+      }));
+
       return (
         <div className="ext-drawer-panel">
           <div className="ext-drawer-section">
@@ -2850,35 +3057,24 @@ export function App() {
               <span>Inference Runtime Backend</span>
               <span className="ext-kv-val">{backendKind}</span>
             </div>
-            <div className="ext-segment-row">
-              <button
-                type="button"
-                className={`ext-segment-btn ${backendKind === 'wgsl' ? 'is-active' : ''}`}
-                onClick={() => setBackendKind('wgsl')}
-              >
-                Local WGSL GPU
-              </button>
-              <button
-                type="button"
-                className={`ext-segment-btn ${backendKind === 'chrome-ai' ? 'is-active' : ''}`}
-                onClick={() => {
-                  if (!chromeAiAvailable) {
-                    showToast('Chrome Built-in LanguageModel API unavailable in this browser.');
-                    return;
-                  }
-                  setBackendKind('chrome-ai');
-                }}
-              >
-                Chrome Built-in AI
-              </button>
-              <button
-                type="button"
-                className={`ext-segment-btn ${backendKind === 'openai' ? 'is-active' : ''}`}
-                onClick={() => setBackendKind('openai')}
-              >
-                Local OpenAI / Ollama
-              </button>
-            </div>
+            <SegmentedControl<RuntimeBackendKind>
+              size="sm"
+              fullWidth
+              ariaLabel="Inference Runtime Backend"
+              value={backendKind}
+              onChange={(next) => {
+                if (next === 'chrome-ai' && !chromeAiAvailable) {
+                  showToast('Chrome Built-in LanguageModel API unavailable in this browser.');
+                  return;
+                }
+                setBackendKind(next);
+              }}
+              options={[
+                { value: 'wgsl', label: 'Local WGSL' },
+                { value: 'chrome-ai', label: 'Chrome AI' },
+                { value: 'openai', label: 'OpenAI / Ollama' },
+              ]}
+            />
             {backendKind === 'openai' ? (
               <div className="ext-form-row">
                 <input
@@ -2905,7 +3101,7 @@ export function App() {
 
           <HardwareStatusStrip
             tierLabel={engineSnapshot.telemetry.computeTier ?? engineSnapshot.hardwareProfile?.recommendedTier ?? 'probing'}
-            adapterLabel={engineSnapshot.hardwareProfile?.adapterName ?? 'WebGPU adapter'}
+            adapterLabel={effectiveAdapterName}
             memoryLabel={
               engineSnapshot.telemetry.allocatedKvCapacity > 0
                 ? `${engineSnapshot.telemetry.activeContextTokens}/${engineSnapshot.telemetry.allocatedKvCapacity} KV`
@@ -2923,6 +3119,30 @@ export function App() {
                 ? engineSnapshot.opfsStatus.modelFilesCount > 0 || Boolean(engineSnapshot.spikeResult?.ok)
                 : undefined
             }
+          />
+
+          <DeviceCapabilityCard
+            title="Local WebGPU readiness"
+            subtitle={activeChoice ? `Active target: ${activeChoice.label}` : 'On-device adapter & storage preflight'}
+            status={deviceStatus}
+            adapterName={effectiveAdapterName}
+            vramLabel={
+              maxBufferMb > 0
+                ? `${Math.round(maxBufferMb)} MB max buf · ${hasF16 ? 'F16' : 'F32'}${hasSubgroups ? ' + Subgroups' : ''}`
+                : `${hasF16 ? 'shader-f16' : 'f32'} WebGPU`
+            }
+            ramLabel={ramGb !== null ? `${ramGb} GB+` : 'Browser-reported'}
+            diskLabel={`${freeGb.toFixed(1)} GB free (OPFS)`}
+            headroom={capHeadroom}
+            tiers={capTiers}
+            selectedTierId={selectedModelId}
+            rechecking={liveGpuProbe.probing}
+            onSelectTier={(tierId) => handleSelectModel(tierId)}
+            onRecheck={() => {
+              void runLiveDeviceProbe().then(() => {
+                showToast('WebGPU capability & OPFS probe refreshed');
+              });
+            }}
           />
 
           <SettingsSection
@@ -3025,11 +3245,20 @@ export function App() {
                 verifyLabel: sha256VerifyState.verifyLabel,
                 onVerify: () => void handleVerifySha256(),
                 onClear: () => {
-                  void client.send({ type: 'CLEAR_MODEL_CACHE' });
-                  setSha256VerifyState({ status: 'idle' });
-                  recordNetworkAuditEvent('OPFS Model Cache', 'Cleared cached shards', 'local');
-                  showToast('Cleared OPFS model cache');
-                  void refreshStorageEstimate();
+                  setPendingConfirmAction({
+                    kind: 'clear-weights',
+                    drawer: 'models',
+                    title: 'Clear OPFS model weights cache?',
+                    description:
+                      'Removes downloaded shard weights from Origin Private File System. Bundled runtime remains intact.',
+                    rows: [
+                      {
+                        label: 'Cached shards',
+                        value: `${engineSnapshot.opfsStatus?.modelFilesCount ?? 0} files`,
+                      },
+                      { label: 'OPFS size', value: formatStorageBytes(opfsBytes) },
+                    ],
+                  });
                 },
               },
               {
@@ -3040,13 +3269,16 @@ export function App() {
                 percent: pctOf(vaultBytes),
                 tone: 'vault',
                 onClear: () => {
-                  void memoryClient.wipeAll().then(async () => {
-                    profileMemoriesRef.current = [];
-                    setMemoryRecords([]);
-                    await chat.session.refreshProfileMemories();
-                    recordNetworkAuditEvent('Local Memory Vault', 'Wiped encrypted records', 'local');
-                    showToast('Local memory wiped');
-                    void refreshStorageEstimate();
+                  setPendingConfirmAction({
+                    kind: 'wipe-memory',
+                    drawer: 'models',
+                    title: 'Wipe encrypted local memory vault?',
+                    description:
+                      'Permanently removes all locally stored profile, episodic, and document memories from IndexedDB.',
+                    rows: [
+                      { label: 'Memory records', value: `${memoryRecords.length} entries` },
+                      { label: 'Estimated footprint', value: formatStorageBytes(vaultBytes) },
+                    ],
                   });
                 },
               },
@@ -3060,23 +3292,72 @@ export function App() {
               },
             ];
             return (
-              <StorageQuotaCard
-                usedLabel={formatStorageBytes(totalUsed)}
-                quotaLabel={formatStorageBytes(quotaBytes)}
-                entries={storageEntries}
-                onClearAll={() => {
-                  void client.send({ type: 'CLEAR_MODEL_CACHE' });
-                  void client.send({ type: 'CLEAR_OPFS_SPIKE' });
-                  void memoryClient.wipeAll().then(() => {
-                    profileMemoriesRef.current = [];
-                    setMemoryRecords([]);
-                  });
-                  setSha256VerifyState({ status: 'idle' });
-                  recordNetworkAuditEvent('Browser Storage', 'Cleared OPFS & local memory', 'local');
-                  showToast('Cleared local OPFS & memory caches');
-                  void refreshStorageEstimate();
-                }}
-              />
+              <>
+                <StorageQuotaCard
+                  usedLabel={formatStorageBytes(totalUsed)}
+                  quotaLabel={formatStorageBytes(quotaBytes)}
+                  entries={storageEntries}
+                  onClearAll={() => {
+                    setPendingConfirmAction({
+                      kind: 'opfs-purge',
+                      drawer: 'models',
+                      title: 'Purge OPFS cache & local memory?',
+                      description:
+                        'Deletes downloaded OPFS model weights, spike test shards, and all local encrypted memory records.',
+                      rows: [
+                        { label: 'OPFS cache', value: formatStorageBytes(opfsBytes) },
+                        { label: 'Memory records', value: `${memoryRecords.length} entries` },
+                      ],
+                    });
+                  }}
+                />
+                {pendingConfirmAction?.drawer === 'models' ? (
+                  <ConfirmActionCard
+                    title={pendingConfirmAction.title}
+                    description={pendingConfirmAction.description}
+                    rows={pendingConfirmAction.rows}
+                    tone="danger"
+                    badge="OPFS / Local Data"
+                    holdDurationMs={700}
+                    confirmLabel="Purge now"
+                    cancelLabel="Cancel"
+                    autoFocusCancel
+                    onCancel={() => setPendingConfirmAction(null)}
+                    onConfirm={() => {
+                      const actionKind = pendingConfirmAction.kind;
+                      setPendingConfirmAction(null);
+                      if (actionKind === 'clear-weights') {
+                        void client.send({ type: 'CLEAR_MODEL_CACHE' });
+                        setSha256VerifyState({ status: 'idle' });
+                        recordNetworkAuditEvent('OPFS Model Cache', 'Cleared cached shards', 'local');
+                        showToast('Cleared OPFS model cache');
+                        void refreshStorageEstimate();
+                      } else if (actionKind === 'wipe-memory') {
+                        void memoryClient.wipeAll().then(async () => {
+                          profileMemoriesRef.current = [];
+                          setMemoryRecords([]);
+                          await chat.session.refreshProfileMemories();
+                          recordNetworkAuditEvent('Local Memory Vault', 'Wiped encrypted records', 'local');
+                          showToast('Local memory wiped');
+                          void refreshStorageEstimate();
+                        });
+                      } else {
+                        void client.send({ type: 'CLEAR_MODEL_CACHE' });
+                        void client.send({ type: 'CLEAR_OPFS_SPIKE' });
+                        void memoryClient.wipeAll().then(async () => {
+                          profileMemoriesRef.current = [];
+                          setMemoryRecords([]);
+                          await chat.session.refreshProfileMemories();
+                        });
+                        setSha256VerifyState({ status: 'idle' });
+                        recordNetworkAuditEvent('Browser Storage', 'Cleared OPFS & local memory', 'local');
+                        showToast('Cleared local OPFS & memory caches');
+                        void refreshStorageEstimate();
+                      }
+                    }}
+                  />
+                ) : null}
+              </>
             );
           })()}
 
@@ -3212,6 +3493,41 @@ export function App() {
             </button>
           </div>
 
+          {pendingConfirmAction?.drawer === 'memory' ? (
+            <ConfirmActionCard
+              title={pendingConfirmAction.title}
+              description={pendingConfirmAction.description}
+              rows={pendingConfirmAction.rows}
+              tone="danger"
+              badge="Memory Vault"
+              holdDurationMs={700}
+              confirmLabel="Wipe vault"
+              cancelLabel="Cancel"
+              autoFocusCancel
+              onCancel={() => setPendingConfirmAction(null)}
+              onConfirm={() => {
+                setPendingConfirmAction(null);
+                setVaultBusy(true);
+                setVaultError(null);
+                void memoryClient
+                  .wipeAll()
+                  .then(async () => {
+                    profileMemoriesRef.current = [];
+                    setMemoryRecords([]);
+                    await chat.session.refreshProfileMemories();
+                    setVaultStatus('All local memory wiped.');
+                    recordNetworkAuditEvent('Local Memory Vault', 'Wiped encrypted records', 'local');
+                    showToast('Local memory wiped.');
+                    void refreshStorageEstimate();
+                  })
+                  .catch((err: unknown) => {
+                    setVaultError(err instanceof Error ? err.message : String(err));
+                  })
+                  .finally(() => setVaultBusy(false));
+              }}
+            />
+          ) : null}
+
           {memorySubTab === 'inspector' ? (
             <>
               <div className="ext-drawer-section">
@@ -3240,9 +3556,16 @@ export function App() {
                     type="button"
                     className="btn"
                     onClick={() => {
-                      void memoryClient.wipeAll().then(() => {
-                        setMemoryRecords([]);
-                        showToast('Local memory wiped.');
+                      setPendingConfirmAction({
+                        kind: 'wipe-memory',
+                        drawer: 'memory',
+                        title: 'Wipe encrypted local memory vault?',
+                        description:
+                          'Deletes all locally persisted profile, episodic, and document records from IndexedDB.',
+                        rows: [
+                          { label: 'Stored records', value: `${memoryRecords.length} entries` },
+                          { label: 'Scope', value: 'Local IndexedDB / HNSW' },
+                        ],
                       });
                     }}
                   >
@@ -3251,6 +3574,7 @@ export function App() {
                 </div>
               </div>
               <MemoryInspectorList
+                className="yui-mem-inspector"
                 records={uiMemoryRecords}
                 activeTier={memoryTierFilter}
                 onTierChange={setMemoryTierFilter}
@@ -3360,21 +3684,17 @@ export function App() {
                   .finally(() => setVaultBusy(false));
               }}
               onWipeAll={() => {
-                setVaultBusy(true);
-                setVaultError(null);
-                void memoryClient
-                  .wipeAll()
-                  .then(async () => {
-                    profileMemoriesRef.current = [];
-                    setMemoryRecords([]);
-                    await chat.session.refreshProfileMemories();
-                    setVaultStatus('All local memory wiped.');
-                    showToast('Local memory wiped.');
-                  })
-                  .catch((err: unknown) => {
-                    setVaultError(err instanceof Error ? err.message : String(err));
-                  })
-                  .finally(() => setVaultBusy(false));
+                setPendingConfirmAction({
+                  kind: 'wipe-memory',
+                  drawer: 'memory',
+                  title: 'Wipe encrypted local vault?',
+                  description:
+                    'Permanently removes all locally encrypted HNSW/IndexedDB memory records.',
+                  rows: [
+                    { label: 'Stored records', value: `${memoryRecords.length} entries` },
+                    { label: 'Backup status', value: vaultFileName ?? 'Local only' },
+                  ],
+                });
               }}
             />
           )}
@@ -3394,12 +3714,45 @@ export function App() {
             items={sitePermissions}
             onModeChange={(id, mode) => updateSitePermissionMode(id, mode)}
             onRevoke={(id) => revokeSitePermissionById(id)}
-            onRevokeAll={() => revokeAllSitePermissions()}
+            onRevokeAll={() => {
+              setPendingConfirmAction({
+                kind: 'revoke-all-permissions',
+                drawer: 'lab',
+                title: 'Revoke all site permissions?',
+                description:
+                  'Clears all saved per-origin read rules and returns origins to the default @yours/guard prompt policy.',
+                rows: [
+                  { label: 'Saved origins', value: `${sitePermissions.length}` },
+                  {
+                    label: 'Persistent site grants',
+                    value: `${sitePermissions.filter((p) => p.mode === 'site').length}`,
+                  },
+                ],
+              });
+            }}
             emptyLabel="No site overrides saved yet. Default @yours/guard policy governs origins."
             revokeLabel="Revoke"
             revokeAllLabel="Revoke all"
             privacyNote="Sensitive banking, auth, and checkout origins lock out persistent Site access."
           />
+          {pendingConfirmAction?.drawer === 'lab' ? (
+            <ConfirmActionCard
+              title={pendingConfirmAction.title}
+              description={pendingConfirmAction.description}
+              rows={pendingConfirmAction.rows}
+              tone="amber"
+              badge="Site Permissions"
+              holdDurationMs={700}
+              confirmLabel="Revoke all"
+              cancelLabel="Cancel"
+              autoFocusCancel
+              onCancel={() => setPendingConfirmAction(null)}
+              onConfirm={() => {
+                setPendingConfirmAction(null);
+                revokeAllSitePermissions();
+              }}
+            />
+          ) : null}
           <NetworkAuditCard
             badge={blockedCount > 0 ? `${blockedCount} Blocked` : 'Isolated'}
             metrics={[
@@ -3534,17 +3887,34 @@ export function App() {
     updateSitePermissionMode,
     revokeSitePermissionById,
     revokeAllSitePermissions,
+    pendingConfirmAction,
+    liveGpuProbe,
+    runLiveDeviceProbe,
   ]);
 
   const composerTopSlot = useMemo(() => {
     if (!quotedSelection) return undefined;
+    let originLabel = 'active-tab';
+    if (activePage?.url) {
+      try {
+        originLabel = new URL(activePage.url).hostname || originLabel;
+      } catch {
+        originLabel = activePage.url;
+      }
+    }
     return (
-      <QuotedContextBanner
-        quote={quotedSelection}
+      <PageSelectionCard
+        excerpt={quotedSelection}
+        origin={originLabel}
+        title="Pinned selection"
+        pageTitle={activePage?.title || undefined}
+        locator={activePage?.outline?.[0] || 'Active tab selection'}
+        tokenEstimate={`~${formatCompactTokens(Math.max(1, Math.round(quotedSelection.length / 4)))} tok`}
+        onLocate={() => void handleLocateSelection()}
         onDismiss={() => setQuotedSelection(null)}
       />
     );
-  }, [quotedSelection]);
+  }, [quotedSelection, activePage?.url, activePage?.title, activePage?.outline, handleLocateSelection]);
 
   const composerLeftSlot = (
     <div className="ext-composer-tools">
