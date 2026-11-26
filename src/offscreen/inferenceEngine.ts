@@ -1162,9 +1162,11 @@ export class InferenceEngine {
           }
           this.cachedTokenCount = this.wgslEngine!.activeSeqPos;
           const isFinalChunk = done >= total;
-          this.updateTelemetry({
-            prefillChunkProgress: isFinalChunk ? null : { done, total },
-          });
+          if (isFinalChunk || !this.config.fastDecodePath || done % (wgslChunk * 4) === 0) {
+            this.updateTelemetry({
+              prefillChunkProgress: isFinalChunk ? null : { done, total },
+            });
+          }
           if (isFinalChunk || !this.config.fastDecodePath) {
             this.refreshCacheTelemetry();
           }

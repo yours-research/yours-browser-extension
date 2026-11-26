@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import {
   CodeBlock,
+  DataTableCard,
   StreamingResponse,
+  type DataTableColumn,
+  type DataTableRow,
   type StreamingResponseStatus,
 } from '@yours/ui';
 import {
@@ -38,7 +41,97 @@ type ParsedSegment =
 
 type RenderSegment =
   | { kind: 'markdown'; value: string }
+  | { kind: 'table'; columns: DataTableColumn[]; rows: DataTableRow[] }
   | { kind: 'genui'; payload: Record<string, unknown>; raw: string };
+
+const TABLE_ALIGN_RE = /^\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?$/;
+
+function splitPipeCells(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  return trimmed.split('|').map((cell) =>
+    cell
+      .trim()
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/`([^`]+)`/g, '$1'),
+  );
+}
+
+function splitMarkdownWithTables(markdown: string): RenderSegment[] {
+  const lines = markdown.split(/\r?\n/);
+  const out: RenderSegment[] = [];
+  const textBuf: string[] = [];
+  let inFence = false;
+
+  const flushText = () => {
+    const joined = textBuf.join('\n');
+    if (joined.trim().length > 0) {
+      out.push({ kind: 'markdown', value: joined });
+    }
+    textBuf.length = 0;
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      textBuf.push(line);
+      continue;
+    }
+
+    if (
+      !inFence &&
+      i + 2 < lines.length &&
+      line.includes('|') &&
+      TABLE_ALIGN_RE.test(lines[i + 1]!.trim()) &&
+      lines[i + 2]!.includes('|')
+    ) {
+      const headers = splitPipeCells(line);
+      const alignCells = splitPipeCells(lines[i + 1]!);
+      if (headers.length >= 2 && alignCells.length >= headers.length) {
+        const columns: DataTableColumn[] = headers.map((label, colIdx) => {
+          const spec = alignCells[colIdx] ?? '';
+          const alignRight = spec.endsWith(':') && !spec.startsWith(':');
+          return {
+            key: `c${colIdx}`,
+            label: label || `Col ${colIdx + 1}`,
+            sortable: true,
+            ...(alignRight ? { align: 'right' as const, numeric: true } : {}),
+          };
+        });
+
+        const rows: DataTableRow[] = [];
+        let rowIdx = i + 2;
+        while (rowIdx < lines.length) {
+          const rowLine = lines[rowIdx]!;
+          if (!rowLine.includes('|') || !rowLine.trim() || /^\s*```/.test(rowLine)) {
+            break;
+          }
+          const cells = splitPipeCells(rowLine);
+          if (cells.length === 0) break;
+          const rowObj: DataTableRow = {};
+          for (let c = 0; c < columns.length; c += 1) {
+            rowObj[columns[c]!.key] = cells[c] ?? '';
+          }
+          rows.push(rowObj);
+          rowIdx += 1;
+        }
+
+        if (rows.length > 0) {
+          flushText();
+          out.push({ kind: 'table', columns, rows });
+          i = rowIdx - 1;
+          continue;
+        }
+      }
+    }
+
+    textBuf.push(line);
+  }
+
+  flushText();
+  return out;
+}
 
 const FENCED_BLOCK_RE = /```([a-zA-Z0-9_-]*)\r?\n([\s\S]*?)```/g;
 
@@ -107,7 +200,7 @@ function splitForStreamingRenderer(content: string): RenderSegment[] {
     }
     const before = content.slice(mdStart, match.index);
     if (before.trim().length > 0) {
-      result.push({ kind: 'markdown', value: before });
+      result.push(...splitMarkdownWithTables(before));
     }
     result.push({
       kind: 'genui',
@@ -118,7 +211,9 @@ function splitForStreamingRenderer(content: string): RenderSegment[] {
   }
 
   const tail = content.slice(mdStart);
-  if (tail.trim().length > 0 || (result.length === 0 && tail.length > 0)) {
+  if (tail.trim().length > 0) {
+    result.push(...splitMarkdownWithTables(tail));
+  } else if (result.length === 0 && tail.length > 0) {
     result.push({ kind: 'markdown', value: tail });
   }
   return result;
@@ -362,6 +457,17 @@ export function GenUiRenderer(props: GenUiRendererProps) {
       {segments.map((seg, idx) => {
         if (seg.kind === 'genui') {
           return renderGenUiCard(seg.payload, seg.raw, idx, props);
+        }
+        if (seg.kind === 'table') {
+          return (
+            <DataTableCard
+              key={`tbl-${idx}`}
+              columns={seg.columns}
+              rows={seg.rows}
+              copyFormat="markdown"
+              onCopy={(formatted) => props.onCopyText?.(formatted)}
+            />
+          );
         }
         const isLast = idx === segments.length - 1;
         return (

@@ -11,12 +11,11 @@ import {
   ActionBar,
   AssistantMessage,
   BranchPicker,
+  EmptyPanelState,
   ErrorRecoveryBanner,
   InlineCitationPopover,
-  MatrixOrb,
   MessageSkeleton,
   PermissionApprovalCard,
-  PromptCapsuleStack,
   ReasoningTrace,
   SourcesDrawer,
   ToolStepCard,
@@ -152,15 +151,25 @@ export function ChatThread({
   if (isEmpty) {
     return (
       <div className="ext-stream">
-        <div className="ext-empty-stage">
-          <MatrixOrb state="idle" size={34} />
-          <h2 className="ext-empty-title">Private Local Web Assistant</h2>
-          <p className="ext-empty-subtitle">
-            Runs offline on your GPU via WebGPU &amp; OPFS. Ask about the active tab or launch local
-            research.
-          </p>
-        </div>
-        <PromptCapsuleStack items={starters} onSelect={onSelectStarter} />
+        <EmptyPanelState
+          title="Ask locally on this page."
+          subtitle="Private WebGPU inference stays inside your browser."
+          starters={starters.map((s) => ({
+            id: s.id,
+            label: s.label,
+            icon: s.icon,
+            prompt: s.prompt,
+          }))}
+          onSelectStarter={(starter) => {
+            onSelectStarter({
+              id: starter.id,
+              label: starter.label,
+              icon: starter.icon,
+              prompt: starter.prompt,
+            });
+          }}
+          privacyLabel="On-device WebGPU · Zero telemetry"
+        />
       </div>
     );
   }

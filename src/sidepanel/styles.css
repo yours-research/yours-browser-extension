@@ -222,9 +222,18 @@ body,
 }
 
 .ext-toast-anchor {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 90px;
+  z-index: 45;
   display: flex;
   justify-content: center;
-  margin-bottom: 4px;
+  pointer-events: none;
+}
+
+.ext-toast-anchor > * {
+  pointer-events: auto;
 }
 
 /* Markdown & GenUI content typography inside AssistantMessage */
@@ -269,6 +278,19 @@ body,
   color: var(--yui-cobalt);
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.ext-root pre,
+.ext-root table,
+.yui-stream-md table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.yui-stream-md table {
+  display: block;
+  width: 100%;
+  border-collapse: collapse;
 }
 
 /* DiagnosticsDrawer layout classes */

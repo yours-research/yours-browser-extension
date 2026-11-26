@@ -1,5 +1,12 @@
 import { useState } from 'react';
-import { DataTableCard, HardwareStatusStrip, type DataTableColumn, type DataTableRow } from '@yours/ui';
+import {
+  DataTableCard,
+  HardwareStatusStrip,
+  ShortcutSheet,
+  type DataTableColumn,
+  type DataTableRow,
+  type ShortcutGroup,
+} from '@yours/ui';
 import {
   isGemma4ModelId,
   type BenchmarkSuiteResult,
@@ -40,7 +47,28 @@ interface DiagnosticsDrawerProps {
   onRunNiah: (targetTokens: number, depthRatio: number) => void;
 }
 
-type LabTab = 'config' | 'spike' | 'bench';
+type LabTab = 'config' | 'spike' | 'bench' | 'shortcuts';
+
+const SHORTCUT_GROUPS: ShortcutGroup[] = [
+  {
+    id: 'composer',
+    title: 'Composer & Thread',
+    items: [
+      { id: 'send', label: 'Send message', description: 'Submit prompt to local WebGPU runtime', keys: 'Enter' },
+      { id: 'newline', label: 'New line', description: 'Insert line break in composer', keys: ['Shift', 'Enter'] },
+      { id: 'stop', label: 'Stop generation', description: 'Abort active prefill or decode stream', keys: 'Esc' },
+    ],
+  },
+  {
+    id: 'drawers',
+    title: 'Drawers & Inspection',
+    items: [
+      { id: 'shortcuts', label: 'Keyboard shortcuts', description: 'Open this reference sheet', keys: ['Alt', '/'] },
+      { id: 'page-chip', label: 'Toggle active page grounding', description: 'Attach or detach current browser tab', keys: 'Page' },
+      { id: 'think-chip', label: 'Toggle extended thinking', description: 'Enable or skip <think> reasoning trace', keys: 'Think' },
+    ],
+  },
+];
 
 function formatBytes(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined) return '—';
@@ -103,6 +131,13 @@ export function DiagnosticsDrawer({
           onClick={() => setTab('bench')}
         >
           Bench &amp; NIAH
+        </button>
+        <button
+          type="button"
+          className={tab === 'shortcuts' ? 'tab-btn tab-btn-active' : 'tab-btn'}
+          onClick={() => setTab('shortcuts')}
+        >
+          Shortcuts
         </button>
       </div>
 
@@ -461,14 +496,59 @@ export function DiagnosticsDrawer({
           {benchmarkProgress && <div className="progress-banner">{benchmarkProgress}</div>}
           {niahProgress && <div className="progress-banner">{niahProgress}</div>}
 
+          {(() => {
+            const liveMetricColumns: DataTableColumn[] = [
+              { key: 'metric', label: 'Metric', sortable: true },
+              { key: 'value', label: 'Value', align: 'right', numeric: true, sortable: true },
+              { key: 'target', label: 'Gate', align: 'right', sortable: true },
+            ];
+            const liveMetricRows: DataTableRow[] = [
+              {
+                metric: 'Last TTFT',
+                value: telemetry.ttftMs !== null ? `${telemetry.ttftMs.toFixed(0)} ms` : '0 ms',
+                target: '<= 1500 ms',
+              },
+              {
+                metric: 'Decode speed',
+                value:
+                  telemetry.tokensPerSec !== null ? `${telemetry.tokensPerSec.toFixed(1)} tok/s` : '0.0 tok/s',
+                target: '>= 45 tok/s',
+              },
+              {
+                metric: 'KV tokens active',
+                value: telemetry.activeContextTokens,
+                target: `${telemetry.allocatedKvCapacity || 0} cap`,
+              },
+              {
+                metric: 'Est. VRAM footprint',
+                value: `${telemetry.estVramMb.toFixed(0)} MB`,
+                target: telemetry.computeTier ?? 'tier1',
+              },
+            ];
+            return (
+              <DataTableCard
+                title="Live Runtime Telemetry"
+                subtitle="Sortable client-side snapshot of active WebGPU & KV state"
+                badge={`${telemetry.displayHz} Hz`}
+                columns={liveMetricColumns}
+                rows={liveMetricRows}
+                defaultSort={{ key: 'metric', direction: 'asc' }}
+                copyFormat="markdown"
+                onCopy={(formatted) => {
+                  void navigator.clipboard?.writeText(formatted).catch(() => {});
+                }}
+              />
+            );
+          })()}
+
           {lastBenchmark && (() => {
             const benchColumns: DataTableColumn[] = [
-              { key: 'ctx', label: 'Ctx', align: 'right', numeric: true },
-              { key: 'prefill', label: 'Prefill', align: 'right', numeric: true },
-              { key: 'ttft', label: 'TTFT', align: 'right', numeric: true },
-              { key: 'decode', label: 'Decode', align: 'right', numeric: true },
-              { key: 'bw', label: 'BW%', align: 'right', numeric: true },
-              { key: 'status', label: 'Status' },
+              { key: 'ctx', label: 'Ctx', align: 'right', numeric: true, sortable: true },
+              { key: 'prefill', label: 'Prefill', align: 'right', numeric: true, sortable: true },
+              { key: 'ttft', label: 'TTFT', align: 'right', numeric: true, sortable: true },
+              { key: 'decode', label: 'Decode', align: 'right', numeric: true, sortable: true },
+              { key: 'bw', label: 'BW%', align: 'right', numeric: true, sortable: true },
+              { key: 'status', label: 'Status', sortable: true },
             ];
             const benchRows: DataTableRow[] = lastBenchmark.points.map((pt) => ({
               ctx: pt.actualPromptTokens.toLocaleString(),
@@ -485,6 +565,7 @@ export function DiagnosticsDrawer({
                 badge={`Max ${lastBenchmark.maxSafeTokens.toLocaleString()} tok`}
                 columns={benchColumns}
                 rows={benchRows}
+                defaultSort={{ key: 'ctx', direction: 'asc' }}
                 copyFormat="markdown"
                 onCopy={(formatted) => {
                   void navigator.clipboard?.writeText(formatted).catch(() => {});
@@ -513,6 +594,17 @@ export function DiagnosticsDrawer({
               <div className="info-row">Response: {lastNiah.responseText || lastNiah.error}</div>
             </div>
           )}
+        </div>
+      )}
+
+      {tab === 'shortcuts' && (
+        <div className="lab-body">
+          <ShortcutSheet
+            title="Keyboard shortcuts"
+            subtitle="Local side panel navigation & inference controls"
+            badge="Zero cloud"
+            groups={SHORTCUT_GROUPS}
+          />
         </div>
       )}
     </section>

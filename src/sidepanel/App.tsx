@@ -23,7 +23,7 @@ import {
   SettingsToggleRow,
   SidePanelShell,
   SparkTrendIcon,
-  ToastPill,
+  StatusToast,
   TopNotch,
   VoiceDictationPill,
   type HookSidebarItem,
@@ -33,6 +33,7 @@ import {
   type ModelDownloadProgress as UiDownloadProgress,
   type PromptStarterItem,
   type SourceCitation,
+  type StatusBadgeTone,
   type TopNotchItem,
 } from '@yours/ui';
 import {
@@ -160,6 +161,25 @@ declare global {
   }
 }
 
+interface ToastBannerState {
+  message: string;
+  detail?: string;
+  tone?: StatusBadgeTone;
+  undoLabel?: string;
+  onUndo?: () => void;
+}
+
+function formatMemoryGroupLabel(timestampMs?: number): string {
+  if (!timestampMs || !Number.isFinite(timestampMs)) return 'Earlier';
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const dayMs = 86_400_000;
+  if (timestampMs >= startToday) return 'Today';
+  if (timestampMs >= startToday - dayMs) return 'Yesterday';
+  if (timestampMs >= startToday - 7 * dayMs) return 'Last 7 Days';
+  return 'Earlier';
+}
+
 const STARTER_PROMPTS: PromptStarterItem[] = [
   {
     id: 'summarize-page',
@@ -242,7 +262,7 @@ export function App() {
   const [activePage, setActivePage] = useState<ExtractedPageContent | null>(null);
   const [quotedSelection, setQuotedSelection] = useState<string | null>(null);
   const [sources, setSources] = useState<SourceCitation[]>([]);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [toastState, setToastState] = useState<ToastBannerState | null>(null);
 
   const [backendKind, setBackendKind] = useState<RuntimeBackendKind>('wgsl');
   const [selectedModelId, setSelectedModelId] = useState<string>(DEFAULT_ENGINE_CONFIG.modelId);
@@ -268,15 +288,19 @@ export function App() {
     voiceController.getSnapshot(),
   );
 
-  const showToast = useCallback((msg: string) => {
-    setToastMsg(msg);
-  }, []);
+  const showToast = useCallback(
+    (msg: string, opts?: Omit<ToastBannerState, 'message'>) => {
+      setToastState({ message: msg, tone: 'local', ...opts });
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (!toastMsg) return;
-    const t = setTimeout(() => setToastMsg(null), 2600);
+    if (!toastState) return;
+    const ms = toastState.onUndo ? 5500 : 2800;
+    const t = setTimeout(() => setToastState(null), ms);
     return () => clearTimeout(t);
-  }, [toastMsg]);
+  }, [toastState]);
 
   const autoPreloadTriggeredRef = useRef(false);
   const userUnloadedRef = useRef(false);
@@ -926,7 +950,7 @@ export function App() {
           tags,
           ...(sourceUrl ? { sourceUrl } : {}),
         });
-        await refreshMemoryList();
+        await Promise.all([refreshMemoryList(), chat.session.refreshProfileMemories()]);
         return rec;
       },
       setCompactionBudget: (maxContextTokens: number | null) => {
@@ -935,11 +959,12 @@ export function App() {
       wipeMemory: async () => {
         await memoryClient.init();
         await memoryClient.wipeAll();
-        await refreshMemoryList();
+        profileMemoriesRef.current = [];
+        await Promise.all([refreshMemoryList(), chat.session.refreshProfileMemories()]);
       },
       clearChat: async () => {
         await Promise.all([
-          chat.createThread({ title: 'New Chat', systemPrompt: modeSystemPrompt }),
+          chat.createThread({ systemPrompt: modeSystemPrompt }),
           client.resetContext(true),
         ]);
         setSources([]);
@@ -1115,7 +1140,7 @@ export function App() {
               type="button"
               className="yui-chip-btn"
               onClick={() => {
-                void chat.createThread({ title: 'New Chat', systemPrompt: modeSystemPrompt });
+                void chat.createThread({ systemPrompt: modeSystemPrompt });
                 setSources([]);
                 setExpandedNotchId(null);
               }}
@@ -1316,6 +1341,7 @@ export function App() {
           summary: rec.content,
           sourceDomain,
           relativeTime,
+          groupLabel: formatMemoryGroupLabel(rec.updatedAt || rec.createdAt),
           detail: rec.sourceTitle,
         };
       });
@@ -1389,7 +1415,33 @@ export function App() {
                 activeTier={memoryTierFilter}
                 onTierChange={setMemoryTierFilter}
                 onForget={(id) => {
-                  void memoryClient.forget(id).then(() => refreshMemoryList());
+                  const target = memoryRecords.find((r) => r.id === id);
+                  void memoryClient.forget(id).then(() => {
+                    void refreshMemoryList();
+                    void chat.session.refreshProfileMemories();
+                    showToast('Memory forgotten locally', {
+                      tone: 'neutral',
+                      detail: target ? target.content.slice(0, 54) : undefined,
+                      undoLabel: 'Undo',
+                      onUndo: target
+                        ? () => {
+                            setToastState(null);
+                            void memoryClient
+                              .remember({
+                                tier: target.tier,
+                                content: target.content,
+                                tags: target.tags,
+                                importance: target.importance,
+                                sourceUrl: target.sourceUrl,
+                                sourceTitle: target.sourceTitle,
+                                threadId: target.threadId,
+                              })
+                              .then(() => Promise.all([refreshMemoryList(), chat.session.refreshProfileMemories()]))
+                              .then(() => showToast('Memory restored', { tone: 'local' }));
+                          }
+                        : undefined,
+                    });
+                  });
                 }}
                 emptyTitle="No local memories stored"
                 emptySubtitle="Save a reply or store non-sensitive preferences to populate encrypted local memory."
@@ -1454,11 +1506,11 @@ export function App() {
                 setVaultBusy(true);
                 setVaultError(null);
                 setVaultStatus(null);
-                void memoryClient
+                  void memoryClient
                   .init()
                   .then(() => memoryClient.importEncrypted(bytes, passphrase))
                   .then(async (res) => {
-                    await refreshMemoryList();
+                    await Promise.all([refreshMemoryList(), chat.session.refreshProfileMemories()]);
                     setVaultStatus(`Imported ${res.imported} records from ${vaultFileName ?? 'vault'}`);
                     showToast(`Restored ${res.imported} encrypted records`);
                   })
@@ -1472,9 +1524,10 @@ export function App() {
                 setVaultError(null);
                 void memoryClient
                   .wipeAll()
-                  .then(() => {
+                  .then(async () => {
                     profileMemoriesRef.current = [];
                     setMemoryRecords([]);
+                    await chat.session.refreshProfileMemories();
                     setVaultStatus('All local memory wiped.');
                     showToast('Local memory wiped.');
                   })
@@ -1654,11 +1707,6 @@ export function App() {
         }
         footer={
           <div className="ext-footer-stack">
-            {toastMsg ? (
-              <div className="ext-toast-anchor">
-                <ToastPill message={toastMsg} />
-              </div>
-            ) : null}
             {voiceState.active ? (
               <VoiceDictationPill
                 statusLabel={voiceState.partialTranscript || 'Listening locally...'}
@@ -1742,6 +1790,19 @@ export function App() {
           onRetry={() => void chat.regenerate()}
         />
       </SidePanelShell>
+      {toastState ? (
+        <div className="ext-toast-anchor">
+          <StatusToast
+            open
+            message={toastState.message}
+            detail={toastState.detail}
+            tone={toastState.tone ?? 'local'}
+            undoLabel={toastState.undoLabel}
+            onUndo={toastState.onUndo}
+            onDismiss={() => setToastState(null)}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
