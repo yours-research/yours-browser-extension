@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { HardwareStatusStrip } from '@yours/ui';
+import { DataTableCard, HardwareStatusStrip, type DataTableColumn, type DataTableRow } from '@yours/ui';
 import {
   isGemma4ModelId,
   type BenchmarkSuiteResult,
@@ -461,44 +461,42 @@ export function DiagnosticsDrawer({
           {benchmarkProgress && <div className="progress-banner">{benchmarkProgress}</div>}
           {niahProgress && <div className="progress-banner">{niahProgress}</div>}
 
-          {lastBenchmark && (
-            <div className="info-card">
-              <div className="info-title">
-                Benchmark Sweep ({lastBenchmark.modelId.split('/').pop()} {lastBenchmark.dtype})
-              </div>
-              <div className="info-row">
-                Max Safe Context: {lastBenchmark.maxSafeTokens.toLocaleString()} tok | OOM At:{' '}
-                {lastBenchmark.oomTokenCount !== null
-                  ? lastBenchmark.oomTokenCount.toLocaleString()
-                  : 'None'}
-              </div>
-              <div className="info-row">{lastBenchmark.recommendation}</div>
-              <table className="bench-table">
-                <thead>
-                  <tr>
-                    <th>Ctx</th>
-                    <th>Prefill</th>
-                    <th>TTFT</th>
-                    <th>Decode</th>
-                    <th>BW%</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lastBenchmark.points.map((pt) => (
-                    <tr key={pt.targetTokens}>
-                      <td>{pt.actualPromptTokens.toLocaleString()}</td>
-                      <td>{pt.prefillTokPerSec.toFixed(0)} t/s</td>
-                      <td>{pt.ttftMs.toFixed(0)} ms</td>
-                      <td>{pt.decodeTokPerSec.toFixed(1)} t/s</td>
-                      <td>{pt.bandwidthUtilizationPct.toFixed(1)}%</td>
-                      <td>{pt.status}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          {lastBenchmark && (() => {
+            const benchColumns: DataTableColumn[] = [
+              { key: 'ctx', label: 'Ctx', align: 'right', numeric: true },
+              { key: 'prefill', label: 'Prefill', align: 'right', numeric: true },
+              { key: 'ttft', label: 'TTFT', align: 'right', numeric: true },
+              { key: 'decode', label: 'Decode', align: 'right', numeric: true },
+              { key: 'bw', label: 'BW%', align: 'right', numeric: true },
+              { key: 'status', label: 'Status' },
+            ];
+            const benchRows: DataTableRow[] = lastBenchmark.points.map((pt) => ({
+              ctx: pt.actualPromptTokens.toLocaleString(),
+              prefill: `${pt.prefillTokPerSec.toFixed(0)} t/s`,
+              ttft: `${pt.ttftMs.toFixed(0)} ms`,
+              decode: `${pt.decodeTokPerSec.toFixed(1)} t/s`,
+              bw: `${pt.bandwidthUtilizationPct.toFixed(1)}%`,
+              status: pt.status,
+            }));
+            return (
+              <DataTableCard
+                title={`Benchmark Sweep (${lastBenchmark.modelId.split('/').pop()} ${lastBenchmark.dtype})`}
+                subtitle={lastBenchmark.recommendation}
+                badge={`Max ${lastBenchmark.maxSafeTokens.toLocaleString()} tok`}
+                columns={benchColumns}
+                rows={benchRows}
+                copyFormat="markdown"
+                onCopy={(formatted) => {
+                  void navigator.clipboard?.writeText(formatted).catch(() => {});
+                }}
+                footerLabel={`OOM At: ${
+                  lastBenchmark.oomTokenCount !== null
+                    ? lastBenchmark.oomTokenCount.toLocaleString()
+                    : 'None'
+                }`}
+              />
+            );
+          })()}
 
           {lastNiah && (
             <div className={lastNiah.passed ? 'info-card' : 'info-card info-card-error'}>

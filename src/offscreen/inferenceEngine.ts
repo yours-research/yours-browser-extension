@@ -466,7 +466,7 @@ export class InferenceEngine {
         this.eosTokenIds.add(248044);
         this.eosTokenIds.add(248046);
       }
-      this.prefixCache = new PrefixCacheManager(wgslEngine, { maxTabSlots: 3 });
+      this.prefixCache = new PrefixCacheManager(wgslEngine, { maxTabSlots: 8 });
 
       await this.prewarmBaseSystemPrompt();
 
@@ -849,9 +849,9 @@ export class InferenceEngine {
 
     const match = this.prefixCache.findBestMatch(targetTokenIds, this.getEvaluatedLiveTokenIds());
     if (match.matchedTokens === targetTokenIds.length) {
-      if (slotKey === BASE_SYSTEM_SLOT_ID || slotKey.startsWith('base-system:')) {
+      if (slotKey === BASE_SYSTEM_SLOT_ID) {
         await this.prefixCache.saveBasePromptSlot(targetTokenIds, messages);
-      } else if (match.source === 'live') {
+      } else if (match.source === 'live' || slotKey.startsWith('base-system:')) {
         await this.prefixCache.saveTabSlot(slotKey, targetTokenIds, messages, {
           url: options?.url,
           contentHash: options?.contentHash,
@@ -878,6 +878,7 @@ export class InferenceEngine {
     this.bgAbortController = controller;
     this.activeBgSlotKey = slotKey;
     this.updateTelemetry({ backgroundPrefillState: 'prefilling' });
+    let partialPrefixSaved = false;
 
     try {
       if (match.source === 'slot' && match.slotId) {
@@ -917,7 +918,14 @@ export class InferenceEngine {
               controller.abort();
               throw new Error('__BG_ABORTED__');
             }
-            this.cachedTokenCount = this.wgslEngine!.activeSeqPos;
+            const pos = this.wgslEngine!.activeSeqPos;
+            this.cachedTokenCount = pos;
+            if (pos > 0 && pos <= targetTokenIds.length) {
+              this.cachedTokenIds = targetTokenIds.slice(0, pos);
+              this.pendingLiveTokenIds = [];
+              this.cachedMessages = [];
+              partialPrefixSaved = true;
+            }
           },
         });
       }
@@ -926,7 +934,7 @@ export class InferenceEngine {
         throw new Error('__BG_ABORTED__');
       }
 
-      if (slotKey === BASE_SYSTEM_SLOT_ID || slotKey.startsWith('base-system:')) {
+      if (slotKey === BASE_SYSTEM_SLOT_ID) {
         await this.prefixCache.saveBasePromptSlot(targetTokenIds, messages);
       } else {
         await this.prefixCache.saveTabSlot(slotKey, targetTokenIds, messages, {
@@ -949,14 +957,21 @@ export class InferenceEngine {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg === '__BG_ABORTED__' || msg === 'Generation aborted' || controller.signal.aborted) {
-        this.cachedTokenIds = [];
-        this.cachedMessages = [];
-        this.pendingLiveTokenIds = [];
-        this.cachedTokenCount = 0;
-        if (this.prefixCache.hasBasePrompt()) {
-          await this.prefixCache.resetToBasePrompt().catch(() => {});
+        const preservedSeqPos = this.wgslEngine?.activeSeqPos ?? 0;
+        if (partialPrefixSaved && preservedSeqPos > 0 && this.cachedTokenIds.length === preservedSeqPos) {
+          // Keep evaluated partial prefix chunks live so the interrupting turn can continue incrementally.
+          this.cachedTokenCount = preservedSeqPos;
+          this.cachedThinkingMode = this.config.enableThinking;
         } else {
-          await this.wgslEngine.resetState().catch(() => {});
+          this.cachedTokenIds = [];
+          this.cachedMessages = [];
+          this.pendingLiveTokenIds = [];
+          this.cachedTokenCount = 0;
+          if (this.prefixCache.hasBasePrompt()) {
+            await this.prefixCache.resetToBasePrompt().catch(() => {});
+          } else {
+            await this.wgslEngine.resetState().catch(() => {});
+          }
         }
         this.updateTelemetry({
           backgroundPrefillState: 'idle',

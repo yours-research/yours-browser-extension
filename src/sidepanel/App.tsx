@@ -12,12 +12,15 @@ import {
   GlobeIcon,
   HardwareStatusStrip,
   HookSidebarList,
+  LocalVaultExportCard,
   MemoryInspectorList,
   MicIcon,
   ModelDownloadGate,
   NotchDrawerSearch,
   PageIcon,
   QuotedContextBanner,
+  SettingsSection,
+  SettingsToggleRow,
   SidePanelShell,
   SparkTrendIcon,
   ToastPill,
@@ -180,16 +183,13 @@ const STARTER_PROMPTS: PromptStarterItem[] = [
 
 function computeEnabledTools(opts: {
   pageEnabled: boolean;
-  pageAttached: boolean;
-  pageTruncated: boolean;
+  pageAttached?: boolean;
+  pageTruncated?: boolean;
   researchEnabled: boolean;
 }) {
   return CANONICAL_TOOL_DEFINITIONS.filter((tool) => {
     if (tool.name === 'run_sandbox') return true;
-    if (tool.name === 'read_active_tab') {
-      return opts.pageEnabled && (!opts.pageAttached || opts.pageTruncated);
-    }
-    if (tool.name === 'list_tabs' || tool.name === 'read_tab') {
+    if (tool.name === 'read_active_tab' || tool.name === 'list_tabs' || tool.name === 'read_tab') {
       return opts.pageEnabled;
     }
     if (tool.name === 'search_web_tab' || tool.name === 'fetch_background_tab') {
@@ -258,6 +258,12 @@ export function App() {
   const [memoryRecords, setMemoryRecords] = useState<MemoryRecord[]>([]);
   const [memorySearch, setMemorySearch] = useState('');
   const [memoryTierFilter, setMemoryTierFilter] = useState<UiMemoryTier | 'all'>('all');
+  const [memorySubTab, setMemorySubTab] = useState<'inspector' | 'vault'>('inspector');
+  const [vaultBusy, setVaultBusy] = useState(false);
+  const [vaultStatus, setVaultStatus] = useState<string | null>(null);
+  const [vaultError, setVaultError] = useState<string | null>(null);
+  const [vaultFileName, setVaultFileName] = useState<string | null>(null);
+  const pendingVaultBytesRef = useRef<Uint8Array | null>(null);
   const [voiceState, setVoiceState] = useState<VoiceStatusSnapshot>(() =>
     voiceController.getSnapshot(),
   );
@@ -305,22 +311,19 @@ export function App() {
     () =>
       computeEnabledTools({
         pageEnabled,
-        pageAttached: hasAttachedPage,
-        pageTruncated: Boolean(activePage?.truncated),
         researchEnabled,
       }),
-    [pageEnabled, hasAttachedPage, activePage?.truncated, researchEnabled],
+    [pageEnabled, researchEnabled],
   );
 
   const modeSystemPrompt = useMemo(
     () =>
       buildHarnessSystemPrompt({
         pageEnabled,
-        pageAttached: hasAttachedPage,
+        pageAttached: false,
         researchEnabled,
-        pageTruncated: Boolean(activePage?.truncated),
       }),
-    [pageEnabled, hasAttachedPage, researchEnabled, activePage?.truncated],
+    [pageEnabled, researchEnabled],
   );
 
   const activePageContextMessages = useMemo<HarnessMessage[]>(() => {
@@ -332,6 +335,7 @@ export function App() {
       title: activePage.title,
       url: activePage.url,
       mode: activePage.mode,
+      truncated: Boolean(activePage.truncated),
       content: spotlighted.spotlightedPromptBlock,
     });
     return [
@@ -350,6 +354,7 @@ export function App() {
     activePage?.title,
     activePage?.url,
     activePage?.mode,
+    activePage?.truncated,
   ]);
 
   const wgslAdapter = useMemo(
@@ -595,6 +600,7 @@ export function App() {
             title: tab.title,
             url: tab.url,
             mode: tab.mode ?? 'auto',
+            truncated: Boolean(tab.truncated),
             content: spotlighted.spotlightedPromptBlock,
           });
           return [
@@ -613,19 +619,15 @@ export function App() {
           statusRef.current === 'ready' &&
           bgStateRef.current !== 'prefilling',
         onPrefill: async (slotKey, messages, meta, signal) => {
-          const truncated = lastExtractedTruncatedRef.current;
           const tabTools = computeEnabledTools({
             pageEnabled: true,
-            pageAttached: true,
-            pageTruncated: truncated,
             researchEnabled: researchEnabledRef.current,
           });
           const slot0 = await buildSlot0Envelope({
             systemPrompt: buildHarnessSystemPrompt({
               pageEnabled: true,
-              pageAttached: true,
+              pageAttached: false,
               researchEnabled: researchEnabledRef.current,
-              pageTruncated: truncated,
             }),
             tools: tabTools as unknown as NonNullable<
               NonNullable<Parameters<typeof buildSlot0Envelope>[0]>['tools']
@@ -684,7 +686,7 @@ export function App() {
 
   // Keep GPU Slot 0 synchronized with the active harness system prompt & tool schemas
   useEffect(() => {
-    if (engineSnapshot.telemetry.status !== 'ready' || chat.isGenerating || pageEnabled) {
+    if (engineSnapshot.telemetry.status !== 'ready' || chat.isGenerating) {
       return;
     }
     let cancelled = false;
@@ -703,9 +705,9 @@ export function App() {
         });
         if (cancelled || slot0.slotKey === lastWarmedSlot0KeyRef.current) return;
         lastWarmedSlot0KeyRef.current = slot0.slotKey;
-        client.prefillBackground('base-system', slot0.messages, { isDraft: false });
+        client.prefillBackground(slot0.slotKey, slot0.messages, { isDraft: false });
       })();
-    }, 60);
+    }, 40);
     return () => {
       cancelled = true;
       clearTimeout(timer);
@@ -713,8 +715,6 @@ export function App() {
   }, [
     engineSnapshot.telemetry.status,
     chat.isGenerating,
-    pageEnabled,
-    activePage,
     modeSystemPrompt,
     enabledTools,
     memoryClient,
@@ -780,6 +780,9 @@ export function App() {
         ? (await memoryClient.recall({ query: memorySearch.trim(), limit: 25 })).map((h) => h.record)
         : await memoryClient.inspect({ limit: 30 });
       setMemoryRecords(rows);
+      if (!memorySearch.trim()) {
+        profileMemoriesRef.current = rows.filter((r) => r.tier === 'profile').slice(0, 16);
+      }
     } catch {
       setMemoryRecords([]);
     }
@@ -1221,6 +1224,42 @@ export function App() {
             }
           />
 
+          <SettingsSection
+            title="Assistant & Runtime Controls"
+            subtitle="Configure local context grounding and inference toggles"
+            badge="Local"
+          >
+            <SettingsToggleRow
+              label="Active Page Grounding"
+              description="Attach clean active-tab content after Slot 0."
+              checked={pageEnabled}
+              onCheckedChange={(next) => setPageEnabled(next)}
+              badge={hasAttachedPage ? 'Attached' : undefined}
+            />
+            <SettingsToggleRow
+              label="Live Web Research"
+              description="Allow DuckDuckGo search & background URL extraction."
+              checked={researchEnabled}
+              onCheckedChange={() => void handleToggleResearch()}
+              badge={hasResearchPermission ? 'Permitted' : 'Option A'}
+            />
+            <SettingsToggleRow
+              label="Extended Thinking"
+              description="Separate Qwen3.5 reasoning trace before visible answer."
+              checked={engineSnapshot.config.enableThinking}
+              onCheckedChange={(next) => {
+                client.updateConfig({ enableThinking: next });
+                chat.updateOptions({ enableThinking: next });
+              }}
+            />
+            <SettingsToggleRow
+              label="Suffix Speculation"
+              description="Zero-weight greedy speculative decoding in WebGPU worker."
+              checked={engineSnapshot.config.enableSpeculative}
+              onCheckedChange={(next) => client.updateConfig({ enableSpeculative: next })}
+            />
+          </SettingsSection>
+
           <ModelDownloadGate
             title="Local Weights & Hardware Fit"
             subtitle="Switch offline WGSL models or download verified manifests into OPFS."
@@ -1283,52 +1322,169 @@ export function App() {
 
       return (
         <div className="ext-drawer-panel">
-          <div className="ext-drawer-section">
-            <div className="ext-drawer-heading">
-              <span>Local Encrypted-Domain Memory</span>
-              <span className="ext-kv-val">{memoryRecords.length} entries</span>
-            </div>
-            <div className="ext-segment-row">
-              <input
-                className="ext-input"
-                value={memorySearch}
-                onChange={(e) => setMemorySearch(e.target.value)}
-                placeholder="Search local memory (BM25 + recency)..."
-                aria-label="Search local memory"
-              />
-            </div>
-            <div className="btn-row">
-              <button
-                type="button"
-                className="btn"
-                onClick={() => void refreshMemoryList()}
-              >
-                Refresh
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  void memoryClient.wipeAll().then(() => {
-                    setMemoryRecords([]);
-                    showToast('Local memory wiped.');
-                  });
-                }}
-              >
-                Wipe All Memory
-              </button>
-            </div>
+          <div className="ext-segment-row" role="tablist" aria-label="Memory drawer view">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={memorySubTab === 'inspector'}
+              className={`ext-segment-btn ${memorySubTab === 'inspector' ? 'is-active' : ''}`}
+              onClick={() => setMemorySubTab('inspector')}
+            >
+              Inspector ({memoryRecords.length})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={memorySubTab === 'vault'}
+              className={`ext-segment-btn ${memorySubTab === 'vault' ? 'is-active' : ''}`}
+              onClick={() => {
+                setVaultError(null);
+                setMemorySubTab('vault');
+              }}
+            >
+              Encrypted Vault
+            </button>
           </div>
-          <MemoryInspectorList
-            records={uiMemoryRecords}
-            activeTier={memoryTierFilter}
-            onTierChange={setMemoryTierFilter}
-            onForget={(id) => {
-              void memoryClient.forget(id).then(() => refreshMemoryList());
-            }}
-            emptyTitle="No local memories stored"
-            emptySubtitle="Save a reply or store non-sensitive preferences to populate encrypted local memory."
-          />
+
+          {memorySubTab === 'inspector' ? (
+            <>
+              <div className="ext-drawer-section">
+                <div className="ext-drawer-heading">
+                  <span>Local Encrypted-Domain Memory</span>
+                  <span className="ext-kv-val">{memoryRecords.length} entries</span>
+                </div>
+                <div className="ext-segment-row">
+                  <input
+                    className="ext-input"
+                    value={memorySearch}
+                    onChange={(e) => setMemorySearch(e.target.value)}
+                    placeholder="Search local memory (BM25 + recency)..."
+                    aria-label="Search local memory"
+                  />
+                </div>
+                <div className="btn-row">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => void refreshMemoryList()}
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                      void memoryClient.wipeAll().then(() => {
+                        setMemoryRecords([]);
+                        showToast('Local memory wiped.');
+                      });
+                    }}
+                  >
+                    Wipe All Memory
+                  </button>
+                </div>
+              </div>
+              <MemoryInspectorList
+                records={uiMemoryRecords}
+                activeTier={memoryTierFilter}
+                onTierChange={setMemoryTierFilter}
+                onForget={(id) => {
+                  void memoryClient.forget(id).then(() => refreshMemoryList());
+                }}
+                emptyTitle="No local memories stored"
+                emptySubtitle="Save a reply or store non-sensitive preferences to populate encrypted local memory."
+              />
+            </>
+          ) : (
+            <LocalVaultExportCard
+              title="Encrypted Local Vault"
+              subtitle="AES-256-GCM PBKDF2 backup & restore of local IndexedDB/HNSW memory."
+              recordCountLabel={`${memoryRecords.length} records`}
+              busy={vaultBusy}
+              statusMessage={vaultStatus}
+              error={vaultError}
+              selectedFileName={vaultFileName}
+              importAccept=".yvlt,.bin,.json"
+              onExportEncrypted={(passphrase) => {
+                setVaultBusy(true);
+                setVaultError(null);
+                setVaultStatus(null);
+                void memoryClient
+                  .init()
+                  .then(() => memoryClient.exportEncrypted(passphrase))
+                  .then((bytes) => {
+                    const copy = new Uint8Array(bytes);
+                    const blob = new Blob([copy], { type: 'application/octet-stream' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'tinygpt-memory.yvlt';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                    setVaultStatus(`Exported ${copy.byteLength.toLocaleString()} bytes (.yvlt)`);
+                    showToast('Encrypted vault exported (.yvlt)');
+                  })
+                  .catch((err: unknown) => {
+                    setVaultError(err instanceof Error ? err.message : String(err));
+                  })
+                  .finally(() => setVaultBusy(false));
+              }}
+              onImportFile={(file) => {
+                setVaultError(null);
+                setVaultStatus(null);
+                setVaultFileName(file.name);
+                void file
+                  .arrayBuffer()
+                  .then((buf) => {
+                    pendingVaultBytesRef.current = new Uint8Array(buf);
+                    setVaultStatus(`Loaded ${file.name} (${buf.byteLength.toLocaleString()} B). Enter passphrase & click Import.`);
+                  })
+                  .catch((err: unknown) => {
+                    setVaultError(err instanceof Error ? err.message : String(err));
+                  });
+              }}
+              onImportEncrypted={(passphrase) => {
+                const bytes = pendingVaultBytesRef.current;
+                if (!bytes || bytes.byteLength === 0) {
+                  setVaultError('Choose a .yvlt backup file first.');
+                  return;
+                }
+                setVaultBusy(true);
+                setVaultError(null);
+                setVaultStatus(null);
+                void memoryClient
+                  .init()
+                  .then(() => memoryClient.importEncrypted(bytes, passphrase))
+                  .then(async (res) => {
+                    await refreshMemoryList();
+                    setVaultStatus(`Imported ${res.imported} records from ${vaultFileName ?? 'vault'}`);
+                    showToast(`Restored ${res.imported} encrypted records`);
+                  })
+                  .catch((err: unknown) => {
+                    setVaultError(err instanceof Error ? err.message : String(err));
+                  })
+                  .finally(() => setVaultBusy(false));
+              }}
+              onWipeAll={() => {
+                setVaultBusy(true);
+                setVaultError(null);
+                void memoryClient
+                  .wipeAll()
+                  .then(() => {
+                    profileMemoriesRef.current = [];
+                    setMemoryRecords([]);
+                    setVaultStatus('All local memory wiped.');
+                    showToast('Local memory wiped.');
+                  })
+                  .catch((err: unknown) => {
+                    setVaultError(err instanceof Error ? err.message : String(err));
+                  })
+                  .finally(() => setVaultBusy(false));
+              }}
+            />
+          )}
         </div>
       );
     }
@@ -1392,6 +1548,16 @@ export function App() {
     memoryRecords,
     memorySearch,
     memoryTierFilter,
+    memorySubTab,
+    vaultBusy,
+    vaultStatus,
+    vaultError,
+    vaultFileName,
+    pageEnabled,
+    researchEnabled,
+    hasAttachedPage,
+    hasResearchPermission,
+    handleToggleResearch,
     memoryClient,
     refreshMemoryList,
     showToast,

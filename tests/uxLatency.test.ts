@@ -116,8 +116,18 @@ describe('systemPrompt', () => {
     });
     expect(pageMsg).toEqual({
       role: 'system',
-      content: '[Active Tab: WebGPU Spec (https://www.w3.org/TR/webgpu/) | mode=article]\nMain article text',
+      content:
+        '[Active Tab: WebGPU Spec (https://www.w3.org/TR/webgpu/) | mode=article | status=complete (answer directly without calling read_active_tab)]\nMain article text',
     });
+
+    const truncMsg = buildActivePageContextMessage({
+      title: 'WebGPU Spec',
+      url: 'https://www.w3.org/TR/webgpu/',
+      content: 'Partial text',
+      mode: 'article',
+      truncated: true,
+    });
+    expect(truncMsg.content).toContain('status=truncated');
 
     const followup = buildToolResultFollowup('web_search', '1. Result A');
     expect(followup).toContain('<tool_result name="web_search">');

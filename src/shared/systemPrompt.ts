@@ -27,6 +27,7 @@ export interface ActivePageContextInput {
   url: string;
   content: string;
   mode: string;
+  truncated?: boolean;
 }
 
 export interface AssistantModeOptions {
@@ -38,10 +39,11 @@ export interface AssistantModeOptions {
 
 /**
  * Compact (~75-token), deterministic, mode-aware system instructions for `@yours/harness`
- * Slot 0 (omits duplicated tool signatures because `buildSlot0Envelope` appends the active tool list).
+ * Slot 0 (omits volatile active-tab attachment flags and duplicated tool signatures so
+ * GPU KV-cache Slot 0 stays hot across tab switches and page attachments).
  */
 export function buildHarnessSystemPrompt(options: AssistantModeOptions): string {
-  const { pageEnabled, pageAttached, researchEnabled, pageTruncated } = options;
+  const { pageEnabled, researchEnabled } = options;
 
   const lines: string[] = [
     'You are TinyGPT, a fast, accurate local browser assistant.',
@@ -52,17 +54,11 @@ export function buildHarnessSystemPrompt(options: AssistantModeOptions): string 
   if (!researchEnabled) {
     lines.push('Web search is OFF. Do NOT call search_web_tab or fetch_background_tab.');
   }
-  if (pageEnabled && pageAttached) {
-    if (pageTruncated) {
-      lines.push(
-        'A preview of the active browser tab is attached below (truncated). Call read_active_tab with a specific "query" if details are missing.',
-      );
-    } else {
-      lines.push(
-        'The active browser tab content is attached below. Answer directly without calling read_active_tab.',
-      );
-    }
-  } else if (!pageEnabled) {
+  if (pageEnabled) {
+    lines.push(
+      'When active browser tab content is attached below, answer directly unless it is marked truncated and details are missing (then call read_active_tab with "query").',
+    );
+  } else {
     lines.push('Active page reading is OFF unless the user explicitly names another tab.');
   }
 
@@ -145,10 +141,13 @@ export function buildActivePageContextMessage(page: ActivePageContextInput): Cha
   const url = page.url.trim() || 'about:blank';
   const mode = page.mode.trim() || 'auto';
   const content = page.content.trim();
+  const statusNote = page.truncated
+    ? ' | status=truncated (call read_active_tab with "query" if details are missing)'
+    : ' | status=complete (answer directly without calling read_active_tab)';
 
   return {
     role: 'system',
-    content: `[Active Tab: ${title} (${url}) | mode=${mode}]\n${content}`,
+    content: `[Active Tab: ${title} (${url}) | mode=${mode}${statusNote}]\n${content}`,
   };
 }
 
