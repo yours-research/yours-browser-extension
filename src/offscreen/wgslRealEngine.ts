@@ -59,7 +59,7 @@ export type { WgslComputeTier } from './wgslWebgpu.ts';
 const GQA_FP16_NUM_SPLITS = 32;
 const GQA_INT8_NUM_SPLITS = 64;
 const PREFILL_NUM_SPLITS = 16;
-const PREFILL_MAX_CHUNK = 64;
+const PREFILL_MAX_CHUNK = 128;
 const MAX_SPEC_DRAFT = 4;
 const MAX_SPEC_TOKENS = 1 + MAX_SPEC_DRAFT;
 const UNIFORM_MAX_SLOTS = 1024;
@@ -2311,22 +2311,29 @@ export class WgslQwen35Engine {
 
     const fastPrefillPipeline =
       pacingMode === 'max-speed' ||
-      (pacingMode !== 'smooth-ui' && this.emaDecodeStepMs > 0 && this.emaDecodeStepMs < 22);
+      (pacingMode !== 'smooth-ui' && this.emaDecodeStepMs < 22);
 
     while (offset < tokenIds.length) {
       if (options.abortSignal?.aborted) {
         throw new Error('Generation aborted');
       }
-      const stepSize = selectPrefillChunkSize(
+      const remaining = tokenIds.length - offset;
+      const baseStepSize = selectPrefillChunkSize(
         pacingMode,
         this.seqPos,
         options.chunkSize,
         calibratedPolicy,
       );
+      const stepSize =
+        fastPrefillPipeline &&
+        remaining > 64 &&
+        this.computeTier !== 'tier3-f32-universal'
+          ? Math.min(PREFILL_MAX_CHUNK, Math.max(baseStepSize, 128))
+          : Math.min(PREFILL_MAX_CHUNK, baseStepSize);
       const end = Math.min(tokenIds.length, offset + stepSize);
       const isLast = end === tokenIds.length;
       const computeLogits = isLast && !options.skipFinalLogits;
-      const deferSync = fastPrefillPipeline && !isLast && chunkIdx % 2 === 0;
+      const deferSync = fastPrefillPipeline && !isLast && chunkIdx % 4 !== 3;
       const chunkTok = await this.prefillChunk(tokenIds.slice(offset, end), computeLogits, options.sampling, {
         pacingMode,
         calibratedPolicy,

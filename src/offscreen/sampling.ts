@@ -108,36 +108,90 @@ export function sampleNextToken(logits: Float32Array, options: SamplingOptions):
   const invTemp = 1 / options.temperature;
   const k = options.topK > 0 && options.topK < vocabSize ? options.topK : vocabSize;
 
-  // Collect candidate indices (full sort only if topK < vocabSize, or partial top-k selection).
-  let candidates: Array<{ id: number; scaled: number }>;
-  if (k < vocabSize) {
-    candidates = new Array(vocabSize);
-    for (let i = 0; i < vocabSize; i++) {
-      candidates[i] = { id: i, scaled: logits[i] * invTemp };
-    }
-    candidates.sort((a, b) => b.scaled - a.scaled);
-    candidates.length = k;
-  } else {
-    candidates = new Array(vocabSize);
-    for (let i = 0; i < vocabSize; i++) {
-      candidates[i] = { id: i, scaled: logits[i] * invTemp };
-    }
-    candidates.sort((a, b) => b.scaled - a.scaled);
+  if (k === 1) {
+    return argmaxFloat32(logits, 0, vocabSize);
   }
 
-  const maxLogit = candidates[0].scaled;
-  const probs = new Float64Array(candidates.length);
+  let candidateIds: number[] | Int32Array;
+  let candidateScaled: Float32Array;
+  let candidateCount: number;
+
+  if (k < vocabSize && k <= 256) {
+    // O(V) zero-object top-k scan (avoids allocating & sorting 248k+ objects per token)
+    const topIds = new Int32Array(k);
+    const topVals = new Float32Array(k);
+    let filled = 0;
+
+    for (let i = 0; i < vocabSize; i++) {
+      const scaled = logits[i] * invTemp;
+      if (filled < k) {
+        let pos = filled;
+        while (pos > 0 && topVals[pos - 1] < scaled) {
+          topVals[pos] = topVals[pos - 1];
+          topIds[pos] = topIds[pos - 1];
+          pos--;
+        }
+        topVals[pos] = scaled;
+        topIds[pos] = i;
+        filled++;
+      } else if (scaled > topVals[k - 1]) {
+        let pos = k - 1;
+        while (pos > 0 && topVals[pos - 1] < scaled) {
+          topVals[pos] = topVals[pos - 1];
+          topIds[pos] = topIds[pos - 1];
+          pos--;
+        }
+        topVals[pos] = scaled;
+        topIds[pos] = i;
+      }
+    }
+    candidateIds = topIds;
+    candidateScaled = topVals;
+    candidateCount = filled;
+  } else {
+    let maxScaled = logits[0] * invTemp;
+    for (let i = 1; i < vocabSize; i++) {
+      const v = logits[i] * invTemp;
+      if (v > maxScaled) maxScaled = v;
+    }
+    const minKeep = maxScaled - 24;
+    const kept: Array<{ id: number; scaled: number }> = [];
+    for (let i = 0; i < vocabSize; i++) {
+      const v = logits[i] * invTemp;
+      if (v >= minKeep) {
+        kept.push({ id: i, scaled: v });
+      }
+    }
+    kept.sort((a, b) => b.scaled - a.scaled);
+    if (kept.length > k) {
+      kept.length = k;
+    }
+    candidateCount = kept.length;
+    candidateIds = new Int32Array(candidateCount);
+    candidateScaled = new Float32Array(candidateCount);
+    for (let i = 0; i < candidateCount; i++) {
+      candidateIds[i] = kept[i].id;
+      candidateScaled[i] = kept[i].scaled;
+    }
+  }
+
+  if (candidateCount === 0) {
+    return argmaxFloat32(logits, 0, vocabSize);
+  }
+
+  const maxLogit = candidateScaled[0];
+  const probs = new Float64Array(candidateCount);
   let sumExp = 0;
-  for (let i = 0; i < candidates.length; i++) {
-    const e = Math.exp(candidates[i].scaled - maxLogit);
+  for (let i = 0; i < candidateCount; i++) {
+    const e = Math.exp(candidateScaled[i] - maxLogit);
     probs[i] = e;
     sumExp += e;
   }
 
   const topP = options.topP > 0 && options.topP < 1 ? options.topP : 1;
-  let cutoff = candidates.length;
+  let cutoff = candidateCount;
   let cumulative = 0;
-  for (let i = 0; i < candidates.length; i++) {
+  for (let i = 0; i < candidateCount; i++) {
     probs[i] /= sumExp;
     cumulative += probs[i];
     if (cumulative >= topP) {
@@ -155,10 +209,10 @@ export function sampleNextToken(logits: Float32Array, options: SamplingOptions):
   for (let i = 0; i < cutoff; i++) {
     r -= probs[i];
     if (r <= 0) {
-      return candidates[i].id;
+      return candidateIds[i];
     }
   }
-  return candidates[cutoff - 1].id;
+  return candidateIds[cutoff - 1];
 }
 
 /**

@@ -301,12 +301,58 @@ export function computeDecodeSliceBounds(
   return bounds;
 }
 
-/** Async timer helper that avoids scheduling macrotasks when `ms <= 0`. */
+let pacingChannel: MessageChannel | null = null;
+const pacingWaiters: Array<() => void> = [];
+let throttledSleepCooldown = 0;
+
+function yieldPacingMessageChannel(): Promise<void> {
+  if (typeof MessageChannel === 'undefined') {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  if (!pacingChannel) {
+    pacingChannel = new MessageChannel();
+    pacingChannel.port1.onmessage = () => {
+      const next = pacingWaiters.shift();
+      next?.();
+    };
+  }
+  return new Promise((resolve) => {
+    pacingWaiters.push(resolve);
+    pacingChannel!.port2.postMessage(null);
+  });
+}
+
+/**
+ * Resets the hidden-document timer-throttling detector state (primarily for unit tests).
+ */
+export function resetSleepThrottleDetectorForTest(): void {
+  throttledSleepCooldown = 0;
+}
+
+/**
+ * Async timer helper that avoids scheduling macrotasks when `ms <= 0` and falls back to an
+ * unthrottled `MessageChannel` yield if Chromium hidden-page/worker timer throttling clamps
+ * `setTimeout` delays by more than 25 ms.
+ */
 export function sleepMs(ms: number): Promise<void> {
   if (!Number.isFinite(ms) || ms <= 0) {
     return Promise.resolve();
   }
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  if (throttledSleepCooldown > 0) {
+    throttledSleepCooldown -= 1;
+    return yieldPacingMessageChannel();
+  }
+  const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      const elapsed =
+        (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
+      if (elapsed > ms + 25) {
+        throttledSleepCooldown = 128;
+      }
+      resolve();
+    }, ms);
+  });
 }
 
 /**

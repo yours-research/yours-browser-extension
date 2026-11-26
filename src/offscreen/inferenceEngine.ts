@@ -155,6 +155,7 @@ export class InferenceEngine {
   private cachedTokenIds: number[] = [];
   private pendingLiveTokenIds: number[] = [];
   private cachedThinkingMode = false;
+  private activeBgSignature: string | null = null;
   private wgslSnapshot: { seqPos: number } | null = null;
   private wgslSnapshotMeta: {
     cachedMessages: ChatMessage[];
@@ -765,12 +766,19 @@ export class InferenceEngine {
     messages: ChatMessage[],
     options?: { isDraft?: boolean; url?: string; contentHash?: string; requestId?: string },
   ): void {
-    // Never let composer typing or base-system warmup abort an in-progress active-tab prefill.
+    // Never let composer typing or base-system warmup abort an in-progress active-tab or thread prefill.
     if (
       (slotKey.startsWith('draft:') || slotKey.startsWith('base-system')) &&
       this.bgAbortController !== null &&
-      this.activeBgSlotKey?.startsWith('tab:')
+      (this.activeBgSlotKey?.startsWith('tab:') || this.activeBgSlotKey?.startsWith('thread:'))
     ) {
+      if (options?.requestId) {
+        this.callbacks.onPrefillComplete?.(options.requestId, slotKey, 0, 0);
+      }
+      return;
+    }
+    const sig = `${slotKey}::${this.config.enableThinking ? 1 : 0}::${options?.isDraft ? 1 : 0}::${messages.map((m) => `${m.role}:${m.content.length}:${m.content.slice(0, 24)}`).join('|')}`;
+    if (this.bgAbortController !== null && this.activeBgSignature === sig) {
       if (options?.requestId) {
         this.callbacks.onPrefillComplete?.(options.requestId, slotKey, 0, 0);
       }
@@ -778,6 +786,7 @@ export class InferenceEngine {
     }
     this.abortBackgroundPrefill();
     const mySeq = this.bgPrefillSeq;
+    this.activeBgSignature = sig;
     if (options?.requestId) {
       this.activeBgRequestId = options.requestId;
     }
@@ -908,7 +917,7 @@ export class InferenceEngine {
         await this.wgslEngine.prefill(deltaTokens, {
           chunkSize: Math.min(64, this.config.chunkSize || 64),
           sampling: { temperature: 0, topK: 1, topP: 1 },
-          pacingMode: 'balanced',
+          pacingMode: this.config.gpuPacingMode,
           abortSignal: controller.signal,
           skipFinalLogits: true,
           yieldFn: async () => {
@@ -992,6 +1001,7 @@ export class InferenceEngine {
       if (this.bgAbortController === controller) {
         this.bgAbortController = null;
         this.activeBgSlotKey = null;
+        this.activeBgSignature = null;
       }
     }
   }
