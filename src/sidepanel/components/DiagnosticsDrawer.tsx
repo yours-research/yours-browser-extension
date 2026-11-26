@@ -1,15 +1,17 @@
 import { useState } from 'react';
-import type {
-  BenchmarkSuiteResult,
-  EngineConfig,
-  GpuPacingMode,
-  LogEntry,
-  NiahResult,
-  OpfsSpikeResult,
-  OpfsStatusInfo,
-  TelemetryState,
-  WebGpuProbeInfo,
-  WgslComputeTier,
+import { HardwareStatusStrip } from '@yours/ui';
+import {
+  isGemma4ModelId,
+  type BenchmarkSuiteResult,
+  type EngineConfig,
+  type GpuPacingMode,
+  type LogEntry,
+  type NiahResult,
+  type OpfsSpikeResult,
+  type OpfsStatusInfo,
+  type TelemetryState,
+  type WebGpuProbeInfo,
+  type WgslComputeTier,
 } from '../../shared/protocol.ts';
 
 interface DiagnosticsDrawerProps {
@@ -76,6 +78,7 @@ export function DiagnosticsDrawer({
   const [niahDepth, setNiahDepth] = useState(0.5);
 
   const isModelReady = telemetry.status === 'ready';
+  const isGemma4 = isGemma4ModelId(config.modelId);
 
   return (
     <section className="lab-drawer">
@@ -105,10 +108,49 @@ export function DiagnosticsDrawer({
 
       {tab === 'config' && (
         <div className="lab-body">
+          <HardwareStatusStrip
+            tierLabel={
+              telemetry.computeTier ??
+              (probeInfo?.hasSubgroups && probeInfo?.hasShaderF16
+                ? 'tier1-f16-subgroups'
+                : probeInfo?.hasShaderF16
+                  ? 'tier2-f16-shared'
+                  : 'probing')
+            }
+            adapterLabel={
+              probeInfo?.adapterInfo?.device ||
+              probeInfo?.adapterInfo?.description ||
+              probeInfo?.adapterInfo?.vendor ||
+              'WebGPU adapter'
+            }
+            memoryLabel={
+              telemetry.allocatedKvCapacity > 0
+                ? `${telemetry.activeContextTokens.toLocaleString()}/${telemetry.allocatedKvCapacity.toLocaleString()} KV`
+                : probeInfo?.grantedLimits?.maxBufferSize
+                  ? `${Math.round(probeInfo.grantedLimits.maxBufferSize / (1024 * 1024))} MB max buf`
+                  : undefined
+            }
+            status={
+              telemetry.status === 'error'
+                ? 'unsupported'
+                : telemetry.computeTier
+                  ? 'ready'
+                  : 'probing'
+            }
+            sha256Verified={
+              opfsStatus ? opfsStatus.modelFilesCount > 0 || Boolean(spikeResult?.ok) : undefined
+            }
+          />
+
           <div className="info-card">
-            <div className="info-title">Model: Qwen3.5-4B (q4f16, Bundled Offline)</div>
+            <div className="info-title">
+              Model: {isGemma4 ? 'Gemma 4 E4B QAT (q4f16/q2, Bundled Offline)' : 'Qwen3.5-4B (q4f16, Bundled Offline)'}
+            </div>
             <div className="info-row">
-              Engine: Native Rust/WGSL Track 5 · INT8 KV + Suffix Speculation
+              Engine:{' '}
+              {isGemma4
+                ? 'Native Rust/WGSL Gemma 4 · INT8 KV + PLE Hot Cache + Suffix Spec'
+                : 'Native Rust/WGSL Track 5 · INT8 KV + Suffix Speculation'}
             </div>
             <div className="info-row">
               Execution Host:{' '}

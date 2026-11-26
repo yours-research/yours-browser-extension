@@ -1,176 +1,396 @@
+import { useState } from 'react';
+import type {
+  BranchSiblingInfo,
+  HarnessMessage,
+  MessageNode,
+  PendingApprovalRequest,
+  TurnState,
+  TurnTelemetrySnapshot,
+} from '@yours/harness';
 import {
-  AssistantRuntimeProvider,
-  AuiIf,
-  ComposerPrimitive,
-  MessagePrimitive,
-  ThreadPrimitive,
-  useLocalRuntime,
-  type ChatModelAdapter,
-} from '@assistant-ui/react';
-import type { ToolStatusUpdate } from '../agentController.ts';
+  ActionBar,
+  AssistantMessage,
+  BranchPicker,
+  ErrorRecoveryBanner,
+  InlineCitationPopover,
+  MatrixOrb,
+  MessageSkeleton,
+  PermissionApprovalCard,
+  PromptCapsuleStack,
+  ReasoningTrace,
+  SourcesDrawer,
+  ToolStepCard,
+  UserMessageBubble,
+  type InlineCitationSource,
+  type PromptStarterItem,
+  type SourceCitation,
+} from '@yours/ui';
+import type { TelemetryState } from '../../shared/protocol.ts';
+import { GenUiRenderer } from './GenUiRenderer.tsx';
 
-interface ChatThreadProps {
-  adapter: ChatModelAdapter;
-  modelReady: boolean;
-  includeActivePage?: boolean;
-  onToggleActivePage?: () => void;
-  activePageTitle?: string | null;
-  activePageError?: string | null;
-  backgroundPrefillState?: 'idle' | 'prefilling' | 'warm';
-  researchEnabled?: boolean;
-  onToggleResearch?: () => void;
-  toolStatus?: ToolStatusUpdate | null;
-  permissionPrompt?: { toolName: string; label: string } | null;
-  onGrantResearchPermission?: () => void;
-  onDismissPermission?: () => void;
-  onComposerTextChange?: (text: string) => void;
+export interface ChatThreadProps {
+  nodes: MessageNode[];
+  branchSiblings: Record<string, BranchSiblingInfo>;
+  isGenerating: boolean;
+  turnState: TurnState;
+  streamingText: string;
+  streamingReasoning: string;
+  pendingToolCalls: Array<{ id: string; name: string }>;
+  pendingApproval: PendingApprovalRequest | null;
+  turnTelemetry: TurnTelemetrySnapshot | null;
+  engineTelemetry: TelemetryState;
+  error: string | null;
+  starters: readonly PromptStarterItem[];
+  sources: readonly SourceCitation[];
+  onSelectStarter: (item: PromptStarterItem) => void;
+  onEditAndBranch: (nodeId: string, newContent: string) => void;
+  onRegenerate: (assistantNodeId?: string) => void;
+  onSwitchBranch: (branchNodeId: string) => void;
+  onApproveTool: () => void;
+  onDenyTool: () => void;
+  onCopyText: (text: string) => void;
+  onSpeakText: (text: string) => void;
+  onSaveMemory: (text: string) => void;
+  onSelectChoice: (question: string, choiceId: string) => void;
+  onRetry: () => void;
 }
 
-function ChatMessageRow({ role }: { role: string }) {
-  const isUser = role === 'user';
-  return (
-    <MessagePrimitive.Root className={isUser ? 'msg-row msg-row-user' : 'msg-row msg-row-assistant'}>
-      <div className={isUser ? 'msg-bubble msg-user' : 'msg-bubble msg-assistant'}>
-        <div className="msg-role">{isUser ? 'You' : 'Qwen3.5'}</div>
-        <div className="msg-content">
-          <MessagePrimitive.Parts />
-        </div>
-      </div>
-    </MessagePrimitive.Root>
-  );
+const OPEN_THINK_BLOCK_RE =
+  /(?:<think>|<thought>|<\|thought\|>|<\|channel>thought\r?\n?)([\s\S]*?)(?:<\/think>|<\/thought>|<\/?channel\|>|<\|\/thought\|>|<\|end_of_thought\|>|$)/i;
+const ORPHAN_CLOSE_THINK_RE =
+  /^([\s\S]*?)(?:<\/think>|<\/thought>|<\/?channel\|>|<\|\/thought\|>|<\|end_of_thought\|>)\s*/i;
+const RESIDUAL_TOOL_CALL_RE =
+  /(?:<tool_call>[\s\S]*?(?:<\/tool_call>|$)|<\|tool_call>[\s\S]*?(?:<tool_call\|>|$)|<\|call>call:[\s\S]*?(?:<call\|>|$))/gi;
+
+export function sanitizeDisplayBody(raw: string): string {
+  return raw.replace(RESIDUAL_TOOL_CALL_RE, '').trim();
+}
+
+export function extractReasoningAndBody(raw: string): { reasoning: string; body: string } {
+  const openMatch = raw.match(OPEN_THINK_BLOCK_RE);
+  if (openMatch) {
+    const reasoning = openMatch[1].trim();
+    const body = sanitizeDisplayBody(raw.replace(openMatch[0], ''));
+    return { reasoning, body };
+  }
+  const orphanClose = raw.match(ORPHAN_CLOSE_THINK_RE);
+  if (orphanClose) {
+    const reasoning = orphanClose[1].trim();
+    const body = sanitizeDisplayBody(raw.slice(orphanClose[0].length));
+    return { reasoning, body };
+  }
+  return { reasoning: '', body: sanitizeDisplayBody(raw) };
+}
+
+function getContextTagFromMessage(msg: HarnessMessage): string | undefined {
+  if (msg.tainted) return 'Page Context';
+  return undefined;
+}
+
+function safeDomainFromUrl(url?: string): string | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
+function toInlineCitationSource(src: SourceCitation, idx: number): InlineCitationSource {
+  return {
+    id: src.id,
+    index: idx + 1,
+    label: `[${idx + 1}]`,
+    title: src.title,
+    domain: safeDomainFromUrl(src.url),
+    snippet: src.subtitle || src.title,
+    url: src.url,
+  };
 }
 
 export function ChatThread({
-  adapter,
-  modelReady,
-  includeActivePage = true,
-  onToggleActivePage,
-  activePageTitle,
-  activePageError,
-  backgroundPrefillState = 'idle',
-  researchEnabled = false,
-  onToggleResearch,
-  toolStatus,
-  permissionPrompt,
-  onGrantResearchPermission,
-  onDismissPermission,
-  onComposerTextChange,
+  nodes,
+  branchSiblings,
+  isGenerating,
+  turnState,
+  streamingText,
+  streamingReasoning,
+  pendingToolCalls,
+  pendingApproval,
+  turnTelemetry,
+  engineTelemetry,
+  error,
+  starters,
+  sources,
+  onSelectStarter,
+  onEditAndBranch,
+  onRegenerate,
+  onSwitchBranch,
+  onApproveTool,
+  onDenyTool,
+  onCopyText,
+  onSpeakText,
+  onSaveMemory,
+  onSelectChoice,
+  onRetry,
 }: ChatThreadProps) {
-  const runtime = useLocalRuntime(adapter);
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+  const [feedbackByNode, setFeedbackByNode] = useState<Record<string, 'up' | 'down' | null>>({});
 
-  const pageLabel = !includeActivePage
-    ? 'Page: Off'
-    : activePageTitle
-      ? `Page: ${activePageTitle.slice(0, 22)}${
-          backgroundPrefillState === 'warm'
-            ? ' (warm)'
-            : backgroundPrefillState === 'prefilling'
-              ? ' (prefilling...)'
-              : ''
-        }`
-      : activePageError
-        ? 'Page: No access'
-        : 'Page: Reading...';
+  const visibleNodes = nodes.filter((n) => n.message.role !== 'system');
+  const isEmpty = visibleNodes.length === 0 && !isGenerating;
+
+  const lastAssistantNodeId = (() => {
+    for (let i = visibleNodes.length - 1; i >= 0; i--) {
+      if (visibleNodes[i].message.role === 'assistant') {
+        return visibleNodes[i].id;
+      }
+    }
+    return null;
+  })();
+
+  if (isEmpty) {
+    return (
+      <div className="ext-stream">
+        <div className="ext-empty-stage">
+          <MatrixOrb state="idle" size={34} />
+          <h2 className="ext-empty-title">Private Local Web Assistant</h2>
+          <p className="ext-empty-subtitle">
+            Runs offline on your GPU via WebGPU &amp; OPFS. Ask about the active tab or launch local
+            research.
+          </p>
+        </div>
+        <PromptCapsuleStack items={starters} onSelect={onSelectStarter} />
+      </div>
+    );
+  }
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadPrimitive.Root className="thread-root">
-        <ThreadPrimitive.Viewport className="thread-viewport">
-          <AuiIf condition={(s) => s.thread.isEmpty}>
-            <div className="thread-empty">
-              <div className="empty-title">TinyGPT Local Assistant</div>
-              <div className="empty-subtitle">
-                {modelReady
-                  ? 'Model is warm in WebGPU VRAM. Toggle Page / Research below or start chatting.'
-                  : 'Auto-loading Qwen3.5-4B into WebGPU... You can start typing right away.'}
-              </div>
+    <div className="ext-stream">
+      {visibleNodes.map((node) => {
+        const msg = node.message;
+        const siblingInfo = branchSiblings[node.id];
+
+        if (msg.role === 'user') {
+          const isEditing = editingNodeId === node.id;
+          return (
+            <div key={node.id} className="ext-tool-group">
+              <UserMessageBubble
+                content={msg.content}
+                contextLabel={getContextTagFromMessage(msg)}
+                isEditing={isEditing}
+                onStartEdit={() => setEditingNodeId(node.id)}
+                onCancelEdit={() => setEditingNodeId(null)}
+                onSaveEdit={(next) => {
+                  setEditingNodeId(null);
+                  if (next.trim() && next !== msg.content) {
+                    onEditAndBranch(node.id, next);
+                  }
+                }}
+                onCopy={() => onCopyText(msg.content)}
+              />
+              {siblingInfo && siblingInfo.total > 1 ? (
+                <BranchPicker
+                  currentIndex={siblingInfo.activeIndex}
+                  total={siblingInfo.total}
+                  onPrevious={() => {
+                    const prevIdx =
+                      (siblingInfo.activeIndex - 1 + siblingInfo.total) % siblingInfo.total;
+                    const target = siblingInfo.siblingIds[prevIdx];
+                    if (target) onSwitchBranch(target);
+                  }}
+                  onNext={() => {
+                    const nextIdx = (siblingInfo.activeIndex + 1) % siblingInfo.total;
+                    const target = siblingInfo.siblingIds[nextIdx];
+                    if (target) onSwitchBranch(target);
+                  }}
+                />
+              ) : null}
             </div>
-          </AuiIf>
+          );
+        }
 
-          <ThreadPrimitive.Messages>
-            {({ message }) => <ChatMessageRow role={message.role} />}
-          </ThreadPrimitive.Messages>
-        </ThreadPrimitive.Viewport>
-
-        <ThreadPrimitive.ViewportFooter className="composer-footer">
-          <div className="btn-row" style={{ marginBottom: 6, alignItems: 'center' }}>
-            {onToggleActivePage && (
-              <button
-                type="button"
-                className={includeActivePage && !activePageError ? 'btn btn-active' : 'btn'}
-                onClick={onToggleActivePage}
-                title={
-                  activePageError
-                    ? `Active tab unreadable without activeTab gesture or Research grant (${activePageError}). Click to toggle off.`
-                    : 'Speculatively extract and ground responses with active tab content'
-                }
-              >
-                {pageLabel}
-              </button>
-            )}
-            {onToggleResearch && (
-              <button
-                type="button"
-                className={researchEnabled ? 'btn btn-active' : 'btn'}
-                onClick={onToggleResearch}
-                title="Toggle live web_search and URL research (prompts for https://*/* on first enable)"
-              >
-                {researchEnabled ? 'Research: On' : 'Research: Off'}
-              </button>
-            )}
-            {toolStatus && (
-              <span className="badge badge-active" title={toolStatus.toolName}>
-                {toolStatus.label}
-              </span>
-            )}
-          </div>
-
-          {permissionPrompt && (onGrantResearchPermission || onToggleResearch) && (
-            <div className="progress-banner" style={{ marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
-              <span>{permissionPrompt.label}</span>
-              <span style={{ display: 'flex', gap: 4 }}>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={onGrantResearchPermission ?? onToggleResearch}
-                >
-                  Enable Web Research
-                </button>
-                {onDismissPermission && (
-                  <button type="button" className="btn" onClick={onDismissPermission}>
-                    Dismiss
-                  </button>
-                )}
-              </span>
-            </div>
-          )}
-
-          <ComposerPrimitive.Root className="composer-root">
-            <ComposerPrimitive.Input
-              placeholder={
-                modelReady
-                  ? 'Ask about this page, calculate, or search locally...'
-                  : 'Model loading in background — start typing...'
-              }
-              className="composer-input"
-              rows={2}
-              onInput={(e) => onComposerTextChange?.(e.currentTarget.value)}
+        if (msg.role === 'tool') {
+          const isErr = /^error\b|failed|blocked/i.test(msg.content);
+          return (
+            <ToolStepCard
+              key={node.id}
+              status={isErr ? 'error' : 'done'}
+              title={msg.toolName ?? 'Tool step'}
+              summary={msg.content.slice(0, 96)}
+              details={msg.content}
             />
-            <div className="composer-actions">
-              <AuiIf condition={(s) => s.thread.isRunning}>
-                <ComposerPrimitive.Cancel className="btn btn-danger">
-                  Stop
-                </ComposerPrimitive.Cancel>
-              </AuiIf>
-              <AuiIf condition={(s) => !s.thread.isRunning}>
-                <ComposerPrimitive.Send className="btn btn-primary">
-                  Send
-                </ComposerPrimitive.Send>
-              </AuiIf>
-            </div>
-          </ComposerPrimitive.Root>
-        </ThreadPrimitive.ViewportFooter>
-      </ThreadPrimitive.Root>
-    </AssistantRuntimeProvider>
+          );
+        }
+
+        if (msg.role === 'assistant') {
+          const { reasoning: parsedReasoning, body } = extractReasoningAndBody(msg.content);
+          const persistedReasoning =
+            typeof msg.reasoning === 'string' ? msg.reasoning.trim() : '';
+          const combinedReasoning = persistedReasoning || parsedReasoning;
+
+          if (msg.toolName && !body) {
+            return combinedReasoning ? (
+              <ReasoningTrace key={node.id} status="done" content={combinedReasoning} />
+            ) : null;
+          }
+
+          const isLastAssistant = node.id === lastAssistantNodeId;
+          const speedMetrics =
+            isLastAssistant && (turnTelemetry || engineTelemetry.tokensPerSec !== null)
+              ? {
+                  tokensPerSec:
+                    turnTelemetry?.tokensPerSec ?? engineTelemetry.tokensPerSec ?? undefined,
+                  ttftMs: turnTelemetry?.ttftMs ?? engineTelemetry.ttftMs ?? undefined,
+                }
+              : undefined;
+
+          const picker =
+            siblingInfo && siblingInfo.total > 1 ? (
+              <BranchPicker
+                currentIndex={siblingInfo.activeIndex}
+                total={siblingInfo.total}
+                onPrevious={() => {
+                  const prevIdx =
+                    (siblingInfo.activeIndex - 1 + siblingInfo.total) % siblingInfo.total;
+                  const target = siblingInfo.siblingIds[prevIdx];
+                  if (target) onSwitchBranch(target);
+                }}
+                onNext={() => {
+                  const nextIdx = (siblingInfo.activeIndex + 1) % siblingInfo.total;
+                  const target = siblingInfo.siblingIds[nextIdx];
+                  if (target) onSwitchBranch(target);
+                }}
+              />
+            ) : undefined;
+
+          return (
+            <AssistantMessage
+              key={node.id}
+              footer={
+                <ActionBar
+                  onCopy={() => onCopyText(body)}
+                  onRegenerate={() => onRegenerate(node.id)}
+                  onSpeak={() => onSpeakText(body)}
+                  onSave={() => onSaveMemory(body)}
+                  onThumbUp={() =>
+                    setFeedbackByNode((prev) => ({
+                      ...prev,
+                      [node.id]: prev[node.id] === 'up' ? null : 'up',
+                    }))
+                  }
+                  onThumbDown={() =>
+                    setFeedbackByNode((prev) => ({
+                      ...prev,
+                      [node.id]: prev[node.id] === 'down' ? null : 'down',
+                    }))
+                  }
+                  feedback={feedbackByNode[node.id] ?? null}
+                  speedMetrics={speedMetrics}
+                  rightSlot={picker}
+                />
+              }
+            >
+              {combinedReasoning ? <ReasoningTrace status="done" content={combinedReasoning} /> : null}
+              <GenUiRenderer
+                content={body}
+                status="done"
+                onCopyText={onCopyText}
+                onSaveText={onSaveMemory}
+                onSelectChoice={onSelectChoice}
+              />
+            </AssistantMessage>
+          );
+        }
+
+        return null;
+      })}
+
+      {pendingApproval ? (
+        <PermissionApprovalCard
+          title={`Approve ${pendingApproval.toolName}`}
+          description={pendingApproval.decision.reason}
+          ruleBadge={pendingApproval.decision.triggeredRule ?? 'IDPI Guard'}
+          approveLabel="Approve"
+          denyLabel="Deny"
+          onApprove={onApproveTool}
+          onDeny={onDenyTool}
+        />
+      ) : null}
+
+      {isGenerating && (streamingReasoning || streamingText || pendingToolCalls.length > 0) ? (
+        <div className="ext-tool-group">
+          {pendingToolCalls.map((tc) => (
+            <ToolStepCard
+              key={tc.id}
+              status="running"
+              title={`Running ${tc.name}`}
+              summary="Executing local MV3 tool..."
+            />
+          ))}
+          {streamingReasoning ? (
+            <ReasoningTrace
+              status={streamingText ? 'done' : 'thinking'}
+              content={streamingReasoning}
+              defaultExpanded={false}
+            />
+          ) : null}
+          {(() => {
+            const liveBody = streamingText ? extractReasoningAndBody(streamingText).body : '';
+            if (liveBody) {
+              return (
+                <AssistantMessage>
+                  <GenUiRenderer
+                    content={liveBody}
+                    status="streaming"
+                    onCopyText={onCopyText}
+                    onSaveText={onSaveMemory}
+                    onSelectChoice={onSelectChoice}
+                  />
+                </AssistantMessage>
+              );
+            }
+            if (turnState === 'prefilling') {
+              return <MessageSkeleton />;
+            }
+            return null;
+          })()}
+        </div>
+      ) : null}
+
+      {sources.length > 0 ? (
+        <div className="ext-sources-group">
+          <div className="ext-citation-row">
+            {sources.slice(0, 6).map((src, idx) => (
+              <InlineCitationPopover
+                key={src.id}
+                source={toInlineCitationSource(src, idx)}
+                hoverOpen
+                onJumpToSource={(target) => {
+                  if (
+                    target.url &&
+                    /^https?:\/\//i.test(target.url) &&
+                    typeof chrome !== 'undefined' &&
+                    chrome.tabs?.create
+                  ) {
+                    void chrome.tabs.create({ url: target.url });
+                  }
+                }}
+              />
+            ))}
+          </div>
+          <SourcesDrawer sources={sources} />
+        </div>
+      ) : null}
+
+      {error ? (
+        <ErrorRecoveryBanner
+          title="Generation Interrupted"
+          description={error}
+          retryLabel="Retry"
+          onRetry={onRetry}
+        />
+      ) : null}
+    </div>
   );
 }

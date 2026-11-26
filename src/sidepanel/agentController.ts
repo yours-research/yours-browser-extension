@@ -230,6 +230,14 @@ export class ActiveTabSpeculativePrefillController {
     this.onAbort();
   }
 
+  resetCache(): void {
+    this.clearTimer();
+    this.generationId += 1;
+    this.lastUrl = '';
+    this.lastContentHash = '';
+    this.prefillInFlight = false;
+  }
+
   dispose(): void {
     this.disposed = true;
     this.generationId += 1;

@@ -1,3 +1,4 @@
+import type { WorkerPortTransport } from '@yours/harness/adapters';
 import {
   DEFAULT_ENGINE_CONFIG,
   ENGINE_PORT_NAME,
@@ -7,7 +8,10 @@ import {
   type ClientToEngineMessage,
   type EngineConfig,
   type EngineToClientMessage,
+  type HardwareProfileSnapshot,
   type LogEntry,
+  type ModelCatalogChoice,
+  type ModelDownloadProgressInfo,
   type NiahResult,
   type OpfsSpikeResult,
   type OpfsStatusInfo,
@@ -24,6 +28,10 @@ export interface EngineClientSnapshot {
   config: EngineConfig;
   probeInfo: WebGpuProbeInfo | null;
   opfsStatus: OpfsStatusInfo | null;
+  hardwareProfile: HardwareProfileSnapshot | null;
+  catalogModels: ModelCatalogChoice[];
+  downloadProgress: ModelDownloadProgressInfo | null;
+  downloadError: string | null;
   spikeProgress: { message: string; pct: number } | null;
   spikeResult: OpfsSpikeResult | null;
   benchmarkProgress: string | null;
@@ -76,6 +84,7 @@ export class OffscreenEngineClient {
   private port: EnginePortLike | null = null;
   private connectPromise: Promise<EnginePortLike> | null = null;
   private readonly listeners = new Set<() => void>();
+  private readonly rawMessageListeners = new Set<(message: unknown) => void>();
   private readonly activeStreams = new Map<string, StreamCallbacks>();
   private snapshot: EngineClientSnapshot = {
     connected: false,
@@ -83,6 +92,10 @@ export class OffscreenEngineClient {
     config: { ...DEFAULT_ENGINE_CONFIG },
     probeInfo: null,
     opfsStatus: null,
+    hardwareProfile: null,
+    catalogModels: [],
+    downloadProgress: null,
+    downloadError: null,
     spikeProgress: null,
     spikeResult: null,
     benchmarkProgress: null,
@@ -163,6 +176,10 @@ export class OffscreenEngineClient {
   }
 
   private handleEngineMessage = (msg: EngineToClientMessage): void => {
+    for (const rawListener of this.rawMessageListeners) {
+      rawListener(msg);
+    }
+
     switch (msg.type) {
       case 'STATE_SNAPSHOT':
         this.updateSnapshot({
@@ -183,6 +200,31 @@ export class OffscreenEngineClient {
         break;
       case 'CONFIG_UPDATE':
         this.updateSnapshot({ config: msg.config });
+        break;
+      case 'HARDWARE_PROFILE_UPDATE':
+        this.updateSnapshot({
+          hardwareProfile: msg.hardwareProfile,
+          catalogModels: msg.catalog,
+        });
+        break;
+      case 'MODEL_DOWNLOAD_PROGRESS':
+        this.updateSnapshot({
+          downloadProgress: msg.progress,
+          downloadError: null,
+        });
+        break;
+      case 'MODEL_DOWNLOAD_COMPLETE':
+        this.updateSnapshot({
+          downloadProgress: null,
+          downloadError: null,
+          catalogModels: msg.catalog,
+        });
+        break;
+      case 'MODEL_DOWNLOAD_ERROR':
+        this.updateSnapshot({
+          downloadProgress: null,
+          downloadError: msg.error,
+        });
         break;
       case 'WEBGPU_PROBE_RESULT':
         this.updateSnapshot({ probeInfo: msg.probeInfo });
@@ -249,6 +291,72 @@ export class OffscreenEngineClient {
     port.postMessage(msg);
   }
 
+  createWgslPortTransport(): WorkerPortTransport {
+    return {
+      postMessage: (message: unknown) => {
+        const msg = message as ClientToEngineMessage;
+        if (this.port) {
+          this.port.postMessage(msg);
+          return;
+        }
+        void this.send(msg).catch((err) => {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          const reqId = (msg as { requestId?: string }).requestId;
+          if (reqId && msg.type === 'GENERATE') {
+            this.handleEngineMessage({
+              type: 'GENERATION_ERROR',
+              requestId: reqId,
+              error: errMsg,
+            });
+          } else if (reqId && msg.type === 'PREFILL_BACKGROUND') {
+            this.handleEngineMessage({
+              type: 'PREFILL_ERROR',
+              requestId: reqId,
+              slotKey: msg.slotKey,
+              error: errMsg,
+            });
+          } else if (reqId && msg.type === 'EVICT_SLOT') {
+            this.handleEngineMessage({
+              type: 'EVICT_COMPLETE',
+              requestId: reqId,
+              slotKey: msg.slotKey,
+            });
+          }
+        });
+      },
+      addMessageListener: (listener: (message: unknown) => void) => {
+        this.rawMessageListeners.add(listener);
+        return () => {
+          this.rawMessageListeners.delete(listener);
+        };
+      },
+    };
+  }
+
+  probeHardwareCatalog(): void {
+    void this.send({ type: 'PROBE_HARDWARE_CATALOG' }).catch(() => {});
+  }
+
+  downloadVerifiedModel(modelId: string, manifestUrl?: string): void {
+    void this.send({ type: 'DOWNLOAD_VERIFIED_MODEL', modelId, manifestUrl }).catch(() => {});
+  }
+
+  cancelModelDownload(modelId?: string): void {
+    void this.send({ type: 'CANCEL_MODEL_DOWNLOAD', modelId }).catch(() => {});
+  }
+
+  updateConfig(config: Partial<EngineConfig>): Promise<void> {
+    return this.send({ type: 'UPDATE_CONFIG', config });
+  }
+
+  loadModel(config?: Partial<EngineConfig>): Promise<void> {
+    return this.send({ type: 'LOAD_MODEL', ...(config ? { config } : {}) });
+  }
+
+  unloadModel(): Promise<void> {
+    return this.send({ type: 'UNLOAD_MODEL' });
+  }
+
   async startGeneration(
     requestId: string,
     messages: ChatMessage[],
@@ -307,10 +415,13 @@ export class OffscreenEngineClient {
     void this.send({ type: 'RESET_CONTEXT', restoreBasePrompt }).catch(() => {});
   }
 
-  async execTool(call: {
-    name: string;
-    arguments?: Record<string, unknown>;
-  }): Promise<ToolExecutionResult> {
+  async execTool(
+    call: {
+      name: string;
+      arguments?: Record<string, unknown>;
+    },
+    options?: { skipSpotlight?: boolean },
+  ): Promise<ToolExecutionResult> {
     if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
       return {
         ok: false,
@@ -321,6 +432,7 @@ export class OffscreenEngineClient {
     return (await chrome.runtime.sendMessage({
       type: 'EXEC_TOOL',
       call,
+      ...(options?.skipSpotlight ? { skipSpotlight: true } : {}),
     })) as ToolExecutionResult;
   }
 
