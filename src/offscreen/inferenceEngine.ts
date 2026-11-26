@@ -910,6 +910,7 @@ export class InferenceEngine {
           sampling: { temperature: 0, topK: 1, topP: 1 },
           pacingMode: 'balanced',
           abortSignal: controller.signal,
+          skipFinalLogits: true,
           yieldFn: async () => {
             if (seq !== this.bgPrefillSeq || controller.signal.aborted) {
               controller.abort();
@@ -1137,6 +1138,7 @@ export class InferenceEngine {
     chunkSize: number,
     sampleOpts: SamplingOptions,
     requestId?: string,
+    skipFinalLogits = false,
   ): Promise<{ nextToken: number; prefillMs: number }> {
     if (!this.wgslEngine) {
       throw new Error('Model is not loaded.');
@@ -1150,6 +1152,7 @@ export class InferenceEngine {
         sampling: sampleOpts,
         pacingMode: this.config.gpuPacingMode,
         abortSignal: controller.signal,
+        skipFinalLogits,
         yieldFn: async () => {
           if ((requestId && this.abortedRequests.has(requestId)) || controller.signal.aborted) {
             controller.abort();
@@ -1387,6 +1390,7 @@ export class InferenceEngine {
             this.config.chunkSize,
             sampleOpts,
             requestId,
+            true,
           );
           totalPrefillMs += ctxRes.prefillMs;
           if (this.abortedRequests.has(requestId)) {
@@ -1520,11 +1524,23 @@ export class InferenceEngine {
 
         if (canSpeculate) {
           const maxDraft = Math.min(4, remainingToMax - 1);
-          const rawDraft = speculator.propose({ maxDraft });
+          const inToolCallBlock =
+            stopOnToolCall && (emittedText.includes('<tool_call') || emittedText.includes('<|call>'));
+          const rawDraft =
+            inToolCallBlock && (emittedText.endsWith('</tool_call') || emittedText.endsWith('<tool_call|'))
+              ? []
+              : speculator.propose({ maxDraft });
           const cleanDraft: number[] = [];
+          let draftSuffixText = emittedText;
           for (const dt of rawDraft) {
             if (this.eosTokenIds.has(dt)) break;
             cleanDraft.push(dt);
+            if (stopOnToolCall) {
+              draftSuffixText += this.tokenizer.decode([dt], { skip_special_tokens: false });
+              if (draftSuffixText.includes('</tool_call>') || draftSuffixText.includes('<tool_call|>')) {
+                break;
+              }
+            }
           }
 
           if (

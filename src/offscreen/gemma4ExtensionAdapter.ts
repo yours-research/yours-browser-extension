@@ -59,6 +59,7 @@ export interface WgslRuntimeEngine extends GpuPrefixSlotBackend {
       yieldFn: () => Promise<void>;
       abortSignal?: AbortSignal;
       onChunk?: (done: number, total: number) => void;
+      skipFinalLogits?: boolean;
     },
   ): Promise<{ nextTokenId: number; prefillMs: number }>;
   decodeStep(
@@ -272,6 +273,7 @@ export class Gemma4ExtensionAdapter implements WgslRuntimeEngine {
       yieldFn: () => Promise<void>;
       abortSignal?: AbortSignal;
       onChunk?: (done: number, total: number) => void;
+      skipFinalLogits?: boolean;
     },
   ): Promise<{ nextTokenId: number; prefillMs: number }> {
     this.decodeBurstMs = 0;
@@ -290,7 +292,7 @@ export class Gemma4ExtensionAdapter implements WgslRuntimeEngine {
       throw new Error('__ABORTED__');
     }
     let nextTokenId = res.nextTokenId;
-    if (options.sampling.temperature > 0) {
+    if (!options.skipFinalLogits && options.sampling.temperature > 0) {
       const logits = await this.engine.readLastLogits();
       nextTokenId = sampleNextToken(logits, options.sampling);
     }

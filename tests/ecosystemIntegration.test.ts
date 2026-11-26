@@ -10,9 +10,13 @@ import {
   CommandPalette,
   ErrorRecoveryCard,
   ExportSessionCard,
+  FindInThreadBar,
   InlineNotice,
+  ModelParametersCard,
+  NetworkAuditCard,
   OnboardingCard,
   PromptTemplateList,
+  StorageQuotaCard,
   StreamingResponse,
   ThreadHistoryList,
   VoiceSessionCard,
@@ -32,6 +36,7 @@ import {
   sanitizeDisplayBody,
 } from '../src/sidepanel/components/ChatThread.tsx';
 import { parseAssistantSegments } from '../src/sidepanel/components/GenUiRenderer.tsx';
+import { countQueryOccurrences } from '../src/sidepanel/findInThread.ts';
 import { DelegatingRuntimeAdapter } from '../src/sidepanel/runtimeFactory.ts';
 import { SidepanelVoiceController } from '../src/sidepanel/voiceController.ts';
 import {
@@ -367,8 +372,14 @@ describe('@yours/* Ecosystem Integrations & Strict MV3 CSP', () => {
     expect(typeof AudioLevelMeter).toBe('function');
     expect(typeof PromptTemplateList).toBe('function');
     expect(typeof ExportSessionCard).toBe('function');
+    expect(typeof FindInThreadBar).toBe('function');
+    expect(typeof StorageQuotaCard).toBe('function');
+    expect(typeof ModelParametersCard).toBe('function');
+    expect(typeof NetworkAuditCard).toBe('function');
     expect(typeof TimelineCard).toBe('function');
     expect(typeof QuoteExcerptCard).toBe('function');
+    expect(countQueryOccurrences(['Quantum Anchor ALPHA', 'alpha node'], 'alpha', false)).toBe(2);
+    expect(countQueryOccurrences(['Quantum Anchor ALPHA', 'alpha node'], 'alpha', true)).toBe(1);
 
     const genUiSource = fs.readFileSync(
       path.join(ROOT_DIR, 'src', 'sidepanel', 'components', 'GenUiRenderer.tsx'),

@@ -491,3 +491,20 @@ body,
   overflow-y: auto;
   border-radius: 14px;
 }
+
+.ext-find-bar-dock {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  padding: 6px 0 8px;
+}
+
+::highlight(yui-find) {
+  background-color: var(--yui-accent-soft, rgba(59, 130, 246, 0.22));
+  color: inherit;
+}
+
+::highlight(yui-find-active) {
+  background-color: var(--yui-accent, #2563eb);
+  color: #ffffff;
+}

@@ -2289,6 +2289,7 @@ export class WgslQwen35Engine {
       yieldFn: () => Promise<void>;
       abortSignal?: AbortSignal;
       onChunk?: (done: number, total: number) => void;
+      skipFinalLogits?: boolean;
     },
   ): Promise<{ nextTokenId: number; prefillMs: number }> {
     const startMs = performance.now();
@@ -2300,7 +2301,7 @@ export class WgslQwen35Engine {
       this.emaDecodeStepMs,
     );
     const burstState = { gpuBurstMs: 0 };
-    let lastTok: number | null = null;
+    let lastTok: number | null = options.skipFinalLogits ? -1 : null;
     let offset = 0;
     let chunkIdx = 0;
 
@@ -2320,14 +2321,18 @@ export class WgslQwen35Engine {
       );
       const end = Math.min(tokenIds.length, offset + stepSize);
       const isLast = end === tokenIds.length;
+      const computeLogits = isLast && !options.skipFinalLogits;
       const deferSync = fastPrefillPipeline && !isLast && chunkIdx % 2 === 0;
-      lastTok = await this.prefillChunk(tokenIds.slice(offset, end), isLast, options.sampling, {
+      const chunkTok = await this.prefillChunk(tokenIds.slice(offset, end), computeLogits, options.sampling, {
         pacingMode,
         calibratedPolicy,
         abortSignal: options.abortSignal,
         burstState,
         deferSync,
       });
+      if (computeLogits) {
+        lastTok = chunkTok;
+      }
       options.onChunk?.(end, tokenIds.length);
       if (!isLast) {
         await options.yieldFn();

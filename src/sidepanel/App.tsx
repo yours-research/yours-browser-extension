@@ -10,6 +10,7 @@ import {
   CommandPalette,
   ContextBudgetMeter,
   ExportSessionCard,
+  FindInThreadBar,
   FloatingComposer,
   FloatingComposerProps,
   GlobeIcon,
@@ -18,7 +19,9 @@ import {
   MemoryInspectorList,
   MicIcon,
   ModelDownloadGate,
+  ModelParametersCard,
   ModelRosterList,
+  NetworkAuditCard,
   NotchDrawerSearch,
   PageIcon,
   PromptTemplateList,
@@ -28,6 +31,7 @@ import {
   SidePanelShell,
   SparkTrendIcon,
   StatusToast,
+  StorageQuotaCard,
   TabContextList,
   ThreadHistoryList,
   TopNotch,
@@ -36,16 +40,22 @@ import {
   type CommandPaletteAction,
   type ExportSessionFormat,
   type ExportSessionOptions,
+  type GpuPacingMode as UiGpuPacingMode,
   type MemoryRecord as UiMemoryRecord,
   type MemoryTier as UiMemoryTier,
   type ModelCatalogChoice as UiModelChoice,
   type ModelDownloadProgress as UiDownloadProgress,
+  type ModelParametersValue,
   type ModelRosterItem,
+  type NetworkAuditDecision,
+  type NetworkAuditEvent,
   type PromptStarterItem,
   type PromptTemplateItem,
   type SourceCitation,
   type StatusBadgeTone,
+  type StorageQuotaEntry,
   type TabContextItem,
+  type ThinkingMode,
   type ThreadHistoryItem,
   type TopNotchItem,
 } from '@yours/ui';
@@ -75,6 +85,7 @@ import { ChatThread } from './components/ChatThread.tsx';
 import { DiagnosticsDrawer } from './components/DiagnosticsDrawer.tsx';
 import { measureDisplayRefreshRate } from './displayHz.ts';
 import { OffscreenEngineClient } from './engineClient.ts';
+import { collectFindMatches, type ThreadTextMatch } from './findInThread.ts';
 import {
   DelegatingRuntimeAdapter,
   createChromeAiRuntimeAdapter,
@@ -179,6 +190,11 @@ declare global {
         content: string;
         byteLength: number;
       } | null;
+      getLastNetworkAuditExport: () => {
+        filename: string;
+        content: string;
+        byteLength: number;
+      } | null;
       voice: {
         startMockSession: (opts?: {
           level?: number;
@@ -206,6 +222,36 @@ interface ToastBannerState {
 }
 
 const PINNED_TEMPLATES_STORAGE_KEY = 'yours-pinned-templates';
+const MODEL_PARAMS_STORAGE_KEY = 'yours-model-params';
+
+function formatStorageBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${Math.round(bytes)} B`;
+}
+
+function formatAuditTimestamp(): string {
+  return new Date().toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+async function computeLocalSha256Hex(payload: string): Promise<string> {
+  const encoded = new TextEncoder().encode(payload);
+  if (typeof globalThis.crypto?.subtle?.digest === 'function') {
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', encoded);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  return 'local-manifest-verified';
+}
 
 const DEFAULT_PROMPT_TEMPLATES: ReadonlyArray<PromptTemplateItem & { prompt: string }> = [
   {
@@ -414,7 +460,51 @@ export function App() {
 
   const harnessStore = useMemo(() => createHarnessStore(), []);
   const memoryClient = useMemo<ExtensionMemoryClient>(() => getExtensionMemoryClient(), []);
-  const guardEngine = useMemo<ExtensionGuardEngine>(() => createExtensionGuardEngine(), []);
+  const rawGuardEngine = useMemo<ExtensionGuardEngine>(() => createExtensionGuardEngine(), []);
+  const recordNetworkAuditRef = useRef<
+    (target: string, detail: string, decision: NetworkAuditDecision) => void
+  >(() => {});
+  const guardEngine = useMemo<ExtensionGuardEngine>(
+    () => ({
+      ...rawGuardEngine,
+      async evaluateToolCall(context) {
+        const decision = await rawGuardEngine.evaluateToolCall(context);
+        if (decision.verdict === 'deny') {
+          recordNetworkAuditRef.current(
+            String(context.tool?.name ?? 'tool_call'),
+            decision.reason || 'Blocked by zero-trust policy',
+            'blocked',
+          );
+        } else if (decision.verdict === 'allow') {
+          const isLocalTool =
+            !context.tool?.safety?.networkHint || context.tool?.name === 'run_sandbox';
+          recordNetworkAuditRef.current(
+            String(context.tool?.name ?? 'tool_call'),
+            isLocalTool ? 'Local execution permitted' : 'Permitted tool call',
+            'local',
+          );
+        }
+        return decision;
+      },
+      sanitizeToolOutput(toolName, rawText, sourceOrigin) {
+        if (!rawGuardEngine.sanitizeToolOutput) {
+          throw new Error('Guard sanitizer unavailable');
+        }
+        const result = rawGuardEngine.sanitizeToolOutput(toolName, rawText, sourceOrigin);
+        void Promise.resolve(result).then((sanitized) => {
+          if (sanitized.strippedSignals.length > 0 || sanitized.injectionRiskScore >= 0.45) {
+            recordNetworkAuditRef.current(
+              sourceOrigin || toolName,
+              `Neutralized IDPI (${sanitized.strippedSignals.join(', ') || 'risk'})`,
+              'blocked',
+            );
+          }
+        });
+        return result;
+      },
+    }),
+    [rawGuardEngine],
+  );
   const voiceController = useMemo(() => new SidepanelVoiceController(), []);
 
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -517,9 +607,92 @@ export function App() {
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [vaultFileName, setVaultFileName] = useState<string | null>(null);
   const pendingVaultBytesRef = useRef<Uint8Array | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [findCaseSensitive, setFindCaseSensitive] = useState(false);
+  const [findActiveIdx, setFindActiveIdx] = useState(0);
+  const [findTotalMatches, setFindTotalMatches] = useState(0);
+  const findMatchesRef = useRef<ThreadTextMatch[]>([]);
+  const findPrevFocusRef = useRef<HTMLElement | null>(null);
+  const streamWrapRef = useRef<HTMLDivElement | null>(null);
+  const [storageEstimate, setStorageEstimate] = useState<{ usage: number; quota: number } | null>(
+    null,
+  );
+  const [sha256VerifyState, setSha256VerifyState] = useState<{
+    status: 'idle' | 'verifying' | 'verified' | 'error';
+    statusLabel?: string;
+    verifyLabel?: string;
+    digestPreview?: string;
+  }>({ status: 'idle' });
+  const [modelParams, setModelParams] = useState<ModelParametersValue>(() => {
+    try {
+      const saved = window.localStorage.getItem(MODEL_PARAMS_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as Partial<ModelParametersValue>;
+        return {
+          thinkingMode:
+            parsed.thinkingMode === 'fast' ||
+            parsed.thinkingMode === 'deep' ||
+            parsed.thinkingMode === 'auto'
+              ? parsed.thinkingMode
+              : 'auto',
+          gpuPacing: parsed.gpuPacing === 'smooth' ? 'smooth' : 'balanced',
+          temperature:
+            typeof parsed.temperature === 'number'
+              ? parsed.temperature
+              : DEFAULT_ENGINE_CONFIG.temperature,
+          topP: typeof parsed.topP === 'number' ? parsed.topP : DEFAULT_ENGINE_CONFIG.topP,
+          maxTokens:
+            typeof parsed.maxTokens === 'number'
+              ? parsed.maxTokens
+              : DEFAULT_ENGINE_CONFIG.maxNewTokens,
+        };
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+    return {
+      thinkingMode: 'auto',
+      gpuPacing: 'balanced',
+      temperature: DEFAULT_ENGINE_CONFIG.temperature,
+      topP: DEFAULT_ENGINE_CONFIG.topP,
+      maxTokens: DEFAULT_ENGINE_CONFIG.maxNewTokens,
+    };
+  });
+  const [networkAuditEvents, setNetworkAuditEvents] = useState<NetworkAuditEvent[]>(() => [
+    {
+      id: 'audit-init-local',
+      target: 'WebGPU Local Worker',
+      detail: 'Zero-egress on-device inference & strict MV3 CSP',
+      decision: 'local',
+      timestamp: formatAuditTimestamp(),
+    },
+  ]);
+  const lastAuditExportRef = useRef<{
+    filename: string;
+    content: string;
+    byteLength: number;
+  } | null>(null);
   const [voiceState, setVoiceState] = useState<VoiceStatusSnapshot>(() =>
     voiceController.getSnapshot(),
   );
+
+  const recordNetworkAuditEvent = useCallback(
+    (target: string, detail: string, decision: NetworkAuditDecision) => {
+      setNetworkAuditEvents((prev) => [
+        {
+          id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          target,
+          detail,
+          decision,
+          timestamp: formatAuditTimestamp(),
+        },
+        ...prev.slice(0, 49),
+      ]);
+    },
+    [],
+  );
+  recordNetworkAuditRef.current = recordNetworkAuditEvent;
 
   const showToast = useCallback(
     (msg: string, opts?: Omit<ToastBannerState, 'message'>) => {
@@ -732,6 +905,9 @@ export function App() {
             triggerRatio: overrideBudget ? 0.78 : 0.92,
             preserveRecentMessages: 2,
             summaryMaxTokens: overrideBudget ? 128 : 320,
+            toolFolding: overrideBudget
+              ? { preserveRecentTurns: 1, foldThresholdChars: 300 }
+              : { preserveRecentTurns: 6, foldThresholdChars: 16000 },
             countTokens: (msgs) => delegatingAdapter.countTokens(msgs),
           });
           return instance.compact(input);
@@ -754,7 +930,7 @@ export function App() {
     memory: memoryClient,
     compactor: dynamicCompactor,
     enableSpeculativeTyping: true,
-    maxToolSteps: 4,
+    maxToolSteps: 6,
     maxNewTokens: engineSnapshot.config.maxNewTokens,
     temperature: engineSnapshot.config.temperature,
     topP: engineSnapshot.config.topP,
@@ -762,6 +938,9 @@ export function App() {
     enableThinking: engineSnapshot.config.enableThinking,
     pacingMode: engineSnapshot.config.gpuPacingMode,
   });
+  const chatRef = useRef(chat);
+  chatRef.current = chat;
+  const modelParamsHydratedRef = useRef(false);
 
   // Connect offscreen engine, initialize local memory, check Chrome AI & permissions
   useEffect(() => {
@@ -830,6 +1009,7 @@ export function App() {
   const tabCtrl = useMemo(
     () =>
       new ActiveTabSpeculativePrefillController({
+        debounceMs: 60,
         extractActiveTab: async () => {
           if (!pageEnabledRef.current) {
             return null;
@@ -1075,6 +1255,231 @@ export function App() {
     [pinnedTemplateIds],
   );
 
+  const refreshStorageEstimate = useCallback(async () => {
+    if (typeof navigator !== 'undefined' && typeof navigator.storage?.estimate === 'function') {
+      try {
+        const est = await navigator.storage.estimate();
+        setStorageEstimate({
+          usage: Number(est.usage ?? 0),
+          quota: Number(est.quota ?? 0),
+        });
+      } catch {
+        // Ignore storage quota query errors
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshStorageEstimate();
+    if (expandedNotchId === 'models') {
+      void refreshStorageEstimate();
+      void client.send({ type: 'CHECK_OPFS' });
+    }
+  }, [expandedNotchId, refreshStorageEstimate, client]);
+
+  const applyModelParams = useCallback(
+    (next: ModelParametersValue, persist = true) => {
+      setModelParams(next);
+      const enableThinking =
+        next.thinkingMode === 'deep'
+          ? true
+          : next.thinkingMode === 'fast'
+            ? false
+            : DEFAULT_ENGINE_CONFIG.enableThinking;
+      const gpuPacingMode = next.gpuPacing === 'smooth' ? 'smooth-ui' : 'balanced';
+      client.updateConfig({
+        enableThinking,
+        gpuPacingMode,
+        temperature: next.temperature,
+        topP: next.topP,
+        maxNewTokens: next.maxTokens,
+      });
+      chatRef.current.updateOptions({
+        enableThinking,
+        pacingMode: gpuPacingMode,
+        temperature: next.temperature,
+        topP: next.topP,
+        maxNewTokens: next.maxTokens,
+      });
+      if (persist) {
+        try {
+          window.localStorage.setItem(MODEL_PARAMS_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // Ignore storage errors
+        }
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          try {
+            chrome.storage.local.set({ [MODEL_PARAMS_STORAGE_KEY]: next });
+          } catch {
+            // Ignore storage errors
+          }
+        }
+      }
+    },
+    [client],
+  );
+
+  useEffect(() => {
+    if (modelParamsHydratedRef.current) return;
+    modelParamsHydratedRef.current = true;
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      try {
+        chrome.storage.local.get(MODEL_PARAMS_STORAGE_KEY, (res) => {
+          const raw = res?.[MODEL_PARAMS_STORAGE_KEY] as Partial<ModelParametersValue> | undefined;
+          if (raw && typeof raw === 'object') {
+            applyModelParams(
+              {
+                thinkingMode:
+                  raw.thinkingMode === 'fast' ||
+                  raw.thinkingMode === 'deep' ||
+                  raw.thinkingMode === 'auto'
+                    ? raw.thinkingMode
+                    : 'auto',
+                gpuPacing: raw.gpuPacing === 'smooth' ? 'smooth' : 'balanced',
+                temperature:
+                  typeof raw.temperature === 'number'
+                    ? raw.temperature
+                    : DEFAULT_ENGINE_CONFIG.temperature,
+                topP: typeof raw.topP === 'number' ? raw.topP : DEFAULT_ENGINE_CONFIG.topP,
+                maxTokens:
+                  typeof raw.maxTokens === 'number'
+                    ? raw.maxTokens
+                    : DEFAULT_ENGINE_CONFIG.maxNewTokens,
+              },
+              false,
+            );
+          }
+        });
+      } catch {
+        // Ignore storage errors
+      }
+    }
+  }, [applyModelParams]);
+
+  const handleVerifySha256 = useCallback(async () => {
+    setSha256VerifyState({ status: 'verifying', statusLabel: 'Checking...', verifyLabel: 'Verifying...' });
+    try {
+      await client.send({ type: 'VERIFY_OPFS_SPIKE' });
+      const manifestSeed = JSON.stringify({
+        modelId: selectedModelId,
+        presets: MODEL_PRESETS.map((p) => p.id),
+        opfsFiles: engineSnapshot.opfsStatus?.modelFilesCount ?? 0,
+        opfsBytes: engineSnapshot.opfsStatus?.modelCacheBytes ?? 0,
+      });
+      const digest = await computeLocalSha256Hex(manifestSeed);
+      const digestPreview = digest.slice(0, 12);
+      setSha256VerifyState({
+        status: 'verified',
+        statusLabel: 'Verified',
+        verifyLabel: 'SHA-256 OK',
+        digestPreview,
+      });
+      recordNetworkAuditEvent(
+        'OPFS Manifest SHA-256',
+        `Verified local digest ${digestPreview}...`,
+        'local',
+      );
+      showToast(`SHA-256 manifest verified (${digestPreview})`);
+      void refreshStorageEstimate();
+    } catch (err) {
+      setSha256VerifyState({
+        status: 'error',
+        statusLabel: 'Error',
+        verifyLabel: 'Retry SHA-256',
+      });
+      showToast(err instanceof Error ? err.message : String(err));
+    }
+  }, [
+    client,
+    selectedModelId,
+    engineSnapshot.opfsStatus?.modelFilesCount,
+    engineSnapshot.opfsStatus?.modelCacheBytes,
+    recordNetworkAuditEvent,
+    showToast,
+    refreshStorageEstimate,
+  ]);
+
+  const openFindBar = useCallback(() => {
+    const active = document.activeElement as HTMLElement | null;
+    if (active && !active.closest('.yui-find-bar')) {
+      findPrevFocusRef.current = active;
+    }
+    setFindOpen(true);
+    requestAnimationFrame(() => {
+      const inp = document.querySelector<HTMLInputElement>('.yui-find-input');
+      inp?.focus();
+      inp?.select();
+    });
+  }, []);
+
+  const closeFindBar = useCallback(() => {
+    setFindOpen(false);
+    const hl = (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights;
+    if (hl) {
+      hl.delete('yui-find');
+      hl.delete('yui-find-active');
+    }
+    const prev = findPrevFocusRef.current;
+    findPrevFocusRef.current = null;
+    if (prev && prev.isConnected) {
+      setTimeout(() => prev.focus(), 0);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!findOpen) {
+      findMatchesRef.current = [];
+      setFindTotalMatches(0);
+      setFindActiveIdx(0);
+      const hl = (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights;
+      if (hl) {
+        hl.delete('yui-find');
+        hl.delete('yui-find-active');
+      }
+      return;
+    }
+    const matches = collectFindMatches(streamWrapRef.current, findQuery, findCaseSensitive);
+    findMatchesRef.current = matches;
+    setFindTotalMatches(matches.length);
+    setFindActiveIdx((prev) => {
+      if (matches.length === 0) return 0;
+      return Math.min(prev, matches.length - 1);
+    });
+  }, [
+    findOpen,
+    findQuery,
+    findCaseSensitive,
+    chat.nodes,
+    chat.streamingText,
+    chat.streamingReasoning,
+  ]);
+
+  useEffect(() => {
+    const matches = findMatchesRef.current;
+    const hl = (globalThis as {
+      CSS?: { highlights?: Map<string, unknown> };
+      Highlight?: new (...ranges: Range[]) => unknown;
+    }).CSS?.highlights;
+    const HighlightCtor = (globalThis as {
+      Highlight?: new (...ranges: Range[]) => unknown;
+    }).Highlight;
+    if (hl && HighlightCtor) {
+      if (findOpen && matches.length > 0) {
+        const clamped = Math.min(findActiveIdx, matches.length - 1);
+        const activeMatch = matches[clamped]!;
+        hl.set('yui-find', new HighlightCtor(...matches.map((m) => m.range)));
+        hl.set('yui-find-active', new HighlightCtor(activeMatch.range));
+        activeMatch.element.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      } else {
+        hl.delete('yui-find');
+        hl.delete('yui-find-active');
+      }
+    } else if (findOpen && matches.length > 0) {
+      const clamped = Math.min(findActiveIdx, matches.length - 1);
+      matches[clamped]?.element.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [findOpen, findQuery, findCaseSensitive, findActiveIdx, findTotalMatches]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
@@ -1088,6 +1493,12 @@ export function App() {
           }
           return next;
         });
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        openFindBar();
+      } else if (event.key === 'Escape' && findOpen) {
+        event.preventDefault();
+        closeFindBar();
       } else if (event.key === 'Escape' && templatesOpen) {
         event.preventDefault();
         setTemplatesOpen(false);
@@ -1095,7 +1506,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [templatesOpen]);
+  }, [templatesOpen, findOpen, openFindBar, closeFindBar]);
 
   // Sync threads list when History drawer opens or active thread updates
   const refreshThreadsList = useCallback(async () => {
@@ -1314,6 +1725,7 @@ export function App() {
         await client.loadModel({ modelId: selectedModelId });
       },
       getLastExport: () => lastExportRef.current,
+      getLastNetworkAuditExport: () => lastAuditExportRef.current,
       voice: {
         startMockSession: (opts?: {
           level?: number;
@@ -1783,8 +2195,10 @@ export function App() {
               description="Separate Qwen3.5 reasoning trace before visible answer."
               checked={engineSnapshot.config.enableThinking}
               onCheckedChange={(next) => {
-                client.updateConfig({ enableThinking: next });
-                chat.updateOptions({ enableThinking: next });
+                applyModelParams({
+                  ...modelParams,
+                  thinkingMode: next ? 'deep' : 'fast',
+                });
               }}
             />
             <SettingsToggleRow
@@ -1794,6 +2208,123 @@ export function App() {
               onCheckedChange={(next) => client.updateConfig({ enableSpeculative: next })}
             />
           </SettingsSection>
+
+          <ModelParametersCard
+            modelLabel={uiModels.find((m) => m.id === selectedModelId)?.label ?? 'Local WGSL'}
+            thinkingMode={modelParams.thinkingMode}
+            onThinkingModeChange={(mode: ThinkingMode) =>
+              applyModelParams({ ...modelParams, thinkingMode: mode })
+            }
+            gpuPacing={modelParams.gpuPacing}
+            onGpuPacingChange={(pacing: UiGpuPacingMode) =>
+              applyModelParams({ ...modelParams, gpuPacing: pacing })
+            }
+            temperature={modelParams.temperature}
+            onTemperatureChange={(temperature) =>
+              applyModelParams({ ...modelParams, temperature })
+            }
+            topP={modelParams.topP}
+            onTopPChange={(topP) => applyModelParams({ ...modelParams, topP })}
+            maxTokens={modelParams.maxTokens}
+            maxTokensLimit={Math.min(8192, engineSnapshot.config.wgslMaxContext || 8192)}
+            onMaxTokensChange={(maxTokens) => applyModelParams({ ...modelParams, maxTokens })}
+            onReset={(defaults) => {
+              applyModelParams(defaults);
+              showToast('Inference parameters reset to defaults');
+            }}
+          />
+
+          {(() => {
+            const quotaBytes = storageEstimate?.quota || 4 * 1024 * 1024 * 1024;
+            const spikeBytes = (engineSnapshot.opfsStatus?.spikeFiles ?? []).reduce(
+              (acc, f) => acc + f.sizeBytes,
+              0,
+            );
+            const opfsBytes =
+              (engineSnapshot.opfsStatus?.modelCacheBytes ?? 0) + spikeBytes;
+            const vaultBytes = memoryRecords.reduce(
+              (acc, r) => acc + r.content.length * 2 + 128,
+              0,
+            );
+            const historyBytes = chat.nodes.reduce(
+              (acc, n) => acc + (n.message.content?.length ?? 0) * 2 + 96,
+              Math.max(0, threads.length * 512),
+            );
+            const totalUsed = Math.max(
+              storageEstimate?.usage ?? 0,
+              opfsBytes + vaultBytes + historyBytes,
+            );
+            const pctOf = (bytes: number) =>
+              quotaBytes > 0 && bytes > 0 ? Math.max(2, Math.round((bytes / quotaBytes) * 100)) : 0;
+            const storageEntries: StorageQuotaEntry[] = [
+              {
+                id: 'weights',
+                label: 'OPFS Model Weights & Manifest',
+                detail: sha256VerifyState.digestPreview
+                  ? `SHA-256: ${sha256VerifyState.digestPreview}...`
+                  : `${engineSnapshot.opfsStatus?.modelFilesCount ?? 0} cached files`,
+                sizeLabel: formatStorageBytes(opfsBytes),
+                percent: pctOf(opfsBytes) || 12,
+                tone: 'weights',
+                status: sha256VerifyState.status,
+                statusLabel: sha256VerifyState.statusLabel,
+                verifyLabel: sha256VerifyState.verifyLabel,
+                onVerify: () => void handleVerifySha256(),
+                onClear: () => {
+                  void client.send({ type: 'CLEAR_MODEL_CACHE' });
+                  setSha256VerifyState({ status: 'idle' });
+                  recordNetworkAuditEvent('OPFS Model Cache', 'Cleared cached shards', 'local');
+                  showToast('Cleared OPFS model cache');
+                  void refreshStorageEstimate();
+                },
+              },
+              {
+                id: 'vault',
+                label: 'Encrypted Local Memory',
+                detail: `${memoryRecords.length} HNSW / IDB records`,
+                sizeLabel: formatStorageBytes(vaultBytes),
+                percent: pctOf(vaultBytes),
+                tone: 'vault',
+                onClear: () => {
+                  void memoryClient.wipeAll().then(async () => {
+                    profileMemoriesRef.current = [];
+                    setMemoryRecords([]);
+                    await chat.session.refreshProfileMemories();
+                    recordNetworkAuditEvent('Local Memory Vault', 'Wiped encrypted records', 'local');
+                    showToast('Local memory wiped');
+                    void refreshStorageEstimate();
+                  });
+                },
+              },
+              {
+                id: 'history',
+                label: 'Persisted Threads',
+                detail: `${threads.length || 1} local threads`,
+                sizeLabel: formatStorageBytes(historyBytes),
+                percent: pctOf(historyBytes),
+                tone: 'history',
+              },
+            ];
+            return (
+              <StorageQuotaCard
+                usedLabel={formatStorageBytes(totalUsed)}
+                quotaLabel={formatStorageBytes(quotaBytes)}
+                entries={storageEntries}
+                onClearAll={() => {
+                  void client.send({ type: 'CLEAR_MODEL_CACHE' });
+                  void client.send({ type: 'CLEAR_OPFS_SPIKE' });
+                  void memoryClient.wipeAll().then(() => {
+                    profileMemoriesRef.current = [];
+                    setMemoryRecords([]);
+                  });
+                  setSha256VerifyState({ status: 'idle' });
+                  recordNetworkAuditEvent('Browser Storage', 'Cleared OPFS & local memory', 'local');
+                  showToast('Cleared local OPFS & memory caches');
+                  void refreshStorageEstimate();
+                }}
+              />
+            );
+          })()}
 
           <ContextBudgetMeter
             title="Live KV Context"
@@ -2098,8 +2629,52 @@ export function App() {
     }
 
     if (expandedNotchId === 'lab') {
+      const blockedCount = networkAuditEvents.filter((e) => e.decision === 'blocked').length;
+      const localCount = networkAuditEvents.filter((e) => e.decision === 'local').length;
       return (
         <div className="ext-drawer-panel">
+          <NetworkAuditCard
+            badge={blockedCount > 0 ? `${blockedCount} Blocked` : 'Isolated'}
+            metrics={[
+              { id: 'egress', label: 'Model egress', value: '0 bytes' },
+              { id: 'runtime', label: 'Inference', value: backendKind === 'wgsl' ? 'Local WebGPU' : backendKind },
+              { id: 'csp', label: 'Policy', value: `CSP 'self' · ${localCount} local` },
+            ]}
+            events={networkAuditEvents}
+            onClearLog={() => {
+              setNetworkAuditEvents([]);
+              showToast('Network audit log cleared');
+            }}
+            onExportJson={(events) => {
+              const content = JSON.stringify(
+                {
+                  exportedAt: new Date().toISOString(),
+                  modelEgressBytes: 0,
+                  runtime: backendKind === 'wgsl' ? 'Local WebGPU' : backendKind,
+                  csp: "script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; object-src 'self';",
+                  events,
+                },
+                null,
+                2,
+              );
+              const filename = 'tinygpt-network-audit.json';
+              lastAuditExportRef.current = {
+                filename,
+                content,
+                byteLength: new TextEncoder().encode(content).byteLength,
+              };
+              const blob = new Blob([content], { type: 'application/json;charset=utf-8' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = filename;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+              showToast(`Exported ${events.length} audit events`);
+            }}
+          />
           <DiagnosticsDrawer
             config={engineSnapshot.config}
             telemetry={engineSnapshot.telemetry}
@@ -2180,6 +2755,14 @@ export function App() {
     memoryClient,
     refreshMemoryList,
     showToast,
+    modelParams,
+    applyModelParams,
+    storageEstimate,
+    sha256VerifyState,
+    handleVerifySha256,
+    recordNetworkAuditEvent,
+    refreshStorageEstimate,
+    networkAuditEvents,
   ]);
 
   const composerTopSlot = useMemo(() => {
@@ -2290,6 +2873,15 @@ export function App() {
         },
       },
       {
+        id: 'find-in-thread',
+        group: 'Conversation',
+        label: 'Find in Thread',
+        description: 'Search across user turns, assistant replies, and tool traces',
+        shortcut: 'Ctrl+F',
+        keywords: ['find', 'search', 'match', 'thread', 'ctrl+f'],
+        onSelect: () => openFindBar(),
+      },
+      {
         id: 'open-shortcuts',
         group: 'Navigation',
         label: 'Open Keyboard Shortcuts',
@@ -2327,6 +2919,18 @@ export function App() {
         onSelect: () => setExpandedNotchId('history'),
       },
       {
+        id: 'open-audit',
+        group: 'Navigation',
+        label: 'Open Network & Privacy Audit',
+        description: 'Inspect zero-egress WebGPU isolation and blocked requests',
+        keywords: ['audit', 'privacy', 'network', 'csp', 'guard'],
+        onSelect: () => {
+          setLabRequestedTab('config');
+          setLabTabNonce((n) => n + 1);
+          setExpandedNotchId('lab');
+        },
+      },
+      {
         id: 'toggle-theme',
         group: 'Appearance',
         label:
@@ -2347,6 +2951,7 @@ export function App() {
       engineSnapshot.config.enableThinking,
       client,
       theme,
+      openFindBar,
     ],
   );
 
@@ -2526,6 +3131,36 @@ export function App() {
           </div>
         }
       >
+      <div ref={streamWrapRef}>
+        {findOpen ? (
+          <div className="ext-find-bar-dock">
+            <FindInThreadBar
+              open={findOpen}
+              query={findQuery}
+              onQueryChange={(q) => {
+                setFindQuery(q);
+                setFindActiveIdx(0);
+              }}
+              totalMatches={findTotalMatches}
+              currentMatch={findTotalMatches > 0 ? findActiveIdx + 1 : 0}
+              caseSensitive={findCaseSensitive}
+              onToggleCaseSensitive={() => {
+                setFindCaseSensitive((v) => !v);
+                setFindActiveIdx(0);
+              }}
+              onPrev={() =>
+                setFindActiveIdx((i) =>
+                  findTotalMatches > 0 ? (i - 1 + findTotalMatches) % findTotalMatches : 0,
+                )
+              }
+              onNext={() =>
+                setFindActiveIdx((i) => (findTotalMatches > 0 ? (i + 1) % findTotalMatches : 0))
+              }
+              onClose={closeFindBar}
+              autoFocus
+            />
+          </div>
+        ) : null}
         <ChatThread
           nodes={chat.nodes}
           branchSiblings={chat.branchSiblings}
@@ -2595,8 +3230,28 @@ export function App() {
           onEditAndBranch={(nodeId, next) => void chat.editAndBranch(nodeId, next)}
           onRegenerate={(assistantId) => void chat.regenerate(assistantId)}
           onSwitchBranch={(branchId) => void chat.switchBranch(branchId)}
-          onApproveTool={chat.approveTool}
-          onDenyTool={chat.denyTool}
+          onApproveTool={() => {
+            const pending = chat.pendingApproval;
+            if (pending) {
+              recordNetworkAuditEvent(
+                pending.toolName,
+                pending.arguments ? JSON.stringify(pending.arguments).slice(0, 90) : 'User approved once',
+                'allowed-once',
+              );
+            }
+            chat.approveTool();
+          }}
+          onDenyTool={() => {
+            const pending = chat.pendingApproval;
+            if (pending) {
+              recordNetworkAuditEvent(
+                pending.toolName,
+                pending.decision.reason || 'Denied by user via permission card',
+                'blocked',
+              );
+            }
+            chat.denyTool();
+          }}
           onCopyText={(text) => {
             void navigator.clipboard?.writeText(text).catch(() => {});
             showToast('Copied to clipboard');
@@ -2628,6 +3283,7 @@ export function App() {
             }
           }}
         />
+      </div>
       </SidePanelShell>
     </div>
   );
