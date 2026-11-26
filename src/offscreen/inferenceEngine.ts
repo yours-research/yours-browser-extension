@@ -11,10 +11,12 @@ import {
   type ChatMessage,
   type EngineConfig,
   type ExecutionHost,
+  type GenerationTokenTrace,
   type LogEntry,
   type NiahResult,
   type OpfsSpikeResult,
   type OpfsStatusInfo,
+  type SpecMicrobenchResult,
   type TelemetryState,
   type WebGpuProbeInfo,
   type YieldMode,
@@ -30,10 +32,16 @@ import {
   PrefixCacheManager,
   isExactTokenPrefix,
 } from './prefixCacheManager.ts';
+import {
+  AdaptiveVerifyCostModel,
+  EngineASpeculator,
+  type ScoredDraftChain,
+  type ToolSchema,
+  type ParamType,
+} from './adaptiveSpeculator.ts';
 import { computeBandwidthStats, isMessagePrefix, type SamplingOptions } from './sampling.ts';
-import { SuffixSpeculator } from './suffixSpeculator.ts';
 import { installWebGpuLimitPatch, probeWebGpu } from './webgpuLimits.ts';
-import { WgslQwen35Engine } from './wgslRealEngine.ts';
+import { WgslQwen35Engine, MAX_SPEC_DRAFT } from './wgslRealEngine.ts';
 
 const CONTROL_TOKENS_TO_STRIP_RE =
   /<\|im_end\|>|<\|endoftext\|>|<end_of_turn>|<turn\|>|<\|turn>model\r?\n?|<\|im_start\|>assistant\r?\n?|<eos>|<bos>|<pad>/g;
@@ -94,10 +102,15 @@ export interface EngineCallbacks {
   onSpikeResult: (result: OpfsSpikeResult) => void;
   onBenchmarkProgress: (message: string, point?: BenchmarkPoint) => void;
   onBenchmarkResult: (result: BenchmarkSuiteResult) => void;
+  onSpecMicrobenchResult?: (result: SpecMicrobenchResult) => void;
   onNiahProgress: (message: string) => void;
   onNiahResult: (result: NiahResult) => void;
   onTokenDelta: (requestId: string, delta: string, tokenCount: number) => void;
-  onGenerationComplete: (requestId: string, finishReason: 'stop' | 'length' | 'abort') => void;
+  onGenerationComplete: (
+    requestId: string,
+    finishReason: 'stop' | 'length' | 'abort',
+    trace?: GenerationTokenTrace,
+  ) => void;
   onGenerationError: (requestId: string, error: string) => void;
   onPrefillComplete?: (
     requestId: string,
@@ -175,6 +188,9 @@ export class InferenceEngine {
   private activeBgSlotKey: string | null = null;
   private activeBgRequestId: string | null = null;
   private bgPrefillSeq = 0;
+  private engineASpeculator: EngineASpeculator | null = null;
+  private engineATokenizerRef: PreTrainedTokenizer | null = null;
+  private engineACostModel = new AdaptiveVerifyCostModel({ maxM: 1 + MAX_SPEC_DRAFT });
 
   constructor(
     callbacks: EngineCallbacks,
@@ -1184,6 +1200,16 @@ export class InferenceEngine {
       });
   }
 
+  enqueueSpecMicrobench(): void {
+    this.abortBackgroundPrefill();
+    this.taskQueue = this.taskQueue
+      .then(() => this.runSpeculativeMicrobench())
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log('error', 'offscreen', `Speculative microbench error: ${msg}`);
+      });
+  }
+
   enqueueNeedleInHaystack(targetTokens: number, depthRatio: number, chunkSize?: number): void {
     this.abortBackgroundPrefill();
     this.taskQueue = this.taskQueue
@@ -1317,6 +1343,39 @@ export class InferenceEngine {
       sampleMs: 0,
       breatherMs: res.breatherMs,
     };
+  }
+
+  private getOrCreateEngineASpeculator(): EngineASpeculator {
+    const tok = this.tokenizer!;
+    if (this.engineASpeculator && this.engineATokenizerRef === tok) {
+      return this.engineASpeculator;
+    }
+    const extraTools: ToolSchema[] = CANONICAL_TOOL_DEFINITIONS.map((def) => {
+      const schemaObj = (def.parameters ?? {}) as {
+        properties?: Record<string, { type?: string; enum?: string[] }>;
+        required?: string[];
+      };
+      const req = new Set(schemaObj.required ?? []);
+      const params = Object.entries(schemaObj.properties ?? {}).map(([name, meta]) => ({
+        name,
+        type: ((meta.type as ParamType | undefined) ?? 'string'),
+        enum: meta.enum,
+        required: req.has(name),
+      }));
+      params.sort((a, b) => Number(b.required) - Number(a.required));
+      return { name: def.name, params };
+    });
+    this.engineASpeculator = new EngineASpeculator({
+      tokenizer: {
+        encode: (text: string) => tok.encode(text, { add_special_tokens: false }),
+        decode: (tokens: readonly number[]) => tok.decode([...tokens], { skip_special_tokens: false }),
+      },
+      extraTools,
+      adaptiveProfile: this.engineACostModel,
+      minProb: 0.02,
+    });
+    this.engineATokenizerRef = tok;
+    return this.engineASpeculator;
   }
 
   private async runGenerate(
@@ -1532,22 +1591,38 @@ export class InferenceEngine {
         groundingText && groundingText.trim().length > 0
           ? this.tokenizer.encode(groundingText, { add_special_tokens: false })
           : [];
-      const speculator = new SuffixSpeculator([...groundingTokens, ...sessionTokenIds]);
+      const speculator = this.getOrCreateEngineASpeculator();
+      const promptScaffold = messages
+        .filter((m) => m.role === 'system' || m.role === 'user')
+        .map((m) => m.content)
+        .join('\n')
+        .slice(-12000);
+      speculator.beginSample(promptScaffold, this.config.enableThinking);
+      const seedIds = [...groundingTokens, ...sessionTokenIds];
+      // Cap initial SAM ingest at trailing 8192 tokens so turn startup stays <3ms on 32K+ prompts
+      const initialSpecSeed = seedIds.length > 8192 ? seedIds.slice(-8192) : seedIds;
+      speculator.observe(initialSpecSeed, false);
+
       let specDrafted = 0;
       let specAccepted = 0;
       let specSteps = 0;
+      let specSkippedSteps = 0;
 
       let emittedText = '';
       let finishReason: 'stop' | 'length' | 'abort' = 'length';
       const decodeStartMs = performance.now();
 
       const buildSpecStats = () =>
-        specSteps > 0
+        specSteps > 0 || specSkippedSteps > 0
           ? {
               drafted: specDrafted,
               accepted: specAccepted,
               steps: specSteps,
               acceptanceRatePct: specDrafted > 0 ? (specAccepted / specDrafted) * 100 : 0,
+              tau: specSteps > 0 ? 1 + specAccepted / specSteps : 1,
+              alpha: specDrafted > 0 ? specAccepted / specDrafted : 0,
+              avgDraftLen: specSteps > 0 ? specDrafted / specSteps : 0,
+              skippedSteps: specSkippedSteps,
             }
           : null;
 
@@ -1562,7 +1637,7 @@ export class InferenceEngine {
         }
         generatedIds.push(tok);
         sessionTokenIds.push(tok);
-        speculator.pushToken(tok);
+        speculator.observe([tok], true);
 
         const decodedFull = decodeGeneratedText(this.tokenizer!, generatedIds, {
           preOpenedThink: promptOpensThink,
@@ -1625,16 +1700,17 @@ export class InferenceEngine {
           remainingToMax > 1;
 
         if (canSpeculate) {
-          const maxDraft = Math.min(4, remainingToMax - 1);
+          const maxDraft = Math.min(MAX_SPEC_DRAFT, remainingToMax - 1);
           const inToolCallBlock =
             stopOnToolCall && (emittedText.includes('<tool_call') || emittedText.includes('<|call>'));
-          const rawDraft =
-            inToolCallBlock && (emittedText.endsWith('</tool_call') || emittedText.endsWith('<tool_call|'))
-              ? []
-              : speculator.propose({ maxDraft });
+          const supressNearClose =
+            inToolCallBlock && (emittedText.endsWith('</tool_call') || emittedText.endsWith('<tool_call|'));
+          const proposedChain: ScoredDraftChain = supressNearClose
+            ? { tokens: [], parents: [], probs: [], keys: [] }
+            : speculator.proposeChain(maxDraft);
           const cleanDraft: number[] = [];
           let draftSuffixText = emittedText;
-          for (const dt of rawDraft) {
+          for (const dt of proposedChain.tokens) {
             if (this.eosTokenIds.has(dt)) break;
             cleanDraft.push(dt);
             if (stopOnToolCall) {
@@ -1645,8 +1721,9 @@ export class InferenceEngine {
             }
           }
 
-          if (
-            cleanDraft.length > 0 &&
+          if (cleanDraft.length === 0) {
+            specSkippedSteps += 1;
+          } else if (
             this.wgslEngine!.activeSeqPos + 1 + cleanDraft.length <= this.wgslEngine!.maxContextTokens
           ) {
             const specRes = await this.wgslEngine!.decodeSpeculativeStep(
@@ -1655,6 +1732,18 @@ export class InferenceEngine {
               sampleOpts,
               this.config.gpuPacingMode,
             );
+            this.engineACostModel.recordStepTiming(
+              1 + cleanDraft.length,
+              specRes.gpuMs,
+              specRes.acceptedCount < specRes.draftedCount,
+            );
+            const verifiedSlice: ScoredDraftChain = {
+              tokens: proposedChain.tokens.slice(0, cleanDraft.length),
+              parents: proposedChain.parents.slice(0, cleanDraft.length),
+              probs: proposedChain.probs.slice(0, cleanDraft.length),
+              keys: proposedChain.keys.slice(0, cleanDraft.length),
+            };
+            speculator.feedback(verifiedSlice, specRes.acceptedCount);
             this.cachedTokenCount = this.wgslEngine!.activeSeqPos;
             specDrafted += specRes.draftedCount;
             specAccepted += specRes.acceptedCount;
@@ -1665,7 +1754,7 @@ export class InferenceEngine {
 
             let stoppedMidBatch = false;
             for (let i = 0; i < specRes.acceptedCount; i++) {
-              if (emitTokenAndCheckDone(specRes.tokens[i])) {
+              if (emitTokenAndCheckDone(specRes.tokens[i]!)) {
                 stoppedMidBatch = true;
                 break;
               }
@@ -1673,16 +1762,19 @@ export class InferenceEngine {
             if (stoppedMidBatch) {
               break;
             }
-            nextToken = specRes.tokens[specRes.acceptedCount];
+            nextToken = specRes.tokens[specRes.acceptedCount]!;
             iter++;
             continue;
           }
         }
 
         const stepRes = await this.decodeNextToken(nextToken, sampleOpts, iter);
+        this.engineACostModel.recordStepTiming(1, stepRes.forwardMs, false);
         nextToken = stepRes.nextToken;
         iter++;
       }
+
+      speculator.endSample();
 
       if (generatedIds.length > 0) {
         const totalDecodeSec = Math.max(0.001, (performance.now() - decodeStartMs) / 1000);
@@ -1718,7 +1810,15 @@ export class InferenceEngine {
       }
 
       this.updateTelemetry({ status: 'ready', prefillChunkProgress: null });
-      this.callbacks.onGenerationComplete(requestId, finishReason);
+      const trace: GenerationTokenTrace = {
+        modelId: this.config.modelId,
+        promptIds: sessionTokenIds.slice(0, Math.max(0, sessionTokenIds.length - generatedIds.length)),
+        generatedIds: [...generatedIds],
+        promptText: promptScaffold,
+        generatedText: emittedText,
+        speculativeStats: buildSpecStats(),
+      };
+      this.callbacks.onGenerationComplete(requestId, finishReason, trace);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg === '__ABORTED__' || msg === 'Generation aborted') {
@@ -1993,6 +2093,132 @@ export class InferenceEngine {
       this.lastNiah = result;
       this.log('error', 'offscreen', `NIAH failed: ${msg}`);
       this.callbacks.onNiahResult(result);
+    } finally {
+      this.updateTelemetry({ status: 'ready', prefillChunkProgress: null });
+    }
+  }
+
+  async runSpeculativeMicrobench(): Promise<void> {
+    if (!this.isEngineReady()) {
+      await this.loadModel();
+    }
+    if (!this.isEngineReady() || !this.tokenizer || !this.wgslEngine) {
+      throw new Error('WGSL Qwen3.5 engine not active for speculative microbench.');
+    }
+
+    const engine = this.wgslEngine;
+    const greedy: SamplingOptions = { temperature: 0, topK: 1, topP: 1 };
+    const slotId = '__spec_microbench';
+
+    this.updateTelemetry({ status: 'benchmarking', lastError: null });
+    try {
+      await this.resetContext(false);
+      const encodedBenchPrompt = this.tokenizer.encode(
+        'You are a helpful browser assistant. Summarize the exact cluster metrics step by step: Alpha throughput is 415 req/s, Beta throughput is 635 req/s, combined total is 1050 req/s in region us-east-webgpu-1. '.repeat(3),
+        { add_special_tokens: false },
+      );
+      const promptIds =
+        encodedBenchPrompt.length >= 96
+          ? encodedBenchPrompt.slice(0, 96)
+          : [...encodedBenchPrompt, ...buildSyntheticTokenIds(this.tokenizer, 96 - encodedBenchPrompt.length)];
+      const pref = await engine.prefill(promptIds, {
+        chunkSize: 64,
+        sampling: greedy,
+        pacingMode: 'max-speed',
+        yieldFn: async () => {},
+      });
+
+      // Generate 8 exact greedy reference tokens from seqPos=96
+      const refTokens: number[] = [pref.nextTokenId];
+      let cur = pref.nextTokenId;
+      for (let i = 0; i < 8; i++) {
+        const d = await engine.decodeStep(cur, greedy, 'max-speed');
+        cur = d.nextToken;
+        refTokens.push(cur);
+      }
+
+      // Reset to 96 + prefill and snapshot right before refTokens[0]
+      await this.resetContext(false);
+      await engine.prefill(promptIds, {
+        chunkSize: 64,
+        sampling: greedy,
+        pacingMode: 'max-speed',
+        yieldFn: async () => {},
+      });
+      await engine.saveGpuPrefixSlot(slotId);
+
+      // Measure T(1) over 12 steps (after 2 warmup steps)
+      let t1Sum = 0;
+      const t1Iters = 12;
+      let t1Tok = refTokens[0]!;
+      for (let i = 0; i < 2 + t1Iters; i++) {
+        const res = await engine.decodeStep(t1Tok, greedy, 'max-speed');
+        t1Tok = res.nextToken;
+        if (i >= 2) t1Sum += res.gpuMs;
+      }
+      const t1Ms = t1Sum / t1Iters;
+
+      const measureM = async (M: number, acceptAll: boolean): Promise<number> => {
+        const draftLen = M - 1;
+        const draft = acceptAll
+          ? refTokens.slice(1, 1 + draftLen)
+          : new Array<number>(draftLen).fill((refTokens[1]! + 17) % 1000);
+        // Warmup builds cached VerifyGraphPlan for this M
+        await engine.restoreGpuPrefixSlot(slotId);
+        await engine.decodeSpeculativeStep(refTokens[0]!, draft, greedy, 'max-speed');
+
+        let sum = 0;
+        const iters = 10;
+        for (let i = 0; i < iters; i++) {
+          await engine.restoreGpuPrefixSlot(slotId);
+          const r = await engine.decodeSpeculativeStep(refTokens[0]!, draft, greedy, 'max-speed');
+          sum += r.gpuMs;
+        }
+        return sum / iters;
+      };
+
+      const t2Ms = await measureM(2, true);
+      const t3Ms = await measureM(3, true);
+      const t5Ms = await measureM(5, true);
+      const t8Ms = await measureM(8, true);
+      const t5RejectMs = await measureM(5, false);
+
+      engine.deleteGpuPrefixSlot(slotId);
+      await this.resetContext(this.prefixCache?.hasBasePrompt() ?? false);
+
+      const ratioT5ToT1 = Number((t5Ms / Math.max(0.01, t1Ms)).toFixed(3));
+      const ratioT8ToT1 = Number((t8Ms / Math.max(0.01, t1Ms)).toFixed(3));
+      this.engineACostModel.t1Ms = t1Ms;
+      this.engineACostModel.slopePerTokenMs = Math.max(0.15 * t1Ms, (t5Ms - t1Ms) / 4);
+      this.engineACostModel.rejectPenaltyMs = Math.max(0.25, t5RejectMs - t5Ms);
+      const result: SpecMicrobenchResult = {
+        modelId: this.config.modelId,
+        t1Ms: Number(t1Ms.toFixed(2)),
+        t2Ms: Number(t2Ms.toFixed(2)),
+        t3Ms: Number(t3Ms.toFixed(2)),
+        t5Ms: Number(t5Ms.toFixed(2)),
+        t8Ms: Number(t8Ms.toFixed(2)),
+        t5RejectMs: Number(t5RejectMs.toFixed(2)),
+        ratioT5ToT1,
+        ratioT8ToT1,
+        gatePass: ratioT5ToT1 <= 2.7,
+      };
+      this.callbacks.onSpecMicrobenchResult?.(result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.callbacks.onSpecMicrobenchResult?.({
+        modelId: this.config.modelId,
+        t1Ms: 0,
+        t2Ms: 0,
+        t3Ms: 0,
+        t5Ms: 0,
+        t8Ms: 0,
+        t5RejectMs: 0,
+        ratioT5ToT1: 0,
+        ratioT8ToT1: 0,
+        gatePass: false,
+        error: msg,
+      });
     } finally {
       this.updateTelemetry({ status: 'ready', prefillChunkProgress: null });
     }

@@ -60,7 +60,7 @@ const GQA_FP16_NUM_SPLITS = 32;
 const GQA_INT8_NUM_SPLITS = 64;
 const PREFILL_NUM_SPLITS = 16;
 const PREFILL_MAX_CHUNK = 128;
-const MAX_SPEC_DRAFT = 4;
+export const MAX_SPEC_DRAFT = 7;
 const MAX_SPEC_TOKENS = 1 + MAX_SPEC_DRAFT;
 const UNIFORM_MAX_SLOTS = 1024;
 const MAX_SNAPSHOT_BYTES = 512 * 1024 * 1024;
@@ -113,6 +113,27 @@ interface DispatchStep {
   wx: number;
   wy: number;
   wz: number;
+}
+
+interface VerifyFaPatchTarget {
+  qkUIdx: number;
+  gqa0UIdx: number;
+  gqa1UIdx: number;
+  gqa1Step: DispatchStep;
+}
+
+interface VerifyGraphPlan {
+  M: number;
+  uniformBuf: GpuBufferLike;
+  dynCpu: ArrayBuffer;
+  dynU32: Uint32Array;
+  dynByteStart: number;
+  steps: DispatchStep[];
+  faPatches: VerifyFaPatchTarget[];
+  bgArgBatch1: unknown;
+  bgArgBatch2: unknown;
+  bgSpecAccept: unknown;
+  ownedBuffers: GpuBufferLike[];
 }
 
 interface TierShaderSelection {
@@ -263,10 +284,12 @@ export class WgslQwen35Engine {
   private prefillUniformBuf!: GpuBufferLike;
   private dnStateBackupBuf!: GpuBufferLike;
   private dnConvBackupBuf!: GpuBufferLike;
-  private dnVerifyActBuf!: GpuBufferLike;
   private verifyLogitsBuf!: GpuBufferLike;
   private verifyTokOutBuf!: GpuBufferLike;
-  private verifyStaging32B!: GpuBufferLike;
+  private verifyAcceptOutBuf!: GpuBufferLike;
+  private verifyStaging64B!: GpuBufferLike;
+  private partValBuf!: GpuBufferLike;
+  private partIdxBuf!: GpuBufferLike;
 
   private embedPipe!: unknown;
   private rmsNormPipe!: unknown;
@@ -287,11 +310,23 @@ export class WgslQwen35Engine {
   private gqaPrefillPipe!: unknown;
   private arg1Pipe!: unknown;
   private arg2Pipe!: unknown;
+  private argmaxBatch1Pipe!: unknown;
+  private argmaxBatch2Pipe!: unknown;
+  private specAcceptPipe!: unknown;
+  private gemvBatchWidePipe: unknown = null;
+  private gateUpSwigluBatchPipe: unknown = null;
   private usingDp4a = false;
 
-  // Retained bind group layouts for dynamic KV cache reallocation
+  // Retained bind group layouts for dynamic KV cache reallocation & verify plan cache
+  private dynStorage4Bgl!: unknown;
+  private gdnApplyBgl!: unknown;
+  private qkRopeBgl!: unknown;
   private gqaSplitBgl!: unknown;
   private dynRwStorageBgl!: unknown;
+  private staticBgl!: unknown;
+  private staticRead2Bgl!: unknown;
+  private verifyPlans = new Map<number, VerifyGraphPlan>();
+  private rbUniformScratch = new ArrayBuffer(256 * 256);
 
   private bgEmbedPerSlice: unknown[] = [];
   private bgRmsNorm!: unknown;
@@ -321,7 +356,6 @@ export class WgslQwen35Engine {
   private pBgQkRope!: unknown;
   private pBgGqaReduce!: unknown;
   private pBgLmHeadPerSlice: unknown[] = [];
-  private vBgLmHeadPerSlice: unknown[] = [];
   private bgArg1!: unknown;
   private bgArg2!: unknown;
 
@@ -795,8 +829,13 @@ export class WgslQwen35Engine {
         ],
       });
 
+      this.dynStorage4Bgl = dynStorage4Bgl;
+      this.gdnApplyBgl = gdnApplyBgl;
+      this.qkRopeBgl = qkRopeBgl;
       this.gqaSplitBgl = gqaSplitBgl;
       this.dynRwStorageBgl = dynRwStorageBgl;
+      this.staticBgl = staticBgl;
+      this.staticRead2Bgl = staticRead2Bgl;
 
       const dyn4Layout = device.createPipelineLayout({ bindGroupLayouts: [dynStorage4Bgl] });
       const dynRwLayout = device.createPipelineLayout({ bindGroupLayouts: [dynRwStorageBgl] });
@@ -838,6 +877,9 @@ export class WgslQwen35Engine {
             this.gqaPrefillPipe,
             this.arg1Pipe,
             this.arg2Pipe,
+            this.argmaxBatch1Pipe,
+            this.argmaxBatch2Pipe,
+            this.specAcceptPipe,
           ] = await Promise.all([
             createValidatedPipeline(device, `${tier}-embed-lookup`, getWgslShaderSource(wasm, ids.embed), dyn4Layout),
             createValidatedPipeline(device, `${tier}-rmsnorm-batch`, getWgslShaderSource(wasm, ids.rmsNorm), dyn4Layout),
@@ -857,7 +899,35 @@ export class WgslQwen35Engine {
             createValidatedPipeline(device, `${tier}-gqa-${this.kvMode}-prefill`, getWgslShaderSource(wasm, ids.gqaPrefill), dynRwLayout),
             createValidatedPipeline(device, `${tier}-argmax-pass1`, getWgslShaderSource(wasm, ids.arg1), staticArg1Layout),
             createValidatedPipeline(device, `${tier}-argmax-pass2`, getWgslShaderSource(wasm, ids.arg2), staticArg2Layout),
+            createValidatedPipeline(device, `${tier}-argmax-batch-pass1`, getWgslShaderSource(wasm, 132), staticArg1Layout),
+            createValidatedPipeline(device, `${tier}-argmax-batch-pass2`, getWgslShaderSource(wasm, 133), staticArg2Layout),
+            createValidatedPipeline(device, `${tier}-spec-accept-greedy`, getWgslShaderSource(wasm, 43), staticArg2Layout),
           ]);
+
+          this.gemvBatchWidePipe = null;
+          this.gateUpSwigluBatchPipe = null;
+          if (tier === 'tier1-f16-subgroups') {
+            try {
+              this.gemvBatchWidePipe = await createValidatedPipeline(
+                device,
+                'tier1-q4-gemv-batch-wide',
+                getWgslShaderSource(wasm, 44),
+                dyn4Layout,
+              );
+            } catch {
+              this.gemvBatchWidePipe = null;
+            }
+            try {
+              this.gateUpSwigluBatchPipe = await createValidatedPipeline(
+                device,
+                'tier1-q4-gate-up-swiglu-batch-v2',
+                getWgslShaderSource(wasm, 45),
+                dyn4Layout,
+              );
+            } catch {
+              this.gateUpSwigluBatchPipe = null;
+            }
+          }
 
           this.gqaSplitPipe = this.gqaSplitPlainPipe;
           this.usingDp4a = false;
@@ -951,8 +1021,9 @@ export class WgslQwen35Engine {
       this.hiddenBuf = this.track(
         device.createBuffer({ size: PREFILL_MAX_CHUNK * H * 4, usage: GPU_USAGE.STORAGE }),
       );
+      const normRows = Math.max(PREFILL_MAX_CHUNK, dnLayerAllocCount * MAX_SPEC_TOKENS);
       this.normBuf = this.track(
-        device.createBuffer({ size: PREFILL_MAX_CHUNK * H * 4, usage: GPU_USAGE.STORAGE }),
+        device.createBuffer({ size: normRows * H * 4, usage: GPU_USAGE.STORAGE }),
       );
       this.workBuf = this.track(
         device.createBuffer({
@@ -989,12 +1060,6 @@ export class WgslQwen35Engine {
           usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC | GPU_USAGE.COPY_DST,
         }),
       );
-      this.dnVerifyActBuf = this.track(
-        device.createBuffer({
-          size: dnLayerAllocCount * MAX_SPEC_TOKENS * this.dnQkvzAbRows * 4,
-          usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC | GPU_USAGE.COPY_DST,
-        }),
-      );
       this.verifyLogitsBuf = this.track(
         device.createBuffer({
           size: MAX_SPEC_TOKENS * V * 4,
@@ -1007,16 +1072,28 @@ export class WgslQwen35Engine {
           usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC | GPU_USAGE.COPY_DST,
         }),
       );
-      this.verifyStaging32B = this.track(
+      this.verifyAcceptOutBuf = this.track(
         device.createBuffer({
-          size: 32,
+          size: 64,
+          usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC,
+        }),
+      );
+      this.verifyStaging64B = this.track(
+        device.createBuffer({
+          size: 64,
           usage: GPU_USAGE.MAP_READ | GPU_USAGE.COPY_DST,
         }),
       );
 
       const argmaxWgCount = Math.ceil(V / 256);
-      const partValBuf = this.track(device.createBuffer({ size: argmaxWgCount * 4, usage: GPU_USAGE.STORAGE }));
-      const partIdxBuf = this.track(device.createBuffer({ size: argmaxWgCount * 4, usage: GPU_USAGE.STORAGE }));
+      const partValBuf = this.track(
+        device.createBuffer({ size: MAX_SPEC_TOKENS * argmaxWgCount * 4, usage: GPU_USAGE.STORAGE }),
+      );
+      const partIdxBuf = this.track(
+        device.createBuffer({ size: MAX_SPEC_TOKENS * argmaxWgCount * 4, usage: GPU_USAGE.STORAGE }),
+      );
+      this.partValBuf = partValBuf;
+      this.partIdxBuf = partIdxBuf;
       this.tokOutBuf = this.track(
         device.createBuffer({ size: 4, usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC }),
       );
@@ -1130,9 +1207,6 @@ export class WgslQwen35Engine {
       );
       this.pBgLmHeadPerSlice = this.lmHeadSlabs.map((slab) =>
         makeDyn4(this.prefillUniformBuf, slab, this.normBuf, this.logitsBuf),
-      );
-      this.vBgLmHeadPerSlice = this.lmHeadSlabs.map((slab) =>
-        makeDyn4(this.prefillUniformBuf, slab, this.normBuf, this.verifyLogitsBuf),
       );
       this.pBgConv = makeDynRw(this.prefillUniformBuf, this.auxBuf, this.dnConvBuf, this.workBuf);
       this.pBgGqaReduce = makeDyn4(this.prefillUniformBuf, this.workBuf, this.gqaSplitBuf, this.attnOutBuf);
@@ -1272,7 +1346,21 @@ export class WgslQwen35Engine {
     }
   }
 
+  private invalidateVerifyPlans(): void {
+    for (const plan of this.verifyPlans.values()) {
+      for (const buf of plan.ownedBuffers) {
+        try {
+          buf.destroy();
+        } catch {
+          // Ignore already destroyed buffers
+        }
+      }
+    }
+    this.verifyPlans.clear();
+  }
+
   private rebuildKvBindGroups(): void {
+    this.invalidateVerifyPlans();
     const device = this.device!;
     this.bgGqaSplit0 = device.createBindGroup({
       layout: this.gqaSplitBgl,
@@ -2464,10 +2552,323 @@ export class WgslQwen35Engine {
     return { nextToken, gpuMs, breatherMs };
   }
 
+  private buildOrGetVerifyPlan(M: number): VerifyGraphPlan {
+    const existing = this.verifyPlans.get(M);
+    if (existing) {
+      return existing;
+    }
+    const device = this.device!;
+    const H = this.arch.hiddenSize;
+    const I = this.arch.intermediateSize;
+    const L = this.arch.numLayers;
+    const V = this.arch.vocabSize;
+    const argmaxWgCount = Math.ceil(V / 256);
+    const batchWx = (rows: number) => Math.ceil(rows / 16);
+    const widePipe = this.gemvBatchWidePipe ?? this.gemvBatchPipe;
+    const wideWx = (rows: number) =>
+      this.gemvBatchWidePipe ? Math.ceil(rows / 8) : Math.ceil(rows / 16);
+    const gdnHeadsPacked = this.packGdnHeadsParam();
+    const qkRopePacked = this.packQkRopeParam();
+    const convWgs = Math.ceil(this.dnConvDim / 128);
+    const embedBlocksY = Math.ceil(H / 32);
+    const attnQDim = this.arch.attnQHeads * this.arch.attnHeadDim * 2;
+    const attnKvDim = this.arch.attnKvHeads * this.arch.attnHeadDim;
+    const attnODim = this.arch.attnQHeads * this.arch.attnHeadDim;
+    const qkRopeHeadCount = this.arch.attnQHeads + this.arch.attnKvHeads;
+
+    const faCount = this.fa0Count + this.fa1Count;
+    const dynSlotCount = Math.max(1, faCount * 4);
+    const dynCpu = new ArrayBuffer(dynSlotCount * 256);
+    const dynU32 = new Uint32Array(dynCpu);
+
+    const tempTable = new ArrayBuffer(UNIFORM_MAX_SLOTS * 256);
+    const u32View = new Uint32Array(tempTable);
+    const f32View = new Float32Array(tempTable);
+    let nextSlot = dynSlotCount;
+
+    const allocStaticSlot = (
+      vals: [number, number, number, number, number, number, number, number],
+      isFloat5 = false,
+    ): number => {
+      if (nextSlot >= UNIFORM_MAX_SLOTS) {
+        throw new Error(`Verify plan exceeded UNIFORM_MAX_SLOTS (${UNIFORM_MAX_SLOTS})`);
+      }
+      const slot = nextSlot++;
+      const byteOff = slot * 256;
+      const uIdx = byteOff / 4;
+      for (let i = 0; i < 8; i++) {
+        if (isFloat5 && i === 5) f32View[uIdx + i] = vals[i];
+        else u32View[uIdx + i] = vals[i];
+      }
+      return byteOff;
+    };
+
+    const ownedBuffers: GpuBufferLike[] = [];
+    const uniformBuf = device.createBuffer({
+      size: UNIFORM_MAX_SLOTS * 256,
+      usage: GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST,
+    });
+    ownedBuffers.push(uniformBuf);
+
+    const makeDyn4 = (b1: GpuBufferLike, b2: GpuBufferLike, b3: GpuBufferLike) =>
+      device.createBindGroup({
+        layout: this.dynStorage4Bgl,
+        entries: [
+          { binding: 0, resource: { buffer: uniformBuf, size: 32 } },
+          { binding: 1, resource: { buffer: b1 } },
+          { binding: 2, resource: { buffer: b2 } },
+          { binding: 3, resource: { buffer: b3 } },
+        ],
+      });
+    const makeDynRw = (b1: GpuBufferLike, b2: GpuBufferLike, b3: GpuBufferLike) =>
+      device.createBindGroup({
+        layout: this.dynRwStorageBgl,
+        entries: [
+          { binding: 0, resource: { buffer: uniformBuf, size: 32 } },
+          { binding: 1, resource: { buffer: b1 } },
+          { binding: 2, resource: { buffer: b2 } },
+          { binding: 3, resource: { buffer: b3 } },
+        ],
+      });
+
+    const vBgEmbedPerSlice = this.lmHeadSlabs.map((slab) =>
+      makeDyn4(this.tokenIdsBuf, slab, this.hiddenBuf),
+    );
+    const vBgRmsNorm = makeDyn4(this.auxBuf, this.hiddenBuf, this.normBuf);
+    const vBgSwiGlu = makeDyn4(this.auxBuf, this.workBuf, this.attnOutBuf);
+    const vBgWSlabNormToWork = this.wSlabs.map((slab) => makeDyn4(slab, this.normBuf, this.workBuf));
+    const vBgWSlabNormToAttn = this.wSlabs.map((slab) => makeDyn4(slab, this.normBuf, this.attnOutBuf));
+    const vBgWSlabAttnToHidden = this.wSlabs.map((slab) => makeDyn4(slab, this.attnOutBuf, this.hiddenBuf));
+    const vBgLmHead = this.lmHeadSlabs.map((slab) => makeDyn4(slab, this.normBuf, this.verifyLogitsBuf));
+    const vBgConv = makeDynRw(this.auxBuf, this.dnConvBuf, this.workBuf);
+    const vBgGqaReduce = makeDyn4(this.workBuf, this.gqaSplitBuf, this.attnOutBuf);
+    const vBgGdnChunkPrep = makeDyn4(this.auxBuf, this.workBuf, this.gqaSplitBuf);
+    const vBgGdnChunkApply = device.createBindGroup({
+      layout: this.gdnApplyBgl,
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuf, size: 32 } },
+        { binding: 1, resource: { buffer: this.auxBuf } },
+        { binding: 2, resource: { buffer: this.workBuf } },
+        { binding: 3, resource: { buffer: this.gqaSplitBuf } },
+        { binding: 4, resource: { buffer: this.dnStateBuf } },
+        { binding: 5, resource: { buffer: this.attnOutBuf } },
+      ],
+    });
+    const vBgQkRope = device.createBindGroup({
+      layout: this.qkRopeBgl,
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuf, size: 32 } },
+        { binding: 1, resource: { buffer: this.auxBuf } },
+        { binding: 2, resource: { buffer: this.workBuf } },
+        { binding: 3, resource: { buffer: this.tokenIdsBuf } },
+      ],
+    });
+    const vBgGqaPrefill0 = makeDynRw(this.workBuf, this.kvSlab0, this.gqaSplitBuf);
+    const vBgGqaPrefill1 = makeDynRw(this.workBuf, this.kvSlab1, this.gqaSplitBuf);
+
+    const uArgBatchBuf = device.createBuffer({
+      size: 16,
+      usage: GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST,
+    });
+    const uSpecAcceptBuf = device.createBuffer({
+      size: 16,
+      usage: GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST,
+    });
+    ownedBuffers.push(uArgBatchBuf, uSpecAcceptBuf);
+    device.queue.writeBuffer(uArgBatchBuf, 0, new Uint32Array([V, M, argmaxWgCount, 0]));
+    device.queue.writeBuffer(uSpecAcceptBuf, 0, new Uint32Array([M - 1, 0, 0, 0]));
+
+    const bgArgBatch1 = device.createBindGroup({
+      layout: this.staticBgl,
+      entries: [
+        { binding: 0, resource: { buffer: uArgBatchBuf } },
+        { binding: 1, resource: { buffer: this.verifyLogitsBuf } },
+        { binding: 2, resource: { buffer: this.partValBuf } },
+        { binding: 3, resource: { buffer: this.partIdxBuf } },
+      ],
+    });
+    const bgArgBatch2 = device.createBindGroup({
+      layout: this.staticRead2Bgl,
+      entries: [
+        { binding: 0, resource: { buffer: uArgBatchBuf } },
+        { binding: 1, resource: { buffer: this.partValBuf } },
+        { binding: 2, resource: { buffer: this.partIdxBuf } },
+        { binding: 3, resource: { buffer: this.verifyTokOutBuf } },
+      ],
+    });
+    const bgSpecAccept = device.createBindGroup({
+      layout: this.staticRead2Bgl,
+      entries: [
+        { binding: 0, resource: { buffer: uSpecAcceptBuf } },
+        { binding: 1, resource: { buffer: this.verifyTokOutBuf } },
+        { binding: 2, resource: { buffer: this.tokenIdsBuf } },
+        { binding: 3, resource: { buffer: this.verifyAcceptOutBuf } },
+      ],
+    });
+
+    const steps: DispatchStep[] = [];
+    const faPatches: VerifyFaPatchTarget[] = [];
+
+    const pushStatic = (
+      pipeline: unknown,
+      bindGroup: unknown,
+      vals: [number, number, number, number, number, number, number, number],
+      wx: number,
+      wy = 1,
+      wz = 1,
+      isFloat5 = false,
+    ) => {
+      steps.push({
+        pipeline,
+        bindGroup,
+        uniformByteOffset: allocStaticSlot(vals, isFloat5),
+        wx,
+        wy,
+        wz,
+      });
+    };
+
+    for (let sIdx = 0; sIdx < this.vocabSlices.length; sIdx++) {
+      const slice = this.vocabSlices[sIdx]!;
+      const rowEnd = this.vocabSlices.length === 1 ? 0 : slice.endRow;
+      pushStatic(this.embedPipe, vBgEmbedPerSlice[sIdx]!, [M, H, slice.startRow, rowEnd, 0, 0, 0, 0], M, embedBlocksY);
+    }
+
+    for (let l = 0; l < L; l++) {
+      const la = this.auxLayout.layers[l]!;
+      const lo = this.layerOffsets[l]!;
+      const bgNormToWork = vBgWSlabNormToWork[lo.slabIdx]!;
+      const bgAttnToHidden = vBgWSlabAttnToHidden[lo.slabIdx]!;
+
+      if (!lo.isFullAttn) {
+        const [wQkv, wZ, wAb, wOut, wGate, wUp, wDown] = lo.w;
+        const dnNormOff = lo.dnIdx * MAX_SPEC_TOKENS * H;
+        pushStatic(this.rmsNormPipe, vBgRmsNorm, [M, H, la.inputNormOff, 0, dnNormOff, 1e-6, 0, 0], M, 1, 1, true);
+        pushStatic(this.gemvBatchPipe, bgNormToWork, [this.dnConvDim, H, wQkv, dnNormOff, 0, 0, M, 0], batchWx(this.dnConvDim));
+        pushStatic(this.gemvBatchPipe, bgNormToWork, [this.dnValDim, H, wZ, dnNormOff, M * this.dnConvDim, 0, M, 0], batchWx(this.dnValDim));
+        pushStatic(this.gemvBatchPipe, bgNormToWork, [this.arch.dnValHeads * 2, H, wAb, dnNormOff, M * (this.dnConvDim + this.dnValDim), 0, M, 0], batchWx(this.arch.dnValHeads * 2));
+
+        pushStatic(this.convPipe, vBgConv, [M, la.convWOff, lo.dnIdx * this.dnConvPerLayerF32s, 0, this.dnConvDim, 0, 0, 0], convWgs);
+        pushStatic(
+          this.gdnChunkPrepPipe,
+          vBgGdnChunkPrep,
+          [M, 0, la.dnAuxOff, 0, M * (this.dnConvDim + this.dnValDim), 0, gdnHeadsPacked, 0],
+          this.arch.dnValHeads,
+        );
+        pushStatic(
+          this.gdnChunkApplyPipe,
+          vBgGdnChunkApply,
+          [0, M, 0, lo.dnIdx * this.dnStatePerLayerF32s, la.dnAuxOff, M * this.dnConvDim, 0, gdnHeadsPacked],
+          this.arch.dnValHeads,
+          8,
+        );
+        pushStatic(
+          this.gdnChunkApplyPipe,
+          vBgGdnChunkApply,
+          [1, M, 0, lo.dnIdx * this.dnStatePerLayerF32s, la.dnAuxOff, M * this.dnConvDim, 0, gdnHeadsPacked],
+          this.arch.dnValHeads,
+          M,
+        );
+        pushStatic(widePipe, bgAttnToHidden, [H, this.dnValDim, wOut, 0, 0, 1, M, 0], wideWx(H));
+        pushStatic(this.rmsNormPipe, vBgRmsNorm, [M, H, la.postNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
+        if (this.gateUpSwigluBatchPipe) {
+          pushStatic(
+            this.gateUpSwigluBatchPipe,
+            vBgWSlabNormToAttn[lo.slabIdx]!,
+            [I, H, wGate, 0, 0, 0, M, wUp],
+            Math.ceil(I / 8),
+          );
+        } else {
+          pushStatic(this.gemvBatchPipe, bgNormToWork, [I, H, wGate, 0, 0, 0, M, 0], batchWx(I));
+          pushStatic(this.gemvBatchPipe, bgNormToWork, [I, H, wUp, 0, M * I, 0, M, 0], batchWx(I));
+          pushStatic(this.swigluPipe, vBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
+        }
+        pushStatic(widePipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, M, 0], wideWx(H));
+      } else {
+        const [wQg, wK, wV, wO, wGate, wUp, wDown] = lo.w;
+        pushStatic(this.rmsNormPipe, vBgRmsNorm, [M, H, la.inputNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
+        pushStatic(this.gemvBatchPipe, bgNormToWork, [attnQDim, H, wQg, 0, 0, 0, M, 0], batchWx(attnQDim));
+        pushStatic(this.gemvBatchPipe, bgNormToWork, [attnKvDim, H, wK, 0, M * attnQDim, 0, M, 0], batchWx(attnKvDim));
+        pushStatic(this.gemvBatchPipe, bgNormToWork, [attnKvDim, H, wV, 0, M * (attnQDim + attnKvDim), 0, M, 0], batchWx(attnKvDim));
+
+        const qkSlot = lo.faIdx * 4;
+        const gqa0Slot = qkSlot + 1;
+        const gqa1Slot = qkSlot + 2;
+        const redSlot = qkSlot + 3;
+        const qkUIdx = (qkSlot * 256) / 4;
+        const gqa0UIdx = (gqa0Slot * 256) / 4;
+        const gqa1UIdx = (gqa1Slot * 256) / 4;
+        const redUIdx = (redSlot * 256) / 4;
+
+        const inKv0 = lo.faIdx < this.fa0Count;
+        const localKv = inKv0 ? lo.faIdx : lo.faIdx - this.fa0Count;
+        const kvBaseU32 = localKv * (this.kvSingleBytes / 4);
+        const bgGqaPrefill = inKv0 ? vBgGqaPrefill0 : vBgGqaPrefill1;
+
+        dynU32.set([M, 0, 0, M * attnQDim, la.qNormOff, la.kNormOff, this.auxLayout.invFreqOff, qkRopePacked], qkUIdx);
+        dynU32.set([0, kvBaseU32, this.maxSeqCapacity, 0, M, M * attnQDim, M * (attnQDim + attnKvDim), 0], gqa0UIdx);
+        dynU32.set([1, kvBaseU32, this.maxSeqCapacity, 0, M, 0, 0, 0], gqa1UIdx);
+        dynU32.set([1, this.arch.attnHeadDim, 0, this.arch.attnHeadDim * 2, this.arch.attnQHeads, 0, 0, 0], redUIdx);
+
+        steps.push({ pipeline: this.qkRopePipe, bindGroup: vBgQkRope, uniformByteOffset: qkSlot * 256, wx: qkRopeHeadCount, wy: M, wz: 1 });
+        steps.push({ pipeline: this.gqaPrefillPipe, bindGroup: bgGqaPrefill, uniformByteOffset: gqa0Slot * 256, wx: this.arch.attnKvHeads, wy: M, wz: 1 });
+        const gqa1Step: DispatchStep = { pipeline: this.gqaPrefillPipe, bindGroup: bgGqaPrefill, uniformByteOffset: gqa1Slot * 256, wx: this.arch.attnKvHeads, wy: Math.ceil(M / 2), wz: 1 };
+        steps.push(gqa1Step);
+        steps.push({ pipeline: this.gqaReducePipe, bindGroup: vBgGqaReduce, uniformByteOffset: redSlot * 256, wx: this.arch.attnQHeads, wy: M, wz: 1 });
+        faPatches.push({ qkUIdx, gqa0UIdx, gqa1UIdx, redUIdx, gqa1Step } as VerifyFaPatchTarget & { redUIdx: number });
+
+        pushStatic(widePipe, bgAttnToHidden, [H, attnODim, wO, 0, 0, 1, M, 0], wideWx(H));
+        pushStatic(this.rmsNormPipe, vBgRmsNorm, [M, H, la.postNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
+        if (this.gateUpSwigluBatchPipe) {
+          pushStatic(
+            this.gateUpSwigluBatchPipe,
+            vBgWSlabNormToAttn[lo.slabIdx]!,
+            [I, H, wGate, 0, 0, 0, M, wUp],
+            Math.ceil(I / 8),
+          );
+        } else {
+          pushStatic(this.gemvBatchPipe, bgNormToWork, [I, H, wGate, 0, 0, 0, M, 0], batchWx(I));
+          pushStatic(this.gemvBatchPipe, bgNormToWork, [I, H, wUp, 0, M * I, 0, M, 0], batchWx(I));
+          pushStatic(this.swigluPipe, vBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
+        }
+        pushStatic(widePipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, M, 0], wideWx(H));
+      }
+    }
+
+    pushStatic(this.rmsNormPipe, vBgRmsNorm, [M, H, this.auxLayout.finalNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
+    for (let sIdx = 0; sIdx < this.vocabSlices.length; sIdx++) {
+      const slice = this.vocabSlices[sIdx]!;
+      pushStatic(this.gemvBatchPipe, vBgLmHead[sIdx]!, [slice.rowCount, H, 0, 0, slice.startRow, 0, M, V], batchWx(slice.rowCount));
+    }
+
+    const dynByteStart = 0;
+    const staticStartByte = dynSlotCount * 256;
+    const staticByteLen = (nextSlot - dynSlotCount) * 256;
+    if (staticByteLen > 0) {
+      device.queue.writeBuffer(uniformBuf, staticStartByte, tempTable, staticStartByte, staticByteLen);
+    }
+
+    const plan: VerifyGraphPlan = {
+      M,
+      uniformBuf,
+      dynCpu,
+      dynU32,
+      dynByteStart,
+      steps,
+      faPatches,
+      bgArgBatch1,
+      bgArgBatch2,
+      bgSpecAccept,
+      ownedBuffers,
+    };
+    this.verifyPlans.set(M, plan);
+    return plan;
+  }
+
   /**
-   * Verifies up to 4 drafted continuation tokens in a single batched forward pass
-   * (`M = 1 + draftTokens.length <= 5`), rolling back only DeltaNet state if any
-   * draft token diverges from greedy verification.
+   * Verifies up to `MAX_SPEC_DRAFT` (7) drafted continuation tokens in a single batched forward pass
+   * (`M = 1 + draftTokens.length <= 8`) with cached per-M uniform/bind-group tables, batched GPU
+   * argmax, and GPU-side greedy prefix accept (`64B` readback), rolling back only DeltaNet state on divergence.
    */
   async decodeSpeculativeStep(
     currentTokenId: number,
@@ -2496,232 +2897,68 @@ export class WgslQwen35Engine {
     }
 
     const startPos = this.seqPos;
-    device.queue.writeBuffer(this.tokenIdsBuf, 0, new Uint32Array(tokens));
-
-    const uniformTable = new ArrayBuffer(UNIFORM_MAX_SLOTS * 256);
-    const u32View = new Uint32Array(uniformTable);
-    const f32View = new Float32Array(uniformTable);
-    let nextSlot = 0;
-
-    const allocSlot = (
-      vals: [number, number, number, number, number, number, number, number],
-      isFloat5 = false,
-    ): number => {
-      const slot = nextSlot++;
-      const byteOff = slot * 256;
-      const uIdx = byteOff / 4;
-      for (let i = 0; i < 8; i++) {
-        if (isFloat5 && i === 5) f32View[uIdx + i] = vals[i];
-        else u32View[uIdx + i] = vals[i];
-      }
-      return byteOff;
-    };
-
-    const H = this.arch.hiddenSize;
-    const I = this.arch.intermediateSize;
-    const L = this.arch.numLayers;
     const V = this.arch.vocabSize;
-    const batchWx = (rows: number) => Math.ceil(rows / 16);
+    const L = this.arch.numLayers;
+    const argmaxWgCount = Math.ceil(V / 256);
     const verifySplits = startPos + M <= 512 ? 1 : startPos + M <= 4096 ? 4 : PREFILL_NUM_SPLITS;
     const verifySplitsPacked = this.packGqaSplitsParam(verifySplits);
     const gdnHeadsPacked = this.packGdnHeadsParam();
-    const qkRopePacked = this.packQkRopeParam();
     const convWgs = Math.ceil(this.dnConvDim / 128);
-    const embedBlocksY = Math.ceil(H / 32);
-    const attnQDim = this.arch.attnQHeads * this.arch.attnHeadDim * 2;
-    const attnKvDim = this.arch.attnKvHeads * this.arch.attnHeadDim;
-    const attnODim = this.arch.attnQHeads * this.arch.attnHeadDim;
-    const qkRopeHeadCount = this.arch.attnQHeads + this.arch.attnKvHeads;
     const dnCount = Math.max(1, this.numDnLayers);
+
+    const plan = this.buildOrGetVerifyPlan(M);
+    for (const fp of plan.faPatches) {
+      const target = fp as VerifyFaPatchTarget & { redUIdx: number };
+      plan.dynU32[target.qkUIdx + 1] = startPos;
+      plan.dynU32[target.gqa0UIdx + 3] = startPos;
+      plan.dynU32[target.gqa0UIdx + 7] = verifySplitsPacked;
+      plan.dynU32[target.gqa1UIdx + 3] = startPos;
+      plan.dynU32[target.gqa1UIdx + 7] = verifySplitsPacked;
+      plan.dynU32[target.redUIdx] = verifySplits;
+      target.gqa1Step.wz = verifySplits;
+    }
+
+    device.queue.writeBuffer(this.tokenIdsBuf, 0, new Uint32Array(tokens));
+    device.queue.writeBuffer(plan.uniformBuf, plan.dynByteStart, plan.dynCpu);
 
     const enc = device.createCommandEncoder();
     // Snapshot DeltaNet state before running speculative M-token pass
     enc.copyBufferToBuffer(this.dnStateBuf, 0, this.dnStateBackupBuf, 0, dnCount * this.dnSingleBytes);
     enc.copyBufferToBuffer(this.dnConvBuf, 0, this.dnConvBackupBuf, 0, dnCount * this.dnConvSingleBytes);
 
-    let pass = enc.beginComputePass();
-    const run = (
-      pipeline: unknown,
-      bindGroup: unknown,
-      vals: [number, number, number, number, number, number, number, number],
-      wx: number,
-      wy = 1,
-      wz = 1,
-      isFloat5 = false,
-    ) => {
-      const off = allocSlot(vals, isFloat5);
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(0, bindGroup, [off]);
-      pass.dispatchWorkgroups(wx, wy, wz);
-    };
-
-    for (let sIdx = 0; sIdx < this.vocabSlices.length; sIdx++) {
-      const slice = this.vocabSlices[sIdx]!;
-      const rowEnd = this.vocabSlices.length === 1 ? 0 : slice.endRow;
-      run(this.embedPipe, this.pBgEmbedPerSlice[sIdx]!, [M, H, slice.startRow, rowEnd, 0, 0, 0, 0], M, embedBlocksY);
+    const pass = enc.beginComputePass();
+    for (let i = 0; i < plan.steps.length; i++) {
+      const st = plan.steps[i]!;
+      pass.setPipeline(st.pipeline);
+      pass.setBindGroup(0, st.bindGroup, [st.uniformByteOffset]);
+      pass.dispatchWorkgroups(st.wx, st.wy, st.wz);
     }
-
-    for (let l = 0; l < L; l++) {
-      const la = this.auxLayout.layers[l]!;
-      const lo = this.layerOffsets[l]!;
-      const bgNormToWork = this.pBgWSlabNormToWork[lo.slabIdx]!;
-      const bgAttnToHidden = this.pBgWSlabAttnToHidden[lo.slabIdx]!;
-
-      run(this.rmsNormPipe, this.pBgRmsNorm, [M, H, la.inputNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
-
-      if (!lo.isFullAttn) {
-        const [wQkv, wZ, wAb, wOut, wGate, wUp, wDown] = lo.w;
-        run(this.gemvBatchPipe, bgNormToWork, [this.dnConvDim, H, wQkv, 0, 0, 0, M, 0], batchWx(this.dnConvDim));
-        run(this.gemvBatchPipe, bgNormToWork, [this.dnValDim, H, wZ, 0, M * this.dnConvDim, 0, M, 0], batchWx(this.dnValDim));
-        run(this.gemvBatchPipe, bgNormToWork, [this.arch.dnValHeads * 2, H, wAb, 0, M * (this.dnConvDim + this.dnValDim), 0, M, 0], batchWx(this.arch.dnValHeads * 2));
-
-        pass.end();
-        enc.copyBufferToBuffer(
-          this.workBuf,
-          0,
-          this.dnVerifyActBuf,
-          lo.dnIdx * MAX_SPEC_TOKENS * this.dnQkvzAbRows * 4,
-          M * this.dnQkvzAbRows * 4,
-        );
-        pass = enc.beginComputePass();
-
-        run(
-          this.convPipe,
-          this.pBgConv,
-          [M, la.convWOff, lo.dnIdx * this.dnConvPerLayerF32s, 0, this.dnConvDim, 0, 0, 0],
-          convWgs,
-        );
-        run(
-          this.gdnRecPipe,
-          this.pBgGdnRec,
-          [
-            M,
-            lo.dnIdx * this.dnStatePerLayerF32s,
-            la.dnAuxOff,
-            0,
-            M * this.dnConvDim,
-            M * (this.dnConvDim + this.dnValDim),
-            0,
-            gdnHeadsPacked,
-          ],
-          this.arch.dnValHeads,
-        );
-        run(this.gemvBatchPipe, bgAttnToHidden, [H, this.dnValDim, wOut, 0, 0, 1, M, 0], batchWx(H));
-
-        run(this.rmsNormPipe, this.pBgRmsNorm, [M, H, la.postNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
-        run(this.gemvBatchPipe, bgNormToWork, [I, H, wGate, 0, 0, 0, M, 0], batchWx(I));
-        run(this.gemvBatchPipe, bgNormToWork, [I, H, wUp, 0, M * I, 0, M, 0], batchWx(I));
-        run(this.swigluPipe, this.pBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
-        run(this.gemvBatchPipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, M, 0], batchWx(H));
-      } else {
-        const [wQg, wK, wV, wO, wGate, wUp, wDown] = lo.w;
-        run(this.gemvBatchPipe, bgNormToWork, [attnQDim, H, wQg, 0, 0, 0, M, 0], batchWx(attnQDim));
-        run(this.gemvBatchPipe, bgNormToWork, [attnKvDim, H, wK, 0, M * attnQDim, 0, M, 0], batchWx(attnKvDim));
-        run(this.gemvBatchPipe, bgNormToWork, [attnKvDim, H, wV, 0, M * (attnQDim + attnKvDim), 0, M, 0], batchWx(attnKvDim));
-        run(
-          this.qkRopePipe,
-          this.pBgQkRope,
-          [M, startPos, 0, M * attnQDim, la.qNormOff, la.kNormOff, this.auxLayout.invFreqOff, qkRopePacked],
-          qkRopeHeadCount,
-          M,
-        );
-
-        const inKv0 = lo.faIdx < this.fa0Count;
-        const localKv = inKv0 ? lo.faIdx : lo.faIdx - this.fa0Count;
-        const kvBaseU32 = localKv * (this.kvSingleBytes / 4);
-        const bgGqaPrefill = inKv0 ? this.bgGqaPrefill0 : this.bgGqaPrefill1;
-        run(
-          this.gqaPrefillPipe,
-          bgGqaPrefill,
-          [0, kvBaseU32, this.maxSeqCapacity, startPos, M, M * attnQDim, M * (attnQDim + attnKvDim), verifySplitsPacked],
-          this.arch.attnKvHeads,
-          M,
-        );
-        run(
-          this.gqaPrefillPipe,
-          bgGqaPrefill,
-          [1, kvBaseU32, this.maxSeqCapacity, startPos, M, 0, 0, verifySplitsPacked],
-          this.arch.attnKvHeads,
-          Math.ceil(M / 2),
-          verifySplits,
-        );
-        run(
-          this.gqaReducePipe,
-          this.pBgGqaReduce,
-          [verifySplits, this.arch.attnHeadDim, 0, this.arch.attnHeadDim * 2, this.arch.attnQHeads, 0, 0, 0],
-          this.arch.attnQHeads,
-          M,
-        );
-        run(this.gemvBatchPipe, bgAttnToHidden, [H, attnODim, wO, 0, 0, 1, M, 0], batchWx(H));
-
-        run(this.rmsNormPipe, this.pBgRmsNorm, [M, H, la.postNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
-        run(this.gemvBatchPipe, bgNormToWork, [I, H, wGate, 0, 0, 0, M, 0], batchWx(I));
-        run(this.gemvBatchPipe, bgNormToWork, [I, H, wUp, 0, M * I, 0, M, 0], batchWx(I));
-        run(this.swigluPipe, this.pBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
-        run(this.gemvBatchPipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, M, 0], batchWx(H));
-      }
-    }
-
-    run(
-      this.rmsNormPipe,
-      this.pBgRmsNorm,
-      [M, H, this.auxLayout.finalNormOff, 0, 0, 1e-6, 0, 0],
-      M,
-      1,
-      1,
-      true,
-    );
-    for (let sIdx = 0; sIdx < this.vocabSlices.length; sIdx++) {
-      const slice = this.vocabSlices[sIdx]!;
-      run(
-        this.gemvBatchPipe,
-        this.vBgLmHeadPerSlice[sIdx]!,
-        [slice.rowCount, H, 0, 0, slice.startRow, 0, M, V],
-        batchWx(slice.rowCount),
-      );
-    }
+    pass.setPipeline(this.argmaxBatch1Pipe);
+    pass.setBindGroup(0, plan.bgArgBatch1);
+    pass.dispatchWorkgroups(argmaxWgCount, M, 1);
+    pass.setPipeline(this.argmaxBatch2Pipe);
+    pass.setBindGroup(0, plan.bgArgBatch2);
+    pass.dispatchWorkgroups(M, 1, 1);
+    pass.setPipeline(this.specAcceptPipe);
+    pass.setBindGroup(0, plan.bgSpecAccept);
+    pass.dispatchWorkgroups(1, 1, 1);
     pass.end();
-
-    for (let t = 0; t < M; t++) {
-      enc.copyBufferToBuffer(
-        this.verifyLogitsBuf,
-        t * V * 4,
-        this.logitsBuf,
-        0,
-        V * 4,
-      );
-      const ap = enc.beginComputePass();
-      ap.setPipeline(this.arg1Pipe);
-      ap.setBindGroup(0, this.bgArg1);
-      ap.dispatchWorkgroups(Math.ceil(V / 256), 1, 1);
-      ap.setPipeline(this.arg2Pipe);
-      ap.setBindGroup(0, this.bgArg2);
-      ap.dispatchWorkgroups(1, 1, 1);
-      ap.end();
-      enc.copyBufferToBuffer(this.tokOutBuf, 0, this.verifyTokOutBuf, t * 4, 4);
-    }
-    enc.copyBufferToBuffer(this.verifyTokOutBuf, 0, this.verifyStaging32B, 0, 32);
-
-    device.queue.writeBuffer(this.prefillUniformBuf, 0, uniformTable, 0, nextSlot * 256);
+    enc.copyBufferToBuffer(this.verifyAcceptOutBuf, 0, this.verifyStaging64B, 0, 64);
 
     const t0 = performance.now();
     device.queue.submit([enc.finish()]);
-    await this.verifyStaging32B.mapAsync(GPU_MAP_READ);
+    await this.verifyStaging64B.mapAsync(GPU_MAP_READ);
     let gpuMs = performance.now() - t0;
-    const predicted = Array.from(
-      new Uint32Array(this.verifyStaging32B.getMappedRange()).subarray(0, M),
-    );
-    this.verifyStaging32B.unmap();
-
-    let acceptedCount = 0;
-    while (acceptedCount < draftTokens.length && predicted[acceptedCount] === draftTokens[acceptedCount]) {
-      acceptedCount++;
-    }
+    const acceptView = new Uint32Array(this.verifyStaging64B.getMappedRange());
+    const acceptedCount = Math.min(draftTokens.length, acceptView[0]!);
+    const predicted = Array.from(acceptView.subarray(2, 2 + M));
+    this.verifyStaging64B.unmap();
 
     if (acceptedCount < draftTokens.length) {
       const keepTokens = acceptedCount + 1;
-      const rbUniforms = new ArrayBuffer(48 * 256);
-      const rbU32 = new Uint32Array(rbUniforms);
+      const H = this.arch.hiddenSize;
+      const batchWx = (rows: number) => Math.ceil(rows / 16);
+      const rbU32 = new Uint32Array(this.rbUniformScratch);
       let rbSlot = 0;
       const pushRb = (vals: [number, number, number, number, number, number, number, number]) => {
         const off = rbSlot++ * 256;
@@ -2734,18 +2971,30 @@ export class WgslQwen35Engine {
       rbEnc.copyBufferToBuffer(this.dnStateBackupBuf, 0, this.dnStateBuf, 0, dnCount * this.dnSingleBytes);
       rbEnc.copyBufferToBuffer(this.dnConvBackupBuf, 0, this.dnConvBuf, 0, dnCount * this.dnConvSingleBytes);
 
+      const rPass = rbEnc.beginComputePass();
       for (let l = 0; l < L; l++) {
         const lo = this.layerOffsets[l]!;
         if (lo.isFullAttn) continue;
         const la = this.auxLayout.layers[l]!;
-        rbEnc.copyBufferToBuffer(
-          this.dnVerifyActBuf,
-          lo.dnIdx * MAX_SPEC_TOKENS * this.dnQkvzAbRows * 4,
-          this.workBuf,
-          0,
-          M * this.dnQkvzAbRows * 4,
-        );
-        const rPass = rbEnc.beginComputePass();
+        const [wQkv, wZ, wAb] = lo.w;
+        const dnNormOff = lo.dnIdx * MAX_SPEC_TOKENS * H;
+        const pBgNormToWork = this.pBgWSlabNormToWork[lo.slabIdx]!;
+
+        const qOff = pushRb([this.dnConvDim, H, wQkv, dnNormOff, 0, 0, keepTokens, 0]);
+        rPass.setPipeline(this.gemvBatchPipe);
+        rPass.setBindGroup(0, pBgNormToWork, [qOff]);
+        rPass.dispatchWorkgroups(batchWx(this.dnConvDim), 1, 1);
+
+        const zOff = pushRb([this.dnValDim, H, wZ, dnNormOff, keepTokens * this.dnConvDim, 0, keepTokens, 0]);
+        rPass.setPipeline(this.gemvBatchPipe);
+        rPass.setBindGroup(0, pBgNormToWork, [zOff]);
+        rPass.dispatchWorkgroups(batchWx(this.dnValDim), 1, 1);
+
+        const abOff = pushRb([this.arch.dnValHeads * 2, H, wAb, dnNormOff, keepTokens * (this.dnConvDim + this.dnValDim), 0, keepTokens, 0]);
+        rPass.setPipeline(this.gemvBatchPipe);
+        rPass.setBindGroup(0, pBgNormToWork, [abOff]);
+        rPass.dispatchWorkgroups(batchWx(this.arch.dnValHeads * 2), 1, 1);
+
         const cOff = pushRb([keepTokens, la.convWOff, lo.dnIdx * this.dnConvPerLayerF32s, 0, this.dnConvDim, 0, 0, 0]);
         rPass.setPipeline(this.convPipe);
         rPass.setBindGroup(0, this.pBgConv, [cOff]);
@@ -2756,18 +3005,18 @@ export class WgslQwen35Engine {
           lo.dnIdx * this.dnStatePerLayerF32s,
           la.dnAuxOff,
           0,
-          M * this.dnConvDim,
-          M * (this.dnConvDim + this.dnValDim),
+          keepTokens * this.dnConvDim,
+          keepTokens * (this.dnConvDim + this.dnValDim),
           0,
           gdnHeadsPacked,
         ]);
         rPass.setPipeline(this.gdnRecPipe);
         rPass.setBindGroup(0, this.pBgGdnRec, [gOff]);
         rPass.dispatchWorkgroups(this.arch.dnValHeads, 1, 1);
-        rPass.end();
       }
+      rPass.end();
 
-      device.queue.writeBuffer(this.prefillUniformBuf, 0, rbUniforms);
+      device.queue.writeBuffer(this.prefillUniformBuf, 0, this.rbUniformScratch, 0, rbSlot * 256);
       const tRb = performance.now();
       device.queue.submit([rbEnc.finish()]);
       await device.queue.onSubmittedWorkDone();
@@ -3675,6 +3924,7 @@ export class WgslQwen35Engine {
   }
 
   dispose(): void {
+    this.invalidateVerifyPlans();
     this.clearGpuPrefixSlots();
     for (const buf of this.allocatedBuffers) {
       try {

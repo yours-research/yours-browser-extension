@@ -2680,6 +2680,7 @@ export function App() {
           ttftMs: snap.telemetry.ttftMs,
           prefillTokPerSec: snap.telemetry.prefillTokPerSec,
           tokensPerSec: snap.telemetry.tokensPerSec,
+          speculativeStats: snap.telemetry.speculativeStats,
           activeContextTokens: snap.telemetry.activeContextTokens,
           prefixReused: snap.telemetry.prefixReused,
           backgroundPrefillState: snap.telemetry.backgroundPrefillState,

@@ -197,12 +197,14 @@ function createLocalCallbacks(genId: number): EngineCallbacks {
       handleHostMessage(genId, { type: 'BENCHMARK_PROGRESS', message, point }),
     onBenchmarkResult: (result) =>
       handleHostMessage(genId, { type: 'BENCHMARK_RESULT', result }),
+    onSpecMicrobenchResult: (result) =>
+      handleHostMessage(genId, { type: 'SPEC_MICROBENCH_RESULT', result }),
     onNiahProgress: (message) => handleHostMessage(genId, { type: 'NIAH_PROGRESS', message }),
     onNiahResult: (result) => handleHostMessage(genId, { type: 'NIAH_RESULT', result }),
     onTokenDelta: (requestId, delta, tokenCount) =>
       handleHostMessage(genId, { type: 'TOKEN_DELTA', requestId, delta, tokenCount }),
-    onGenerationComplete: (requestId, finishReason) =>
-      handleHostMessage(genId, { type: 'GENERATION_COMPLETE', requestId, finishReason }),
+    onGenerationComplete: (requestId, finishReason, trace) =>
+      handleHostMessage(genId, { type: 'GENERATION_COMPLETE', requestId, finishReason, trace }),
     onGenerationError: (requestId, error) =>
       handleHostMessage(genId, { type: 'GENERATION_ERROR', requestId, error }),
     onPrefillComplete: (requestId, slotKey, tokens, elapsedMs) =>
@@ -448,6 +450,9 @@ function dispatchToLocalHost(genId: number, msg: ClientToEngineMessage): void {
       break;
     case 'RUN_NIAH':
       engine.enqueueNeedleInHaystack(msg.targetTokens, msg.depthRatio, msg.chunkSize);
+      break;
+    case 'RUN_SPEC_MICROBENCH':
+      engine.enqueueSpecMicrobench();
       break;
     case 'RUN_WGSL_BENCH':
       void runner

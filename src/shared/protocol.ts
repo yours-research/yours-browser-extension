@@ -271,6 +271,10 @@ export interface TelemetryState {
     accepted: number;
     steps: number;
     acceptanceRatePct: number;
+    tau?: number;
+    alpha?: number;
+    avgDraftLen?: number;
+    skippedSteps?: number;
   } | null;
   computeTier: WgslComputeTier | null;
   allocatedKvCapacity: number;
@@ -562,12 +566,36 @@ export type ClientToEngineMessage =
       chunkSize?: number;
     }
   | { type: 'RUN_WGSL_BENCH'; config: WgslBenchConfig }
+  | { type: 'RUN_SPEC_MICROBENCH' }
   | {
       type: 'RUN_WGSL_OPFS_BENCH';
       action: 'prepare' | 'load' | 'clear';
       totalMb?: number;
       chunkMibList?: number[];
     };
+
+export interface GenerationTokenTrace {
+  modelId: string;
+  promptIds: number[];
+  generatedIds: number[];
+  promptText: string;
+  generatedText: string;
+  speculativeStats: TelemetryState['speculativeStats'];
+}
+
+export interface SpecMicrobenchResult {
+  modelId: string;
+  t1Ms: number;
+  t2Ms: number;
+  t3Ms: number;
+  t5Ms: number;
+  t8Ms: number;
+  t5RejectMs: number;
+  ratioT5ToT1: number;
+  ratioT8ToT1: number;
+  gatePass: boolean;
+  error?: string;
+}
 
 export type EngineToClientMessage =
   | {
@@ -598,11 +626,17 @@ export type EngineToClientMessage =
   | { type: 'NIAH_RESULT'; result: NiahResult }
   | { type: 'WGSL_BENCH_PROGRESS'; message: string }
   | { type: 'WGSL_BENCH_RESULT'; result: WgslBenchResult }
+  | { type: 'SPEC_MICROBENCH_RESULT'; result: SpecMicrobenchResult }
   | { type: 'WGSL_OPFS_BENCH_RESULT'; result: WgslOpfsLoadResult }
   | { type: 'LOG'; entry: LogEntry }
   | { type: 'PREFILL_COMPLETE'; requestId: string; slotKey: string; tokens: number; elapsedMs: number }
   | { type: 'PREFILL_ERROR'; requestId: string; slotKey: string; error: string }
   | { type: 'EVICT_COMPLETE'; requestId: string; slotKey: string }
   | { type: 'TOKEN_DELTA'; requestId: string; delta: string; tokenCount: number; isReasoning?: boolean }
-  | { type: 'GENERATION_COMPLETE'; requestId: string; finishReason: 'stop' | 'length' | 'abort' }
+  | {
+      type: 'GENERATION_COMPLETE';
+      requestId: string;
+      finishReason: 'stop' | 'length' | 'abort';
+      trace?: GenerationTokenTrace;
+    }
   | { type: 'GENERATION_ERROR'; requestId: string; error: string };

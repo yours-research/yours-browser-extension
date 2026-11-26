@@ -8,6 +8,7 @@ import {
   type ClientToEngineMessage,
   type EngineConfig,
   type EngineToClientMessage,
+  type GenerationTokenTrace,
   type HardwareProfileSnapshot,
   type LogEntry,
   type ModelCatalogChoice,
@@ -15,6 +16,7 @@ import {
   type NiahResult,
   type OpfsSpikeResult,
   type OpfsStatusInfo,
+  type SpecMicrobenchResult,
   type TelemetryState,
   type WebGpuProbeInfo,
   type WgslBenchResult,
@@ -41,6 +43,8 @@ export interface EngineClientSnapshot {
   wgslProgress: string | null;
   lastWgslBench: WgslBenchResult | null;
   lastWgslOpfs: WgslOpfsLoadResult | null;
+  lastSpecMicrobench: SpecMicrobenchResult | null;
+  lastTrace: GenerationTokenTrace | null;
   logs: LogEntry[];
 }
 
@@ -105,6 +109,8 @@ export class OffscreenEngineClient {
     wgslProgress: null,
     lastWgslBench: null,
     lastWgslOpfs: null,
+    lastSpecMicrobench: null,
+    lastTrace: null,
     logs: [],
   };
 
@@ -256,6 +262,9 @@ export class OffscreenEngineClient {
       case 'WGSL_BENCH_RESULT':
         this.updateSnapshot({ wgslProgress: null, lastWgslBench: msg.result });
         break;
+      case 'SPEC_MICROBENCH_RESULT':
+        this.updateSnapshot({ lastSpecMicrobench: msg.result });
+        break;
       case 'WGSL_OPFS_BENCH_RESULT':
         this.updateSnapshot({ lastWgslOpfs: msg.result });
         break;
@@ -268,6 +277,9 @@ export class OffscreenEngineClient {
         break;
       }
       case 'GENERATION_COMPLETE': {
+        if (msg.trace) {
+          this.updateSnapshot({ lastTrace: msg.trace });
+        }
         const stream = this.activeStreams.get(msg.requestId);
         if (stream) {
           this.activeStreams.delete(msg.requestId);
@@ -355,6 +367,11 @@ export class OffscreenEngineClient {
 
   unloadModel(): Promise<void> {
     return this.send({ type: 'UNLOAD_MODEL' });
+  }
+
+  runSpecMicrobench(): Promise<void> {
+    this.updateSnapshot({ lastSpecMicrobench: null });
+    return this.send({ type: 'RUN_SPEC_MICROBENCH' });
   }
 
   async startGeneration(

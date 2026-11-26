@@ -147,6 +147,9 @@ pub extern "C" fn full_attn_layer_kv_bytes(max_seq: u32, int8_kv: u32) -> u64 {
 /// 40 = gqa_int8_prefill_t2
 /// 41 = gdn_chunk_prep_t2
 /// 42 = gdn_chunk_apply_t2
+/// 43 = spec_accept_greedy
+/// 44 = q4_gemv_batch_wide
+/// 45 = q4_gate_up_swiglu_batch_v2
 #[no_mangle]
 pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
     match shader_id {
@@ -193,6 +196,9 @@ pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
         40 => set_shader_bytes(WGSL_GQA_INT8_PREFILL_T2.as_bytes()),
         41 => set_shader_bytes(WGSL_GDN_CHUNK_PREP_T2.as_bytes()),
         42 => set_shader_bytes(WGSL_GDN_CHUNK_APPLY_T2.as_bytes()),
+        43 => set_shader_bytes(WGSL_SPEC_ACCEPT.as_bytes()),
+        44 => set_shader_bytes(WGSL_Q4_GEMV_BATCH_WIDE.as_bytes()),
+        45 => set_shader_bytes(WGSL_Q4_GATE_UP_SWIGLU_BATCH_V2.as_bytes()),
         100..=199 => match gemma4::get_shader(shader_id) {
             Some(bytes) => set_shader_bytes(bytes),
             None => 0,
@@ -3046,30 +3052,33 @@ fn unpack_hi(p: u32) -> vec4<f16> {
   return vec4<f16>(f16((p >> 16u) & 0xFu), f16((p >> 20u) & 0xFu), f16((p >> 24u) & 0xFu), f16((p >> 28u) & 0xFu));
 }
 
-fn dot_tok_sh(
+fn batch_q4_dot_pair(
   sh_base: u32,
-  scale: f32,
-  zero: f32,
-  q0a: vec4<f16>, q0b: vec4<f16>,
-  q1a: vec4<f16>, q1b: vec4<f16>,
-  q2a: vec4<f16>, q2b: vec4<f16>,
-  q3a: vec4<f16>, q3b: vec4<f16>,
-) -> f32 {
+  w00: u32, w01: u32, w02: u32, w03: u32, m0: vec2<f32>,
+  w10: u32, w11: u32, w12: u32, w13: u32, m1: vec2<f32>,
+) -> vec2<f32> {
   let x0a = x_sh[sh_base + 0u]; let x0b = x_sh[sh_base + 1u];
   let x1a = x_sh[sh_base + 2u]; let x1b = x_sh[sh_base + 3u];
   let x2a = x_sh[sh_base + 4u]; let x2b = x_sh[sh_base + 5u];
   let x3a = x_sh[sh_base + 6u]; let x3b = x_sh[sh_base + 7u];
 
   let ones = vec4<f16>(1.0h);
-  let sum_qx = f32(dot(q0a, x0a)) + f32(dot(q0b, x0b))
-    + f32(dot(q1a, x1a)) + f32(dot(q1b, x1b))
-    + f32(dot(q2a, x2a)) + f32(dot(q2b, x2b))
-    + f32(dot(q3a, x3a)) + f32(dot(q3b, x3b));
   let sum_x = f32(dot(ones, x0a)) + f32(dot(ones, x0b))
     + f32(dot(ones, x1a)) + f32(dot(ones, x1b))
     + f32(dot(ones, x2a)) + f32(dot(ones, x2b))
     + f32(dot(ones, x3a)) + f32(dot(ones, x3b));
-  return scale * sum_qx + zero * sum_x;
+
+  let s0 = f32(dot(unpack_lo(w00), x0a)) + f32(dot(unpack_hi(w00), x0b))
+    + f32(dot(unpack_lo(w01), x1a)) + f32(dot(unpack_hi(w01), x1b))
+    + f32(dot(unpack_lo(w02), x2a)) + f32(dot(unpack_hi(w02), x2b))
+    + f32(dot(unpack_lo(w03), x3a)) + f32(dot(unpack_hi(w03), x3b));
+
+  let s1 = f32(dot(unpack_lo(w10), x0a)) + f32(dot(unpack_hi(w10), x0b))
+    + f32(dot(unpack_lo(w11), x1a)) + f32(dot(unpack_hi(w11), x1b))
+    + f32(dot(unpack_lo(w12), x2a)) + f32(dot(unpack_hi(w12), x2b))
+    + f32(dot(unpack_lo(w13), x3a)) + f32(dot(unpack_hi(w13), x3b));
+
+  return vec2<f32>(m0.x * s0 + m0.y * sum_x, m1.x * s1 + m1.y * sum_x);
 }
 
 @compute @workgroup_size(128)
@@ -3120,37 +3129,44 @@ fn main(
       let w00 = weights[i0 + 0u]; let w01 = weights[i0 + 1u];
       let w02 = weights[i0 + 2u]; let w03 = weights[i0 + 3u];
       let m0 = unpack2x16float(weights[i0 + 4u]);
-      let q00a = unpack_lo(w00); let q00b = unpack_hi(w00);
-      let q01a = unpack_lo(w01); let q01b = unpack_hi(w01);
-      let q02a = unpack_lo(w02); let q02b = unpack_hi(w02);
-      let q03a = unpack_lo(w03); let q03b = unpack_hi(w03);
-
-      accA0.x += dot_tok_sh(0u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b);
-      if (M > 1u) { accA0.y += dot_tok_sh(1u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
-      if (M > 2u) { accA0.z += dot_tok_sh(2u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
-      if (M > 3u) { accA0.w += dot_tok_sh(3u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
-      if (M > 4u) { accB0.x += dot_tok_sh(4u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
-      if (M > 5u) { accB0.y += dot_tok_sh(5u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
-      if (M > 6u) { accB0.z += dot_tok_sh(6u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
-      if (M > 7u) { accB0.w += dot_tok_sh(7u * 128u + xb, m0.x, m0.y, q00a, q00b, q01a, q01b, q02a, q02b, q03a, q03b); }
 
       let i1 = base1 + b5;
       let w10 = weights[i1 + 0u]; let w11 = weights[i1 + 1u];
       let w12 = weights[i1 + 2u]; let w13 = weights[i1 + 3u];
       let m1 = unpack2x16float(weights[i1 + 4u]);
-      let q10a = unpack_lo(w10); let q10b = unpack_hi(w10);
-      let q11a = unpack_lo(w11); let q11b = unpack_hi(w11);
-      let q12a = unpack_lo(w12); let q12b = unpack_hi(w12);
-      let q13a = unpack_lo(w13); let q13b = unpack_hi(w13);
 
-      accA1.x += dot_tok_sh(0u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b);
-      if (M > 1u) { accA1.y += dot_tok_sh(1u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
-      if (M > 2u) { accA1.z += dot_tok_sh(2u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
-      if (M > 3u) { accA1.w += dot_tok_sh(3u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
-      if (M > 4u) { accB1.x += dot_tok_sh(4u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
-      if (M > 5u) { accB1.y += dot_tok_sh(5u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
-      if (M > 6u) { accB1.z += dot_tok_sh(6u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
-      if (M > 7u) { accB1.w += dot_tok_sh(7u * 128u + xb, m1.x, m1.y, q10a, q10b, q11a, q11b, q12a, q12b, q13a, q13b); }
+      {
+        let p = batch_q4_dot_pair(0u * 128u + xb, w00, w01, w02, w03, m0, w10, w11, w12, w13, m1);
+        accA0.x += p.x; accA1.x += p.y;
+      }
+      if (M > 1u) {
+        let p = batch_q4_dot_pair(1u * 128u + xb, w00, w01, w02, w03, m0, w10, w11, w12, w13, m1);
+        accA0.y += p.x; accA1.y += p.y;
+      }
+      if (M > 2u) {
+        let p = batch_q4_dot_pair(2u * 128u + xb, w00, w01, w02, w03, m0, w10, w11, w12, w13, m1);
+        accA0.z += p.x; accA1.z += p.y;
+      }
+      if (M > 3u) {
+        let p = batch_q4_dot_pair(3u * 128u + xb, w00, w01, w02, w03, m0, w10, w11, w12, w13, m1);
+        accA0.w += p.x; accA1.w += p.y;
+      }
+      if (M > 4u) {
+        let p = batch_q4_dot_pair(4u * 128u + xb, w00, w01, w02, w03, m0, w10, w11, w12, w13, m1);
+        accB0.x += p.x; accB1.x += p.y;
+      }
+      if (M > 5u) {
+        let p = batch_q4_dot_pair(5u * 128u + xb, w00, w01, w02, w03, m0, w10, w11, w12, w13, m1);
+        accB0.y += p.x; accB1.y += p.y;
+      }
+      if (M > 6u) {
+        let p = batch_q4_dot_pair(6u * 128u + xb, w00, w01, w02, w03, m0, w10, w11, w12, w13, m1);
+        accB0.z += p.x; accB1.z += p.y;
+      }
+      if (M > 7u) {
+        let p = batch_q4_dot_pair(7u * 128u + xb, w00, w01, w02, w03, m0, w10, w11, w12, w13, m1);
+        accB0.w += p.x; accB1.w += p.y;
+      }
     }
 
     if (b_tile + 16u < blocks) {
@@ -6060,6 +6076,409 @@ fn main(
   dn_state[s_base + 4u * 128u] = sv1.x; dn_state[s_base + 5u * 128u] = sv1.y; dn_state[s_base + 6u * 128u] = sv1.z; dn_state[s_base + 7u * 128u] = sv1.w;
   dn_state[s_base + 8u * 128u] = sv2.x; dn_state[s_base + 9u * 128u] = sv2.y; dn_state[s_base + 10u * 128u] = sv2.z; dn_state[s_base + 11u * 128u] = sv2.w;
   dn_state[s_base + 12u * 128u] = sv3.x; dn_state[s_base + 13u * 128u] = sv3.y; dn_state[s_base + 14u * 128u] = sv3.z; dn_state[s_base + 15u * 128u] = sv3.w;
+}
+"#;
+
+// Shader 43: GPU-side greedy speculative prefix accept
+// Compares predicted[0..draft_len] against token_ids[1..1+draft_len] and writes
+// accept_out[0] = accepted_count, accept_out[1] = next_token, accept_out[2..2+M] = predicted.
+const WGSL_SPEC_ACCEPT: &str = r#"
+struct SpecAcceptParams {
+  draft_len: u32,
+  _pad0: u32,
+  _pad1: u32,
+  _pad2: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: SpecAcceptParams;
+@group(0) @binding(1) var<storage, read> predicted: array<u32>;
+@group(0) @binding(2) var<storage, read> token_ids: array<u32>;
+@group(0) @binding(3) var<storage, read_write> accept_out: array<u32>;
+
+@compute @workgroup_size(1)
+fn main() {
+  let dlen = min(params.draft_len, 7u);
+  var acc: u32 = 0u;
+  loop {
+    if (acc >= dlen) {
+      break;
+    }
+    if (predicted[acc] != token_ids[1u + acc]) {
+      break;
+    }
+    acc = acc + 1u;
+  }
+  accept_out[0] = acc;
+  accept_out[1] = predicted[acc];
+  for (var i: u32 = 0u; i <= dlen; i = i + 1u) {
+    accept_out[2u + i] = predicted[i];
+  }
+}
+"#;
+
+// Shader 44: Batched Wide-K Q4 GEMV (8 rows/WG = 1 row per 16-lane subgroup -> 2x SM occupancy & zero reg spill on K>=4096)
+const WGSL_Q4_GEMV_BATCH_WIDE: &str = r#"
+enable f16;
+enable subgroups;
+
+struct GemvBatchParams {
+  rows: u32,
+  cols: u32,
+  w_u32_offset: u32,
+  in_offset: u32,
+  out_offset: u32,
+  add_residual: u32,
+  num_tokens: u32,
+  _pad1: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: GemvBatchParams;
+@group(0) @binding(1) var<storage, read> weights: array<u32>;
+@group(0) @binding(2) var<storage, read> x: array<f32>;
+@group(0) @binding(3) var<storage, read_write> y: array<f32>;
+
+var<workgroup> x_sh: array<vec4<f16>, 1024>;
+var<workgroup> red_sh_a: array<vec4<f32>, 128>;
+
+fn w_lo(p: u32) -> vec4<f16> {
+  return vec4<f16>(f16(p & 0xFu), f16((p >> 4u) & 0xFu), f16((p >> 8u) & 0xFu), f16((p >> 12u) & 0xFu));
+}
+
+fn w_hi(p: u32) -> vec4<f16> {
+  return vec4<f16>(f16((p >> 16u) & 0xFu), f16((p >> 20u) & 0xFu), f16((p >> 24u) & 0xFu), f16((p >> 28u) & 0xFu));
+}
+
+fn w_dot_tok_sh(
+  sh_base: u32,
+  scale: f32,
+  zero: f32,
+  q0a: vec4<f16>, q0b: vec4<f16>,
+  q1a: vec4<f16>, q1b: vec4<f16>,
+  q2a: vec4<f16>, q2b: vec4<f16>,
+  q3a: vec4<f16>, q3b: vec4<f16>,
+) -> f32 {
+  let x0a = x_sh[sh_base + 0u]; let x0b = x_sh[sh_base + 1u];
+  let x1a = x_sh[sh_base + 2u]; let x1b = x_sh[sh_base + 3u];
+  let x2a = x_sh[sh_base + 4u]; let x2b = x_sh[sh_base + 5u];
+  let x3a = x_sh[sh_base + 6u]; let x3b = x_sh[sh_base + 7u];
+  let ones = vec4<f16>(1.0h);
+  let sum_qx = f32(dot(q0a, x0a)) + f32(dot(q0b, x0b))
+    + f32(dot(q1a, x1a)) + f32(dot(q1b, x1b))
+    + f32(dot(q2a, x2a)) + f32(dot(q2b, x2b))
+    + f32(dot(q3a, x3a)) + f32(dot(q3b, x3b));
+  let sum_x = f32(dot(ones, x0a)) + f32(dot(ones, x0b))
+    + f32(dot(ones, x1a)) + f32(dot(ones, x1b))
+    + f32(dot(ones, x2a)) + f32(dot(ones, x2b))
+    + f32(dot(ones, x3a)) + f32(dot(ones, x3b));
+  return scale * sum_qx + zero * sum_x;
+}
+
+@compute @workgroup_size(128)
+fn main(
+  @builtin(workgroup_id) wid: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(subgroup_size) sg_size: u32,
+) {
+  let M = min(params.num_tokens, 8u);
+  if (params.rows == 0u || M == 0u) {
+    return;
+  }
+  let tid = lid.x;
+  let grp = tid >> 4u;
+  let lane = tid & 15u;
+  let rA = wid.x * 8u + grp;
+  let r0 = min(rA, params.rows - 1u);
+
+  let blocks = params.cols >> 5u;
+  let base0 = params.w_u32_offset + r0 * blocks * 5u;
+
+  var accA = vec4<f32>(0.0);
+  var accB = vec4<f32>(0.0);
+
+  for (var b_tile: u32 = 0u; b_tile < blocks; b_tile = b_tile + 16u) {
+    let tile_blocks = min(16u, blocks - b_tile);
+    let load_vec4s = tile_blocks << 3u;
+    let tile_k_off = params.in_offset + (b_tile << 5u);
+    if (tid < load_vec4s) {
+      for (var t: u32 = 0u; t < M; t = t + 1u) {
+        let kb = tile_k_off + t * params.cols + (tid << 2u);
+        x_sh[t * 128u + tid] = vec4<f16>(f16(x[kb]), f16(x[kb + 1u]), f16(x[kb + 2u]), f16(x[kb + 3u]));
+      }
+    }
+    workgroupBarrier();
+
+    if (lane < tile_blocks) {
+      let i0 = base0 + (b_tile + lane) * 5u;
+      let xb = lane << 3u;
+      let w0 = weights[i0 + 0u]; let w1 = weights[i0 + 1u];
+      let w2 = weights[i0 + 2u]; let w3 = weights[i0 + 3u];
+      let m0 = unpack2x16float(weights[i0 + 4u]);
+      let q0a = w_lo(w0); let q0b = w_hi(w0);
+      let q1a = w_lo(w1); let q1b = w_hi(w1);
+      let q2a = w_lo(w2); let q2b = w_hi(w2);
+      let q3a = w_lo(w3); let q3b = w_hi(w3);
+
+      accA.x += w_dot_tok_sh(0u * 128u + xb, m0.x, m0.y, q0a, q0b, q1a, q1b, q2a, q2b, q3a, q3b);
+      if (M > 1u) { accA.y += w_dot_tok_sh(1u * 128u + xb, m0.x, m0.y, q0a, q0b, q1a, q1b, q2a, q2b, q3a, q3b); }
+      if (M > 2u) { accA.z += w_dot_tok_sh(2u * 128u + xb, m0.x, m0.y, q0a, q0b, q1a, q1b, q2a, q2b, q3a, q3b); }
+      if (M > 3u) { accA.w += w_dot_tok_sh(3u * 128u + xb, m0.x, m0.y, q0a, q0b, q1a, q1b, q2a, q2b, q3a, q3b); }
+      if (M > 4u) { accB.x += w_dot_tok_sh(4u * 128u + xb, m0.x, m0.y, q0a, q0b, q1a, q1b, q2a, q2b, q3a, q3b); }
+      if (M > 5u) { accB.y += w_dot_tok_sh(5u * 128u + xb, m0.x, m0.y, q0a, q0b, q1a, q1b, q2a, q2b, q3a, q3b); }
+      if (M > 6u) { accB.z += w_dot_tok_sh(6u * 128u + xb, m0.x, m0.y, q0a, q0b, q1a, q1b, q2a, q2b, q3a, q3b); }
+      if (M > 7u) { accB.w += w_dot_tok_sh(7u * 128u + xb, m0.x, m0.y, q0a, q0b, q1a, q1b, q2a, q2b, q3a, q3b); }
+    }
+
+    if (b_tile + 16u < blocks) {
+      workgroupBarrier();
+    }
+  }
+
+  if (sg_size >= 16u) {
+    accA += subgroupShuffleXor(accA, 8u); accA += subgroupShuffleXor(accA, 4u);
+    accA += subgroupShuffleXor(accA, 2u); accA += subgroupShuffleXor(accA, 1u);
+    if (M > 4u) {
+      accB += subgroupShuffleXor(accB, 8u); accB += subgroupShuffleXor(accB, 4u);
+      accB += subgroupShuffleXor(accB, 2u); accB += subgroupShuffleXor(accB, 1u);
+    }
+  } else {
+    red_sh_a[tid] = accA;
+    workgroupBarrier();
+    if (lane == 0u) {
+      var sA = vec4<f32>(0.0);
+      let g_base = grp * 16u;
+      for (var l: u32 = 0u; l < 16u; l = l + 1u) { sA += red_sh_a[g_base + l]; }
+      accA = sA;
+    }
+    if (M > 4u) {
+      workgroupBarrier();
+      red_sh_a[tid] = accB;
+      workgroupBarrier();
+      if (lane == 0u) {
+        var sB = vec4<f32>(0.0);
+        let g_base = grp * 16u;
+        for (var l: u32 = 0u; l < 16u; l = l + 1u) { sB += red_sh_a[g_base + l]; }
+        accB = sB;
+      }
+    }
+  }
+
+  if (lane == 0u && rA < params.rows) {
+    let add_r = params.add_residual != 0u;
+    let out_stride = select(params._pad1, params.rows, params._pad1 == 0u);
+    let i0 = params.out_offset + 0u * out_stride + rA; y[i0] = select(accA.x, y[i0] + accA.x, add_r);
+    if (M > 1u) { let i1 = params.out_offset + 1u * out_stride + rA; y[i1] = select(accA.y, y[i1] + accA.y, add_r); }
+    if (M > 2u) { let i2 = params.out_offset + 2u * out_stride + rA; y[i2] = select(accA.z, y[i2] + accA.z, add_r); }
+    if (M > 3u) { let i3 = params.out_offset + 3u * out_stride + rA; y[i3] = select(accA.w, y[i3] + accA.w, add_r); }
+    if (M > 4u) { let i4 = params.out_offset + 4u * out_stride + rA; y[i4] = select(accB.x, y[i4] + accB.x, add_r); }
+    if (M > 5u) { let i5 = params.out_offset + 5u * out_stride + rA; y[i5] = select(accB.y, y[i5] + accB.y, add_r); }
+    if (M > 6u) { let i6 = params.out_offset + 6u * out_stride + rA; y[i6] = select(accB.z, y[i6] + accB.z, add_r); }
+    if (M > 7u) { let i7 = params.out_offset + 7u * out_stride + rA; y[i7] = select(accB.w, y[i7] + accB.w, add_r); }
+  }
+}
+"#;
+
+// Shader 45: Fused Gate+Up+SwiGLU Batch v2 (same 2-row/subgroup register layout as Shader 24)
+// 8 rows/WG (wGate[r] + wUp[r]), shares x_sh & sum_x once per token, writes silu(gate)*up directly to y.
+const WGSL_Q4_GATE_UP_SWIGLU_BATCH_V2: &str = r#"
+enable f16;
+enable subgroups;
+
+struct GateUpBatchV2Params {
+  rows: u32,
+  cols: u32,
+  w_gate_u32_offset: u32,
+  in_offset: u32,
+  out_offset: u32,
+  _unused: u32,
+  num_tokens: u32,
+  w_up_u32_offset: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: GateUpBatchV2Params;
+@group(0) @binding(1) var<storage, read> weights: array<u32>;
+@group(0) @binding(2) var<storage, read> x: array<f32>;
+@group(0) @binding(3) var<storage, read_write> y: array<f32>;
+
+var<workgroup> x_sh: array<vec4<f16>, 1024>;
+var<workgroup> red_sh_a: array<vec4<f32>, 128>;
+var<workgroup> red_sh_b: array<vec4<f32>, 128>;
+
+fn gv2_lo(p: u32) -> vec4<f16> {
+  return vec4<f16>(f16(p & 0xFu), f16((p >> 4u) & 0xFu), f16((p >> 8u) & 0xFu), f16((p >> 12u) & 0xFu));
+}
+
+fn gv2_hi(p: u32) -> vec4<f16> {
+  return vec4<f16>(f16((p >> 16u) & 0xFu), f16((p >> 20u) & 0xFu), f16((p >> 24u) & 0xFu), f16((p >> 28u) & 0xFu));
+}
+
+fn gv2_dot_pair(
+  sh_base: u32,
+  wg0: u32, wg1: u32, wg2: u32, wg3: u32, mg: vec2<f32>,
+  wu0: u32, wu1: u32, wu2: u32, wu3: u32, mu: vec2<f32>,
+) -> vec2<f32> {
+  let x0a = x_sh[sh_base + 0u]; let x0b = x_sh[sh_base + 1u];
+  let x1a = x_sh[sh_base + 2u]; let x1b = x_sh[sh_base + 3u];
+  let x2a = x_sh[sh_base + 4u]; let x2b = x_sh[sh_base + 5u];
+  let x3a = x_sh[sh_base + 6u]; let x3b = x_sh[sh_base + 7u];
+
+  let ones = vec4<f16>(1.0h);
+  let sum_x = f32(dot(ones, x0a)) + f32(dot(ones, x0b))
+    + f32(dot(ones, x1a)) + f32(dot(ones, x1b))
+    + f32(dot(ones, x2a)) + f32(dot(ones, x2b))
+    + f32(dot(ones, x3a)) + f32(dot(ones, x3b));
+
+  let sg = f32(dot(gv2_lo(wg0), x0a)) + f32(dot(gv2_hi(wg0), x0b))
+    + f32(dot(gv2_lo(wg1), x1a)) + f32(dot(gv2_hi(wg1), x1b))
+    + f32(dot(gv2_lo(wg2), x2a)) + f32(dot(gv2_hi(wg2), x2b))
+    + f32(dot(gv2_lo(wg3), x3a)) + f32(dot(gv2_hi(wg3), x3b));
+
+  let su = f32(dot(gv2_lo(wu0), x0a)) + f32(dot(gv2_hi(wu0), x0b))
+    + f32(dot(gv2_lo(wu1), x1a)) + f32(dot(gv2_hi(wu1), x1b))
+    + f32(dot(gv2_lo(wu2), x2a)) + f32(dot(gv2_hi(wu2), x2b))
+    + f32(dot(gv2_lo(wu3), x3a)) + f32(dot(gv2_hi(wu3), x3b));
+
+  return vec2<f32>(mg.x * sg + mg.y * sum_x, mu.x * su + mu.y * sum_x);
+}
+
+@compute @workgroup_size(128)
+fn main(
+  @builtin(workgroup_id) wid: vec3<u32>,
+  @builtin(local_invocation_id) lid: vec3<u32>,
+  @builtin(subgroup_size) sg_size: u32,
+) {
+  let M = min(params.num_tokens, 8u);
+  if (params.rows == 0u || M == 0u) {
+    return;
+  }
+  let tid = lid.x;
+  let grp = tid >> 4u;
+  let lane = tid & 15u;
+  let r_raw = wid.x * 8u + grp;
+  let r0 = min(r_raw, params.rows - 1u);
+
+  let blocks = params.cols >> 5u;
+  let row_stride = blocks * 5u;
+  let baseG = params.w_gate_u32_offset + r0 * row_stride;
+  let baseU = params.w_up_u32_offset + r0 * row_stride;
+
+  var accGA = vec4<f32>(0.0);
+  var accGB = vec4<f32>(0.0);
+  var accUA = vec4<f32>(0.0);
+  var accUB = vec4<f32>(0.0);
+
+  for (var b_tile: u32 = 0u; b_tile < blocks; b_tile = b_tile + 16u) {
+    let tile_blocks = min(16u, blocks - b_tile);
+    let load_vec4s = tile_blocks << 3u;
+    let tile_k_off = params.in_offset + (b_tile << 5u);
+    if (tid < load_vec4s) {
+      for (var t: u32 = 0u; t < M; t = t + 1u) {
+        let kb = tile_k_off + t * params.cols + (tid << 2u);
+        x_sh[t * 128u + tid] = vec4<f16>(f16(x[kb]), f16(x[kb + 1u]), f16(x[kb + 2u]), f16(x[kb + 3u]));
+      }
+    }
+    workgroupBarrier();
+
+    if (lane < tile_blocks) {
+      let b5 = (b_tile + lane) * 5u;
+      let xb = lane << 3u;
+
+      let ig = baseG + b5;
+      let wg0 = weights[ig + 0u]; let wg1 = weights[ig + 1u];
+      let wg2 = weights[ig + 2u]; let wg3 = weights[ig + 3u];
+      let mg = unpack2x16float(weights[ig + 4u]);
+
+      let iu = baseU + b5;
+      let wu0 = weights[iu + 0u]; let wu1 = weights[iu + 1u];
+      let wu2 = weights[iu + 2u]; let wu3 = weights[iu + 3u];
+      let mu = unpack2x16float(weights[iu + 4u]);
+
+      {
+        let p = gv2_dot_pair(0u * 128u + xb, wg0, wg1, wg2, wg3, mg, wu0, wu1, wu2, wu3, mu);
+        accGA.x += p.x; accUA.x += p.y;
+      }
+      if (M > 1u) {
+        let p = gv2_dot_pair(1u * 128u + xb, wg0, wg1, wg2, wg3, mg, wu0, wu1, wu2, wu3, mu);
+        accGA.y += p.x; accUA.y += p.y;
+      }
+      if (M > 2u) {
+        let p = gv2_dot_pair(2u * 128u + xb, wg0, wg1, wg2, wg3, mg, wu0, wu1, wu2, wu3, mu);
+        accGA.z += p.x; accUA.z += p.y;
+      }
+      if (M > 3u) {
+        let p = gv2_dot_pair(3u * 128u + xb, wg0, wg1, wg2, wg3, mg, wu0, wu1, wu2, wu3, mu);
+        accGA.w += p.x; accUA.w += p.y;
+      }
+      if (M > 4u) {
+        let p = gv2_dot_pair(4u * 128u + xb, wg0, wg1, wg2, wg3, mg, wu0, wu1, wu2, wu3, mu);
+        accGB.x += p.x; accUB.x += p.y;
+      }
+      if (M > 5u) {
+        let p = gv2_dot_pair(5u * 128u + xb, wg0, wg1, wg2, wg3, mg, wu0, wu1, wu2, wu3, mu);
+        accGB.y += p.x; accUB.y += p.y;
+      }
+      if (M > 6u) {
+        let p = gv2_dot_pair(6u * 128u + xb, wg0, wg1, wg2, wg3, mg, wu0, wu1, wu2, wu3, mu);
+        accGB.z += p.x; accUB.z += p.y;
+      }
+      if (M > 7u) {
+        let p = gv2_dot_pair(7u * 128u + xb, wg0, wg1, wg2, wg3, mg, wu0, wu1, wu2, wu3, mu);
+        accGB.w += p.x; accUB.w += p.y;
+      }
+    }
+
+    if (b_tile + 16u < blocks) {
+      workgroupBarrier();
+    }
+  }
+
+  if (sg_size >= 16u) {
+    accGA += subgroupShuffleXor(accGA, 8u); accGA += subgroupShuffleXor(accGA, 4u);
+    accGA += subgroupShuffleXor(accGA, 2u); accGA += subgroupShuffleXor(accGA, 1u);
+    accUA += subgroupShuffleXor(accUA, 8u); accUA += subgroupShuffleXor(accUA, 4u);
+    accUA += subgroupShuffleXor(accUA, 2u); accUA += subgroupShuffleXor(accUA, 1u);
+    if (M > 4u) {
+      accGB += subgroupShuffleXor(accGB, 8u); accGB += subgroupShuffleXor(accGB, 4u);
+      accGB += subgroupShuffleXor(accGB, 2u); accGB += subgroupShuffleXor(accGB, 1u);
+      accUB += subgroupShuffleXor(accUB, 8u); accUB += subgroupShuffleXor(accUB, 4u);
+      accUB += subgroupShuffleXor(accUB, 2u); accUB += subgroupShuffleXor(accUB, 1u);
+    }
+  } else {
+    red_sh_a[tid] = accGA;
+    red_sh_b[tid] = accUA;
+    workgroupBarrier();
+    if (lane == 0u) {
+      var sg = vec4<f32>(0.0);
+      var su = vec4<f32>(0.0);
+      let g_base = grp * 16u;
+      for (var l: u32 = 0u; l < 16u; l = l + 1u) { sg += red_sh_a[g_base + l]; su += red_sh_b[g_base + l]; }
+      accGA = sg; accUA = su;
+    }
+    if (M > 4u) {
+      workgroupBarrier();
+      red_sh_a[tid] = accGB;
+      red_sh_b[tid] = accUB;
+      workgroupBarrier();
+      if (lane == 0u) {
+        var sg = vec4<f32>(0.0);
+        var su = vec4<f32>(0.0);
+        let g_base = grp * 16u;
+        for (var l: u32 = 0u; l < 16u; l = l + 1u) { sg += red_sh_a[g_base + l]; su += red_sh_b[g_base + l]; }
+        accGB = sg; accUB = su;
+      }
+    }
+  }
+
+  if (lane == 0u && r_raw < params.rows) {
+    let i0 = params.out_offset + 0u * params.rows + r_raw;
+    y[i0] = (accGA.x / (1.0 + exp(-accGA.x))) * accUA.x;
+    if (M > 1u) { let i1 = params.out_offset + 1u * params.rows + r_raw; y[i1] = (accGA.y / (1.0 + exp(-accGA.y))) * accUA.y; }
+    if (M > 2u) { let i2 = params.out_offset + 2u * params.rows + r_raw; y[i2] = (accGA.z / (1.0 + exp(-accGA.z))) * accUA.z; }
+    if (M > 3u) { let i3 = params.out_offset + 3u * params.rows + r_raw; y[i3] = (accGA.w / (1.0 + exp(-accGA.w))) * accUA.w; }
+    if (M > 4u) { let i4 = params.out_offset + 4u * params.rows + r_raw; y[i4] = (accGB.x / (1.0 + exp(-accGB.x))) * accUB.x; }
+    if (M > 5u) { let i5 = params.out_offset + 5u * params.rows + r_raw; y[i5] = (accGB.y / (1.0 + exp(-accGB.y))) * accUB.y; }
+    if (M > 6u) { let i6 = params.out_offset + 6u * params.rows + r_raw; y[i6] = (accGB.z / (1.0 + exp(-accGB.z))) * accUB.z; }
+    if (M > 7u) { let i7 = params.out_offset + 7u * params.rows + r_raw; y[i7] = (accGB.w / (1.0 + exp(-accGB.w))) * accUB.w; }
+  }
 }
 "#;
 

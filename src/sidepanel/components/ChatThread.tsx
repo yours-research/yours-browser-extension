@@ -24,11 +24,13 @@ import {
   SourcesDrawer,
   ToolTraceList,
   UserMessageBubble,
+  WebSearchSourcesStrip,
   type CitationFootnoteItem,
   type InlineCitationSource,
   type InlineNoticeTone,
   type PromptStarterItem,
   type SourceCitation,
+  type WebSearchSourceItem,
 } from '@yours/ui';
 import type { TelemetryState } from '../../shared/protocol.ts';
 import {
@@ -58,6 +60,7 @@ export interface ChatThreadProps {
   error: string | null;
   starters: readonly PromptStarterItem[];
   sources: readonly SourceCitation[];
+  sourcesDrawerVariant?: 'pill' | 'inline';
   isModelReady?: boolean;
   isModelLoading?: boolean;
   selectedModelLabel?: string;
@@ -163,6 +166,16 @@ function toCitationFootnoteItem(src: SourceCitation, idx: number): CitationFootn
   };
 }
 
+function toWebSearchSourceItem(src: SourceCitation): WebSearchSourceItem {
+  return {
+    id: src.id,
+    title: src.title,
+    url: src.url,
+    domain: safeDomainFromUrl(src.url),
+    snippet: src.subtitle || src.title,
+  };
+}
+
 function renderBranchPicker(
   siblingInfo: BranchSiblingInfo | undefined,
   onSwitchBranch: (branchNodeId: string) => void,
@@ -203,6 +216,7 @@ export function ChatThread({
   error,
   starters,
   sources,
+  sourcesDrawerVariant = 'inline',
   isModelReady = true,
   isModelLoading = false,
   selectedModelLabel,
@@ -574,6 +588,20 @@ export function ChatThread({
 
       {sources.length > 0 ? (
         <div className="ext-sources-group">
+          <WebSearchSourcesStrip
+            sources={sources.map(toWebSearchSourceItem)}
+            initialVisibleCount={4}
+            onSelectSource={(target) => {
+              if (
+                target.url &&
+                /^https?:\/\//i.test(target.url) &&
+                typeof chrome !== 'undefined' &&
+                chrome.tabs?.create
+              ) {
+                void chrome.tabs.create({ url: target.url });
+              }
+            }}
+          />
           <div className="ext-citation-row">
             {sources.slice(0, 6).map((src, idx) => (
               <InlineCitationPopover
@@ -593,7 +621,7 @@ export function ChatThread({
               />
             ))}
           </div>
-          <SourcesDrawer sources={sources} />
+          <SourcesDrawer sources={sources} variant={sourcesDrawerVariant} />
           <CitationFootnoteList
             title="Verified Citations"
             citations={sources.slice(0, 6).map((src, idx) => toCitationFootnoteItem(src, idx))}

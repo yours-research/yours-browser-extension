@@ -54,12 +54,13 @@ function createCallbacks(): EngineCallbacks {
     onBenchmarkProgress: (message, point) =>
       postToHost({ type: 'BENCHMARK_PROGRESS', message, point }),
     onBenchmarkResult: (result) => postToHost({ type: 'BENCHMARK_RESULT', result }),
+    onSpecMicrobenchResult: (result) => postToHost({ type: 'SPEC_MICROBENCH_RESULT', result }),
     onNiahProgress: (message) => postToHost({ type: 'NIAH_PROGRESS', message }),
     onNiahResult: (result) => postToHost({ type: 'NIAH_RESULT', result }),
     onTokenDelta: (requestId, delta, tokenCount) =>
       postToHost({ type: 'TOKEN_DELTA', requestId, delta, tokenCount }),
-    onGenerationComplete: (requestId, finishReason) =>
-      postToHost({ type: 'GENERATION_COMPLETE', requestId, finishReason }),
+    onGenerationComplete: (requestId, finishReason, trace) =>
+      postToHost({ type: 'GENERATION_COMPLETE', requestId, finishReason, trace }),
     onGenerationError: (requestId, error) =>
       postToHost({ type: 'GENERATION_ERROR', requestId, error }),
     onPrefillComplete: (requestId, slotKey, tokens, elapsedMs) =>
@@ -163,6 +164,9 @@ function handleClientMessage(msg: ClientToEngineMessage): void {
       break;
     case 'RUN_NIAH':
       activeEngine.enqueueNeedleInHaystack(msg.targetTokens, msg.depthRatio, msg.chunkSize);
+      break;
+    case 'RUN_SPEC_MICROBENCH':
+      activeEngine.enqueueSpecMicrobench();
       break;
     case 'RUN_WGSL_BENCH':
       void activeRunner

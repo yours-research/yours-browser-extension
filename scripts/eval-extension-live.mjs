@@ -650,6 +650,7 @@ async function runUiTurn(sidePanel, prompt, options = {}) {
       streamingReasoningAtEnd: trajectory.streamingReasoning ?? '',
       pendingToolCallsAtEnd: trajectory.pendingToolCalls ?? [],
       answerText,
+      rawAssistantText: lastAssistant?.rawContent ?? '',
       reasoningText,
       toolMessages: toolMsgs.map((t) => ({
         toolName: t.toolName,
@@ -2723,7 +2724,7 @@ async function main() {
               leakCount: mixTurn.leakedTags.length,
             },
             ...(mixScore < 1
-              ? { error: `Checks=${JSON.stringify(mixChecks)} tools=${JSON.stringify(mixTurn.toolMessages.map((t) => t.toolName))} chatError=${JSON.stringify(mixTurn.metrics?.chatError)} postClick=${JSON.stringify(mixTurn.postClickState)} ans=${JSON.stringify(mixTurn.answerText.slice(0, 220))}` }
+              ? { error: `Checks=${JSON.stringify(mixChecks)} tools=${JSON.stringify(mixTurn.toolMessages.map((t) => t.toolName))} raw=${JSON.stringify(mixTurn.rawAssistantText.slice(0, 160))} logs=${JSON.stringify(mixTurn.engineLogs.slice(-4))} ans=${JSON.stringify(mixTurn.answerText.slice(0, 220))}` }
               : {}),
           },
           mixTurn,
@@ -3886,7 +3887,9 @@ async function main() {
           const card = document.querySelector('[data-slot="storage-quota-card"]');
           const weightsRow = card?.querySelector('[data-storage-id="weights"]');
           const readout = card?.querySelector('.yui-storage-quota-readout')?.textContent?.trim() ?? '';
-          const barRects = card ? card.querySelectorAll('.yui-storage-bar-svg rect').length : 0;
+          const barRects = card
+            ? card.querySelectorAll('.yui-storage-bar rect, .yui-storage-bar-svg rect').length
+            : 0;
           const statusText = weightsRow?.querySelector('.yui-storage-status')?.textContent?.trim() ?? '';
           const detailText = weightsRow?.querySelector('.yui-storage-row-detail')?.textContent?.trim() ?? '';
           const styledNodes = card
@@ -5755,6 +5758,152 @@ async function main() {
       } finally {
         if (origViewportV14Ckpt) {
           await sidePanel.setViewportSize(origViewportV14Ckpt).catch(() => {});
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Case 56 (v15): WebSearchSourcesStrip + SourcesDrawer inline variant + E0/A1 Speculative @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV15 = sidePanel.viewportSize();
+      let v15AlphaPage = null;
+      let v15BetaPage = null;
+      try {
+        const errorsBeforeV15 = runtimeErrors.length;
+        await homePage.goto(`${baseUrl}/home`, { waitUntil: 'domcontentloaded' });
+        v15AlphaPage = await context.newPage();
+        attachPageDiagnostics(v15AlphaPage, 'v15AlphaPage', runtimeErrors);
+        await v15AlphaPage.goto(`${baseUrl}/spec-alpha`, { waitUntil: 'domcontentloaded' });
+        v15BetaPage = await context.newPage();
+        attachPageDiagnostics(v15BetaPage, 'v15BetaPage', runtimeErrors);
+        await v15BetaPage.goto(`${baseUrl}/spec-beta`, { waitUntil: 'domcontentloaded' });
+
+        await homePage.bringToFront();
+        await toggleChip(sidePanel, 'Page', true);
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await homePage.bringToFront();
+        await sidePanel.evaluate(async () => {
+          await window.__TINYGPT_CLIENT__.updateConfig({ enableSpeculative: true });
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          window.__TINYGPT_UI__.refreshActiveTab();
+          await window.__TINYGPT_UI__.clearChat();
+        });
+        await waitForUiMetrics(
+          sidePanel,
+          (m) => Boolean(m.activePage?.url?.includes('/home')),
+          { timeoutMs: 12000, pollMs: 100 },
+        );
+
+        const v15Turn = await runUiTurn(
+          sidePanel,
+          'Use list_tabs and read_tab on Alpha Cluster Spec and Beta Cluster Spec, then summarize their exact Cluster Identifiers and sustained req/s.',
+          { timeoutMs: 120000 },
+        );
+
+        const beforeExpand = await sidePanel.evaluate(() => {
+          const strip = document.querySelector('[data-slot="web-search-sources-strip"]');
+          const drawer = document.querySelector('.ext-sources-group [data-variant="inline"]');
+          const drawerTrigger = drawer?.querySelector('button.yui-wss-trigger') ?? null;
+          const drawerDisc = drawer?.querySelector('.yui-disclosure--sources') ?? null;
+          const favs = strip ? Array.from(strip.querySelectorAll('.yui-wss-fav')) : [];
+          const imgs = strip ? Array.from(strip.querySelectorAll('img')) : [];
+          const brokenImgs = imgs.filter((img) => !img.complete || img.naturalWidth === 0).length;
+          const styledNodes = document.querySelectorAll('.ext-sources-group [style]').length;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          return {
+            hasStrip: Boolean(strip),
+            stripExpanded: strip?.getAttribute('data-expanded') ?? null,
+            stripText: strip?.querySelector('button.yui-wss-trigger')?.textContent?.trim() ?? '',
+            favCount: favs.length,
+            brokenImgs,
+            hasInlineDrawer: Boolean(drawer && drawerTrigger),
+            drawerInitiallyOpen: Boolean(drawerDisc?.classList.contains('is-open')),
+            styledNodes,
+            overflowPx,
+          };
+        });
+
+        await sidePanel.locator('[data-slot="web-search-sources-strip"] button.yui-wss-trigger').click();
+        await sidePanel.waitForTimeout(160);
+        await sidePanel.locator('.ext-sources-group [data-variant="inline"] button.yui-wss-trigger').click();
+        await sidePanel.waitForTimeout(160);
+
+        const afterExpand = await sidePanel.evaluate(() => {
+          const strip = document.querySelector('[data-slot="web-search-sources-strip"]');
+          const cards = strip ? strip.querySelectorAll('.yui-wss-grid .yui-wss-card').length : 0;
+          const drawer = document.querySelector('.ext-sources-group [data-variant="inline"]');
+          const drawerDisc = drawer?.querySelector('.yui-disclosure--sources') ?? null;
+          const drawerRows = drawer ? drawer.querySelectorAll('.yui-sources-list .yui-source-row').length : 0;
+          const styledNodes = document.querySelectorAll('.ext-sources-group [style]').length;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          return {
+            stripExpanded: strip?.getAttribute('data-expanded') ?? null,
+            cards,
+            drawerOpen: Boolean(drawerDisc?.classList.contains('is-open')),
+            drawerRows,
+            styledNodes,
+            overflowPx,
+          };
+        });
+
+        const v15Checks = {
+          stripRenderedCollapsed:
+            beforeExpand.hasStrip &&
+            beforeExpand.stripExpanded === 'false' &&
+            /Searched\s+\d+\s+sites?/i.test(beforeExpand.stripText) &&
+            beforeExpand.favCount >= 2 &&
+            beforeExpand.brokenImgs === 0,
+          stripExpandsCards: afterExpand.stripExpanded === 'true' && afterExpand.cards >= 2,
+          sourcesDrawerInlineWorks:
+            beforeExpand.hasInlineDrawer &&
+            !beforeExpand.drawerInitiallyOpen &&
+            afterExpand.drawerOpen &&
+            afterExpand.drawerRows >= 2,
+          factsAndSpeculativeValid:
+            /ALPHA-TOKEN-718/i.test(v15Turn.answerText) &&
+            /BETA-TOKEN-924/i.test(v15Turn.answerText),
+          zeroInlineStylesAndOverflow:
+            beforeExpand.styledNodes === 0 &&
+            afterExpand.styledNodes === 0 &&
+            beforeExpand.overflowPx === 0 &&
+            afterExpand.overflowPx === 0,
+          zeroLeaksAndZeroErrors:
+            v15Turn.leakedTags.length === 0 && runtimeErrors.length === errorsBeforeV15,
+        };
+        const v15Score =
+          Object.values(v15Checks).filter(Boolean).length / Object.keys(v15Checks).length;
+        recordCase(
+          {
+            id: 'V15_web_search_sources_strip_and_speculative_e0_a1_340px',
+            suite: 'harness',
+            passed: v15Score === 1,
+            score: v15Score,
+            latencyMs: v15Turn.elapsedMs,
+            metrics: {
+              stripCards: afterExpand.cards,
+              drawerRows: afterExpand.drawerRows,
+              styledNodes: Math.max(beforeExpand.styledNodes, afterExpand.styledNodes),
+              overflowPx: Math.max(beforeExpand.overflowPx, afterExpand.overflowPx),
+              specTau: round(v15Turn.metrics?.speculativeStats?.tau ?? 1, 3),
+              ttftMs: round(v15Turn.metrics?.ttftMs ?? 0, 1),
+              leakCount: v15Turn.leakedTags.length,
+            },
+            ...(v15Score < 1
+              ? {
+                  error: `Checks=${JSON.stringify(v15Checks)} before=${JSON.stringify(beforeExpand)} after=${JSON.stringify(afterExpand)} ans=${JSON.stringify(v15Turn.answerText.slice(0, 180))}`,
+                }
+              : {}),
+          },
+          v15Turn,
+        );
+      } finally {
+        await sidePanel
+          .evaluate(() => window.__TINYGPT_CLIENT__?.updateConfig?.({ enableSpeculative: false }))
+          .catch(() => {});
+        if (v15AlphaPage) await v15AlphaPage.close().catch(() => {});
+        if (v15BetaPage) await v15BetaPage.close().catch(() => {});
+        await toggleChip(sidePanel, 'Page', false).catch(() => {});
+        if (origViewportV15) {
+          await sidePanel.setViewportSize(origViewportV15).catch(() => {});
         }
       }
     } catch (caseErr) {
