@@ -485,3 +485,9 @@ body,
   align-items: center;
   gap: 6px;
 }
+
+.ext-composer-popover {
+  max-height: 270px;
+  overflow-y: auto;
+  border-radius: 14px;
+}

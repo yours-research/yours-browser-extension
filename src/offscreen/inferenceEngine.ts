@@ -25,7 +25,11 @@ import { resolveExtensionAssetUrl } from './gpuPacing.ts';
 import { Gemma4ExtensionAdapter, type WgslRuntimeEngine } from './gemma4ExtensionAdapter.ts';
 import { clearWgslWeightCache } from './onnxWeightLoader.ts';
 import { OpfsModelCache } from './opfsCache.ts';
-import { BASE_SYSTEM_SLOT_ID, PrefixCacheManager } from './prefixCacheManager.ts';
+import {
+  BASE_SYSTEM_SLOT_ID,
+  PrefixCacheManager,
+  isExactTokenPrefix,
+} from './prefixCacheManager.ts';
 import { computeBandwidthStats, isMessagePrefix, type SamplingOptions } from './sampling.ts';
 import { SuffixSpeculator } from './suffixSpeculator.ts';
 import { installWebGpuLimitPatch, probeWebGpu } from './webgpuLimits.ts';
@@ -1255,6 +1259,7 @@ export class InferenceEngine {
       });
 
       let promptTokenIds: number[] | null = null;
+      let fullTokenIds: number[] | null = null;
       let prefixTokenIds: number[] = [];
       let reusedPrefix = false;
       let restoredSlotId: string | null = null;
@@ -1300,7 +1305,7 @@ export class InferenceEngine {
           addGenerationPrompt: true,
         });
         promptOpensThink = /<think>\s*$/.test(formattedPrompt);
-        const fullTokenIds = this.tokenizer.encode(formattedPrompt, {
+        fullTokenIds = this.tokenizer.encode(formattedPrompt, {
           add_special_tokens: false,
         });
 
@@ -1354,14 +1359,62 @@ export class InferenceEngine {
         topK: this.config.topK,
         topP: this.config.topP,
       };
+      const totalPromptTokenCount = promptTokenIds.length;
+      let totalPrefillMs = 0;
+
+      // Checkpoint [baseSystem, activePageContext] when cold-prefilling attached page context so
+      // follow-ups after multi-step tool calls can restore the evaluated page KV state in ~3ms.
+      if (
+        fullTokenIds &&
+        restoredSlotId !== 'live' &&
+        this.prefixCache &&
+        this.wgslEngine &&
+        normMessages.length >= 3 &&
+        normMessages[1]?.role === 'system'
+      ) {
+        const contextMsgs = normMessages.slice(0, 2);
+        const contextTokenIds = this.encodePrefixMessages(contextMsgs, false);
+        const contextDeltaLen = contextTokenIds.length - prefixTokenIds.length;
+        if (
+          contextDeltaLen > 16 &&
+          promptTokenIds.length > contextDeltaLen + 8 &&
+          isExactTokenPrefix(contextTokenIds, fullTokenIds)
+        ) {
+          const contextDelta = promptTokenIds.slice(0, contextDeltaLen);
+          const remainingPrompt = promptTokenIds.slice(contextDeltaLen);
+          const ctxRes = await this.prefillAndPickFirstToken(
+            contextDelta,
+            this.config.chunkSize,
+            sampleOpts,
+            requestId,
+          );
+          totalPrefillMs += ctxRes.prefillMs;
+          if (this.abortedRequests.has(requestId)) {
+            throw new Error('__ABORTED__');
+          }
+          try {
+            await this.prefixCache.saveTurnCheckpoint(contextTokenIds, contextMsgs);
+            this.cachedTokenIds = [...contextTokenIds];
+            this.cachedMessages = contextMsgs.map((m) => ({ ...m }));
+            this.cachedTokenCount = this.wgslEngine.activeSeqPos;
+            this.refreshCacheTelemetry();
+          } catch {
+            // Ignore checkpoint failures when volatile prefix VRAM budget is full
+          }
+          prefixTokenIds = [...contextTokenIds];
+          promptTokenIds = remainingPrompt;
+        }
+      }
+
       const { nextToken: firstToken, prefillMs } = await this.prefillAndPickFirstToken(
         promptTokenIds,
         this.config.chunkSize,
         sampleOpts,
         requestId,
       );
+      totalPrefillMs += prefillMs;
 
-      const prefillTokPerSec = promptTokenIds.length / (prefillMs / 1000);
+      const prefillTokPerSec = totalPromptTokenCount / (Math.max(0.1, totalPrefillMs) / 1000);
       const ttftMs = performance.now() - runStartMs;
       this.updateTelemetry({ ttftMs, prefillTokPerSec });
 

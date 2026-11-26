@@ -1981,6 +1981,7 @@ export class WgslQwen35Engine {
       calibratedPolicy?: ReturnType<typeof calibratePacingForHardware>;
       abortSignal?: AbortSignal;
       burstState?: { gpuBurstMs: number };
+      deferSync?: boolean;
     },
   ): Promise<number | null> {
     const device = this.device!;
@@ -2254,16 +2255,20 @@ export class WgslQwen35Engine {
       }
       const tSlice = performance.now();
       device.queue.submit([enc.finish()]);
-      await device.queue.onSubmittedWorkDone();
-      burstState.gpuBurstMs += performance.now() - tSlice;
-      const { breatherMs, nextBurstMs } = computePrefillSliceBreatherMs(
-        pacingMode,
-        burstState.gpuBurstMs,
-        calibratedPolicy,
-      );
-      burstState.gpuBurstMs = nextBurstMs;
-      if (breatherMs > 0) {
-        await sleepMs(breatherMs);
+      if (!pacingOptions?.deferSync) {
+        await device.queue.onSubmittedWorkDone();
+        burstState.gpuBurstMs += performance.now() - tSlice;
+        const { breatherMs, nextBurstMs } = computePrefillSliceBreatherMs(
+          pacingMode,
+          burstState.gpuBurstMs,
+          calibratedPolicy,
+        );
+        burstState.gpuBurstMs = nextBurstMs;
+        if (breatherMs > 0) {
+          await sleepMs(breatherMs);
+        }
+      } else {
+        burstState.gpuBurstMs += 8;
       }
     }
 
@@ -2299,6 +2304,10 @@ export class WgslQwen35Engine {
     let offset = 0;
     let chunkIdx = 0;
 
+    const fastPrefillPipeline =
+      pacingMode === 'max-speed' ||
+      (pacingMode !== 'smooth-ui' && this.emaDecodeStepMs > 0 && this.emaDecodeStepMs < 22);
+
     while (offset < tokenIds.length) {
       if (options.abortSignal?.aborted) {
         throw new Error('Generation aborted');
@@ -2311,11 +2320,13 @@ export class WgslQwen35Engine {
       );
       const end = Math.min(tokenIds.length, offset + stepSize);
       const isLast = end === tokenIds.length;
+      const deferSync = fastPrefillPipeline && !isLast && chunkIdx % 2 === 0;
       lastTok = await this.prefillChunk(tokenIds.slice(offset, end), isLast, options.sampling, {
         pacingMode,
         calibratedPolicy,
         abortSignal: options.abortSignal,
         burstState,
+        deferSync,
       });
       options.onChunk?.(end, tokenIds.length);
       if (!isLast) {

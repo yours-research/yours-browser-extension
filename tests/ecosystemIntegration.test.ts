@@ -9,12 +9,15 @@ import {
   CodeBlockCard,
   CommandPalette,
   ErrorRecoveryCard,
+  ExportSessionCard,
   InlineNotice,
   OnboardingCard,
+  PromptTemplateList,
   StreamingResponse,
   ThreadHistoryList,
   VoiceSessionCard,
 } from '@yours/ui';
+import { QuoteExcerptCard, TimelineCard } from '@yours/ui/genui';
 import { VadEngine } from '@yours/voice/vad';
 import { describe, expect, it } from 'vitest';
 import {
@@ -362,6 +365,10 @@ describe('@yours/* Ecosystem Integrations & Strict MV3 CSP', () => {
     expect(typeof InlineNotice).toBe('function');
     expect(typeof VoiceSessionCard).toBe('function');
     expect(typeof AudioLevelMeter).toBe('function');
+    expect(typeof PromptTemplateList).toBe('function');
+    expect(typeof ExportSessionCard).toBe('function');
+    expect(typeof TimelineCard).toBe('function');
+    expect(typeof QuoteExcerptCard).toBe('function');
 
     const genUiSource = fs.readFileSync(
       path.join(ROOT_DIR, 'src', 'sidepanel', 'components', 'GenUiRenderer.tsx'),

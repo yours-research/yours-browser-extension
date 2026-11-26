@@ -13,12 +13,15 @@ import {
   MetricStripCard,
   PageActionCard,
   PageBriefCard,
+  QuoteExcerptCard,
+  TimelineCard,
   type ChecklistItem,
   type ChoiceOption,
   type CompareTableRow,
   type DraftToneOption,
   type EntityField,
   type PageActionField,
+  type TimelineStep,
 } from '@yours/ui/genui';
 
 export interface GenUiRendererProps {
@@ -343,6 +346,44 @@ function renderGenUiCard(
           fields={fields}
           onCancel={() => props.onCopyText?.(`Cancelled action: ${title}`)}
           onConfirm={() => props.onConfirmAction?.(title)}
+        />
+      );
+    }
+    case 'timeline': {
+      const rawSteps = Array.isArray(payload.steps) ? payload.steps : [];
+      const steps: TimelineStep[] = rawSteps.map((s, sIdx) => {
+        const rec = (s && typeof s === 'object' ? s : {}) as Record<string, unknown>;
+        const st = String(rec.status ?? 'done');
+        const status: TimelineStep['status'] =
+          st === 'done' || st === 'active' || st === 'pending' || st === 'error' ? st : 'done';
+        return {
+          id: typeof rec.id === 'string' && rec.id ? rec.id : `step-${sIdx}`,
+          label: String(rec.label ?? rec.title ?? `Step ${sIdx + 1}`),
+          detail: typeof rec.detail === 'string' ? rec.detail : undefined,
+          timestamp: typeof rec.timestamp === 'string' ? rec.timestamp : undefined,
+          status,
+        };
+      });
+      return (
+        <TimelineCard
+          key={`g-${idx}`}
+          title={String(payload.title ?? 'Timeline')}
+          subtitle={typeof payload.subtitle === 'string' ? payload.subtitle : undefined}
+          metaLabel={typeof payload.metaLabel === 'string' ? payload.metaLabel : undefined}
+          steps={steps}
+        />
+      );
+    }
+    case 'quote_excerpt': {
+      return (
+        <QuoteExcerptCard
+          key={`g-${idx}`}
+          quote={String(payload.quote ?? '')}
+          sourceTitle={String(payload.sourceTitle ?? payload.title ?? 'Source')}
+          sourceDomain={typeof payload.sourceDomain === 'string' ? payload.sourceDomain : undefined}
+          sourceUrl={typeof payload.sourceUrl === 'string' ? payload.sourceUrl : undefined}
+          locator={typeof payload.locator === 'string' ? payload.locator : undefined}
+          onCopyQuote={(q) => props.onCopyText?.(q)}
         />
       );
     }
