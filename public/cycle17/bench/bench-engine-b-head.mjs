@@ -141,9 +141,12 @@ var U = "uniform";
 var R = "read-only-storage";
 var W = "storage";
 var q4Layout = [U, R, R, W];
+var q4AddLayout = [U, R, R, W, W];
 var q4x3Layout = [U, R, R, W, W, W];
 var tiedLayout = [U, R, R, R, W];
 var convLayout = [U, R, R, R, W, W, R];
+var convFastLayout = [U, R, R, W, W];
+var dnFastLayout = [U, R, R, W, W, R, R];
 var ioLayout = [U, R, R, R, W, R, R, W];
 var dnLayout = [U, R, R, W, W, R];
 var shaders = {
@@ -164,24 +167,69 @@ var shaders = {
   select: ["gdn_eagle3_select", "select_top1", [U, R, R, W]],
   // Fast tiers (not bit-identical to the reference kernels above).
   q4Fast: ["q4_gemv_fast", "gemv", q4Layout],
+  q4AddFast: ["q4_gemv_fast", "gemv_add", q4AddLayout],
   swigluFast: ["q4_gemv_fast", "swiglu", q4Layout],
   scoresFast: ["gdn_eagle3_tied_fast", "subset_logits", tiedLayout],
   sliceScoresFast: ["gdn_eagle3_tied_fast", "subset_logits_slice", tiedLayout],
   q4x3Fast: ["q4_gemv_fast", "gemv3", q4x3Layout],
+  rmsFast: ["gdn_eagle3_rms_fast", "main", q4Layout],
+  convFast: ["gdn_eagle3_dn_fast", "conv_step", convFastLayout],
+  dnFast: ["gdn_eagle3_dn_fast", "dn_step", dnFastLayout],
   q4x3FastSg: ["q4_gemv_fast_sg", "gemv3", q4x3Layout],
   q4FastSg: ["q4_gemv_fast_sg", "gemv", q4Layout],
+  q4AddFastSg: ["q4_gemv_fast_sg", "gemv_add", q4AddLayout],
   swigluFastSg: ["q4_gemv_fast_sg", "swiglu", q4Layout],
   scoresFastSg: ["gdn_eagle3_tied_fast_sg", "subset_logits", tiedLayout],
-  sliceScoresFastSg: ["gdn_eagle3_tied_fast_sg", "subset_logits_slice", tiedLayout]
+  sliceScoresFastSg: ["gdn_eagle3_tied_fast_sg", "subset_logits_slice", tiedLayout],
+  rmsFastSg: ["gdn_eagle3_rms_fast_sg", "main", q4Layout],
+  convFastSg: ["gdn_eagle3_dn_fast_sg", "conv_step", convFastLayout],
+  dnFastSg: ["gdn_eagle3_dn_fast_sg", "dn_step", dnFastLayout],
+  selectFastSg: ["gdn_eagle3_select_fast_sg", "select_top1", [U, R, R, W]]
 };
 var draftShaderEntries = Object.values(shaders).map(([name, entryPoint]) => ({
   file: name + ".wgsl",
   entryPoint
 }));
 var TIER_KERNELS = {
-  reference: { q4: "q4", swiglu: "swiglu", scores: "scores", sliceScores: "sliceScores", fused3: null, rowsPerGroup: 64 },
-  fast: { q4: "q4Fast", swiglu: "swigluFast", scores: "scoresFast", sliceScores: "sliceScoresFast", fused3: "q4x3Fast", rowsPerGroup: 4 },
-  "fast-subgroups": { q4: "q4FastSg", swiglu: "swigluFastSg", scores: "scoresFastSg", sliceScores: "sliceScoresFastSg", fused3: "q4x3FastSg", rowsPerGroup: 4 }
+  reference: {
+    q4: "q4",
+    q4Add: null,
+    swiglu: "swiglu",
+    scores: "scores",
+    sliceScores: "sliceScores",
+    fused3: null,
+    rms: "rms",
+    convFast: null,
+    dnFast: null,
+    select: "select",
+    rowsPerGroup: 64
+  },
+  fast: {
+    q4: "q4Fast",
+    q4Add: "q4AddFast",
+    swiglu: "swigluFast",
+    scores: "scoresFast",
+    sliceScores: "sliceScoresFast",
+    fused3: "q4x3Fast",
+    rms: "rmsFast",
+    convFast: "convFast",
+    dnFast: "dnFast",
+    select: "select",
+    rowsPerGroup: 8
+  },
+  "fast-subgroups": {
+    q4: "q4FastSg",
+    q4Add: "q4AddFastSg",
+    swiglu: "swigluFastSg",
+    scores: "scoresFastSg",
+    sliceScores: "sliceScoresFastSg",
+    fused3: "q4x3FastSg",
+    rms: "rmsFastSg",
+    convFast: "convFastSg",
+    dnFast: "dnFastSg",
+    select: "selectFastSg",
+    rowsPerGroup: 8
+  }
 };
 var SHARED_KERNELS = ["rms", "embed", "conv", "commitConv", "pack", "recur", "commitState", "gate", "topK", "embedIndexed", "select"];
 function selectDraftTier(device, mode = "auto") {
@@ -303,7 +351,20 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
     if (nextRow !== vocab)
       throw new Error("Invalid tied Q4 storage range");
     const t = TIER_KERNELS[tier];
-    const kernels = await compile(device, readShader, [...SHARED_KERNELS, t.q4, t.swiglu, t.scores, t.sliceScores, ...t.fused3 ? [t.fused3] : []]);
+    const needed = /* @__PURE__ */ new Set([
+      ...SHARED_KERNELS,
+      t.q4,
+      t.swiglu,
+      t.scores,
+      t.sliceScores,
+      t.rms,
+      t.select,
+      ...t.q4Add ? [t.q4Add] : [],
+      ...t.fused3 ? [t.fused3] : [],
+      ...t.convFast ? [t.convFast] : [],
+      ...t.dnFast ? [t.dnFast] : []
+    ]);
+    const kernels = await compile(device, readShader, [...needed]);
     const owner = new Buffers(device);
     const upload = (label, value) => owner.make(label, value.byteLength, GPUBufferUsage.STORAGE, value);
     try {
@@ -450,9 +511,21 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
         Math.ceil(rows / this.k.rowsPerGroup)
       );
     };
-    const rms = (name, input) => run("rms", [h, 1, this.bundle.tensor(name).offset / 4, 0], [input, this.weights, b.norm], 1);
-    const mask = literal([1]), choice = literal([0, 0, 0]);
-    ops.push({ clear: b.matrix }, { clear: b.history });
+    const linearAdd = (name, input, out, residualSrc) => {
+      const e = this.bundle.tensor(name);
+      const [rows, cols] = e.shape;
+      run(
+        this.k.q4Add,
+        [rows, cols, e.offset / 4, 0, 0, 0, 1, 0],
+        [this.weights, input, out, residualSrc],
+        Math.ceil(rows / this.k.rowsPerGroup)
+      );
+    };
+    const rms = (name, input) => run(this.k.rms, [h, 1, this.bundle.tensor(name).offset / 4, 0], [input, this.weights, b.norm], 1);
+    const fastChain = !!(this.k.convFast && this.k.dnFast && this.k.q4Add);
+    const mask = fastChain ? void 0 : literal([1]);
+    const choice = fastChain ? void 0 : literal([0, 0, 0]);
+    if (!fastChain) ops.push({ clear: b.matrix }, { clear: b.history });
     linear("fusion.weight", taps, b.fused);
     for (let step = 0; step < k; step++) {
       for (const slice of this.slices)
@@ -470,17 +543,23 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
         linear("z.weight", b.norm, b.z);
         linear("ab.weight", b.norm, b.ab);
       }
-      const conv = [mask, b.raw, this.convWeights, b.history, b.activated, choice];
-      const io = [b.activated, b.ab, this.aux, b.packed, b.y, b.z, b.gated];
-      const dn = [mask, b.packed, b.matrix, b.y, choice];
-      run("conv", [channels, 1, 0, 0], conv, Math.ceil(channels / 64));
-      run("pack", [heads, heads, dim, 1], io, heads);
-      run("recur", [1, heads, dim, dim], dn, Math.ceil(dim / 32), heads);
-      run("gate", [heads, heads, dim, 1], io, heads);
-      run("commitState", [1, heads, dim, dim], dn, Math.ceil(dim / 32), heads);
-      run("commitConv", [channels, 1, 0, 0], conv, Math.ceil(channels / 64));
-      copy(b.mixed, b.feature);
-      linear("out.weight", b.gated, b.feature, 1);
+      if (fastChain) {
+        run(this.k.convFast, [channels, step, k - 1, 0], [b.raw, this.convWeights, b.history, b.activated], Math.ceil(channels / 128));
+        run(this.k.dnFast, [heads, step, k - 1, dim], [b.activated, b.ab, b.matrix, b.gated, this.aux, b.z], heads);
+        linearAdd("out.weight", b.gated, b.feature, b.mixed);
+      } else {
+        const conv = [mask, b.raw, this.convWeights, b.history, b.activated, choice];
+        const io = [b.activated, b.ab, this.aux, b.packed, b.y, b.z, b.gated];
+        const dn = [mask, b.packed, b.matrix, b.y, choice];
+        run("conv", [channels, 1, 0, 0], conv, Math.ceil(channels / 64));
+        run("pack", [heads, heads, dim, 1], io, heads);
+        run("recur", [1, heads, dim, dim], dn, Math.ceil(dim / 32), heads);
+        run("gate", [heads, heads, dim, 1], io, heads);
+        run("commitState", [1, heads, dim, dim], dn, Math.ceil(dim / 32), heads);
+        run("commitConv", [channels, 1, 0, 0], conv, Math.ceil(channels / 64));
+        copy(b.mixed, b.feature);
+        linear("out.weight", b.gated, b.feature, 1);
+      }
       rms("ff_norm.weight", b.feature);
       linear("gate.weight", b.norm, b.mlp, 0, "up.weight");
       linear("down.weight", b.mlp, b.feature, 1);
@@ -494,63 +573,83 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
             Math.ceil(slice.count / this.k.rowsPerGroup)
           );
       }
-      run("select", [subset, step, CHAIN_RECORDS, 0], [b.logits, b.subsetGlobal, b.slots], 1);
+      run(this.k.select, [subset, step, CHAIN_RECORDS, 0], [b.logits, b.subsetGlobal, b.slots], 1);
     }
     return ops;
+  }
+  /**
+   * Encode a greedy `k`-step chain directly onto a caller-owned `GPUCommandEncoder`
+   * (zero `submit`, zero `mapAsync`). Hosts can co-schedule Engine B inside the
+   * same command buffer as target verification or tap capture to eliminate the
+   * ~2.3 ms Chrome IPC + D3D12 fence round-trip.
+   *
+   * When `options.skipRootWrite` is true, the caller must have already copied the
+   * root token id into `returned.slots` at byte offset 0 on the GPU.
+   */
+  encodeChain(encoder, anchor, k, options = {}) {
+    if (this.retired) throw new Error("Draft runtime has been released");
+    if (!Number.isInteger(k) || k < 1 || k > MAX_CHAIN) throw new Error("Invalid draft chain length");
+    if (!options.skipRootWrite) this.checkAnchor(anchor);
+    const st = this.chain ??= this.allocChain();
+    const { queue } = this.device;
+    let taps = st.buf.tapsHost;
+    if (anchor.taps instanceof Float32Array)
+      queue.writeBuffer(taps, 0, anchor.taps.buffer, anchor.taps.byteOffset, anchor.taps.byteLength);
+    else taps = anchor.taps;
+    let id = st.tapIds.get(taps);
+    if (id === void 0) st.tapIds.set(taps, id = st.tapIds.size);
+    const key = k + "|" + id;
+    let plan = st.plans.get(key);
+    if (!plan) st.plans.set(key, plan = this.buildChain(st, taps, k));
+    if (!options.skipRootWrite) queue.writeBuffer(st.buf.slots, 0, Uint32Array.of(anchor.rootToken));
+    for (const op of plan) {
+      if ("clear" in op) encoder.clearBuffer(op.clear);
+      else if ("copy" in op) encoder.copyBufferToBuffer(op.copy[0], 0, op.copy[1], 0, op.copy[1].size);
+      else {
+        const pass = encoder.beginComputePass();
+        for (const d of op.pass) {
+          pass.setPipeline(d.pipe);
+          pass.setBindGroup(0, d.group);
+          pass.dispatchWorkgroups(d.x, d.y, 1);
+        }
+        pass.end();
+      }
+    }
+    return { slots: st.buf.slots, recordsByteOffset: 4 * CHAIN_RECORDS, bytes: 8 * k };
+  }
+  /** Decode an 8k-byte `(token_id: u32, cond_prob: f32)` readback written by `encodeChain`. */
+  decodeChainRecords(words, k) {
+    const probBits = new Float32Array(words.buffer, words.byteOffset, 2 * k);
+    const out = { tokens: [], parents: [], probs: [], conditionals: [] };
+    let path = 1;
+    for (let s = 0; s < k; s++) {
+      const token = words[2 * s];
+      const cond = probBits[2 * s + 1];
+      if (token >= this.bundle.config.vocab || !(cond > 0 && cond <= 1.0000001)) throw new Error("Invalid draft chain record");
+      path *= Math.min(1, cond);
+      out.tokens.push(token);
+      out.parents.push(s - 1);
+      out.conditionals.push(cond);
+      out.probs.push(path);
+    }
+    return out;
   }
   async runChain(anchor, k) {
     if (this.retired) throw new Error("Draft runtime has been released");
     this.active++;
     try {
-      const st = this.chain ??= this.allocChain();
-      const { queue } = this.device;
-      let taps = st.buf.tapsHost;
-      if (anchor.taps instanceof Float32Array)
-        queue.writeBuffer(taps, 0, anchor.taps.buffer, anchor.taps.byteOffset, anchor.taps.byteLength);
-      else taps = anchor.taps;
-      let id = st.tapIds.get(taps);
-      if (id === void 0) st.tapIds.set(taps, id = st.tapIds.size);
-      const key = k + "|" + id;
-      let plan = st.plans.get(key);
-      if (!plan) st.plans.set(key, plan = this.buildChain(st, taps, k));
-      queue.writeBuffer(st.buf.slots, 0, Uint32Array.of(anchor.rootToken));
       const encoder = this.device.createCommandEncoder();
-      for (const op of plan) {
-        if ("clear" in op) encoder.clearBuffer(op.clear);
-        else if ("copy" in op) encoder.copyBufferToBuffer(op.copy[0], 0, op.copy[1], 0, op.copy[1].size);
-        else {
-          const pass = encoder.beginComputePass();
-          for (const d of op.pass) {
-            pass.setPipeline(d.pipe);
-            pass.setBindGroup(0, d.group);
-            pass.dispatchWorkgroups(d.x, d.y, 1);
-          }
-          pass.end();
-        }
-      }
-      const bytes = 8 * k;
-      encoder.copyBufferToBuffer(st.buf.slots, 4 * CHAIN_RECORDS, st.buf.staging, 0, bytes);
-      queue.submit([encoder.finish()]);
+      const { slots, recordsByteOffset, bytes } = this.encodeChain(encoder, anchor, k);
+      const st = this.chain;
+      encoder.copyBufferToBuffer(slots, recordsByteOffset, st.buf.staging, 0, bytes);
+      this.device.queue.submit([encoder.finish()]);
       this.chainStats.proposals++;
       this.chainStats.submits++;
       this.chainStats.readbackBytes += bytes;
       await st.buf.staging.mapAsync(GPUMapMode.READ, 0, bytes);
       const words = new Uint32Array(st.buf.staging.getMappedRange(0, bytes).slice(0, bytes));
       st.buf.staging.unmap();
-      const probBits = new Float32Array(words.buffer);
-      const out = { tokens: [], parents: [], probs: [], conditionals: [] };
-      let path = 1;
-      for (let s = 0; s < k; s++) {
-        const token = words[2 * s];
-        const cond = probBits[2 * s + 1];
-        if (token >= this.bundle.config.vocab || !(cond > 0 && cond <= 1.0000001)) throw new Error("Invalid draft chain record");
-        path *= Math.min(1, cond);
-        out.tokens.push(token);
-        out.parents.push(s - 1);
-        out.conditionals.push(cond);
-        out.probs.push(path);
-      }
-      return out;
+      return this.decodeChainRecords(words, k);
     } finally {
       this.active--;
       if (this.retired && !this.active) this.owner.destroy();
@@ -773,7 +872,7 @@ function toAdapterOptions(report, stepMs, fallbackRejectPenaltyMs) {
   if (!stepMs.length || stepMs.some((v) => !(v > 0))) throw new Error("stepMs must be positive wall times for M = 1..");
   return {
     profile: { stepMs: [...stepMs], rejectPenaltyMs: report.reject?.rejectPenaltyMs ?? fallbackRejectPenaltyMs },
-    cutoff: { headMs: report.headMs }
+    cutoff: { headMs: report.headMs, valueGate: true }
   };
 }
 
@@ -788,11 +887,20 @@ async function runInPage(o) {
     const adapter = await gpu?.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new Error("WebGPU adapter unavailable");
     label = adapter.info?.description || adapter.info?.vendor;
-    const requiredFeatures = adapter.features.has("subgroups") ? ["subgroups"] : [];
+    const requiredFeatures = [];
+    if (adapter.features.has("subgroups")) requiredFeatures.push("subgroups");
+    if (adapter.features.has("shader-f16")) requiredFeatures.push("shader-f16");
     device = await adapter.requestDevice({
       requiredFeatures,
       requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize }
     });
+    const devWithInfo = device;
+    if (adapter.info && (!devWithInfo.adapterInfo || typeof devWithInfo.adapterInfo.subgroupMaxSize !== "number")) {
+      try {
+        Object.defineProperty(device, "adapterInfo", { value: adapter.info, configurable: true });
+      } catch {
+      }
+    }
   }
   const bundle = await loadGdnBundle(new URL("assets/exp007/manifest.json", base));
   if (!bundle) throw new Error("No EXP-007 draft head under assets/exp007/");

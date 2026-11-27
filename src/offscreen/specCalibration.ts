@@ -1,4 +1,4 @@
-export const CYCLE17_DROPIN_CALIBRATION_REV = 'm11-b7fb760';
+export const CYCLE17_DROPIN_CALIBRATION_REV = 'm12-neon-p0p1';
 
 export interface PersistedSpecCalibration {
   adapterName: string;

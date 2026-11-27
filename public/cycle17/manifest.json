@@ -4,7 +4,7 @@
   "source": {
     "repo": "yours-speculative-engine",
     "commit": "b7fb760cbea6e4a300af8a0feb17e1e8db9cef44",
-    "dirty": false
+    "dirty": true
   },
   "targets": {
     "tinygpt-browser": "f1b4a2c",
@@ -38,8 +38,8 @@
       "path": "bench/bench-engine-b-head.mjs",
       "source": "(bundled src/bench/engineBHeadBenchPage.ts)",
       "role": "bench",
-      "bytes": 37044,
-      "sha256": "5e2a67cdaca460e3243a65cb8e2c249d45cd09234204665c340246d4c5daa0b9"
+      "bytes": 40755,
+      "sha256": "e369a19f2dc02a1682b70392f1324e2325ac77457d7eaaa6b99b954b96f73d58"
     },
     {
       "path": "benchmarks/results/exp007-eval/exp007b/qualification.json",
@@ -248,15 +248,15 @@
       "path": "ts/bench/engineBHeadBench.ts",
       "source": "src/bench/engineBHeadBench.ts",
       "role": "ts-dependency",
-      "bytes": 5422,
-      "sha256": "60a2544ba221bdb5aa8bbcafb63dafc55fade1f689dfbcac8775117013ab3e69"
+      "bytes": 5439,
+      "sha256": "da2a1c0052ca5f89528c0335c488332380dcc5896cdd723c89365a4e7a0a137d"
     },
     {
       "path": "ts/bench/engineBHeadBenchPage.ts",
       "source": "src/bench/engineBHeadBenchPage.ts",
       "role": "ts-entry",
-      "bytes": 3820,
-      "sha256": "fed1fd084d687a5c5423666fbbcd577a7478c96d704e9ef50bf69a94a9683e76"
+      "bytes": 4492,
+      "sha256": "4998db3c4a18e30328763b29f0043d84ad5658d2d25080935593b88e547a570c"
     },
     {
       "path": "ts/draft/gdnEagle3Loader.ts",
@@ -276,15 +276,15 @@
       "path": "ts/draft/gdnEagle3Runtime.ts",
       "source": "src/draft/gdnEagle3Runtime.ts",
       "role": "ts-entry",
-      "bytes": 30648,
-      "sha256": "3635d888361ea1dd1620e0f0591aedf9adc8468f2f097ca141246f0537363a3d"
+      "bytes": 34311,
+      "sha256": "1fe3c18d00ce503382e9f2b679553ddb5a42a6f9055aa757f9a702564f198283"
     },
     {
       "path": "ts/draft/hybridRouter.ts",
       "source": "src/draft/hybridRouter.ts",
       "role": "ts-entry",
-      "bytes": 4320,
-      "sha256": "ef66f0704b65cc2db4888214fe30ba584016a33de996fc20d070c69b5d423444"
+      "bytes": 6571,
+      "sha256": "5b5cef170de1736f1e3a53ed5dee02ef2a24a4975fb3756d94172cdb1df8a997"
     },
     {
       "path": "ts/engines/toolCorpus.ts",
@@ -367,8 +367,8 @@
       "path": "ts/rc1/wasmEngineAdapter.ts",
       "source": "src/rc1/wasmEngineAdapter.ts",
       "role": "ts-entry",
-      "bytes": 11579,
-      "sha256": "d87ac8dc9c566b9c474a1120bc74b822182ee137609a93d6778d10a0a6b52761"
+      "bytes": 14128,
+      "sha256": "28907f54ad08115e7976154cec1c5f1079bbf59fbc8e3ca322488aac624e2b29"
     },
     {
       "path": "ts/tsconfig.json",
@@ -416,15 +416,15 @@
       "path": "ts/wasm/specCore.ts",
       "source": "src/wasm/specCore.ts",
       "role": "ts-entry",
-      "bytes": 15050,
-      "sha256": "96ce10fa96878bfbffc0e12769d465cd704d066b65268289407c3763fa2ea137"
+      "bytes": 15995,
+      "sha256": "a3a202c10d35dd2f93ad052b6194bb70b26a7cc22194c140d2df26c6e2ab589a"
     },
     {
       "path": "wasm/yours_spec_core.wasm",
       "source": "crates/yours-spec-core/target/wasm32-unknown-unknown/release/yours_spec_core.wasm",
       "role": "wasm",
-      "bytes": 104876,
-      "sha256": "a1cdba97dc4986f4b769ca54df0db4fcaf54abacaabe81e4d0e1d1061236b572"
+      "bytes": 108873,
+      "sha256": "7dec87106aca25eaf5ed60d3b1b059b7297d130b3da7ee49f0a8ddb7ed372161"
     },
     {
       "path": "wgsl/ACCEPT_TREE.wgsl",
@@ -469,6 +469,20 @@
       "sha256": "2bb406c1ee4f7fe34fb55823e0cff1f37fa8ba7216c1a633b3c30f7ff4399fc2"
     },
     {
+      "path": "wgsl/gdn_eagle3_dn_fast_sg.wgsl",
+      "source": "wgsl\\gdn_eagle3_dn_fast_sg.wgsl",
+      "role": "kernel",
+      "bytes": 4405,
+      "sha256": "457a25542ef0031a32a95aad1279e80778824aa32472f29962610d7e8ecb5dad"
+    },
+    {
+      "path": "wgsl/gdn_eagle3_dn_fast.wgsl",
+      "source": "wgsl\\gdn_eagle3_dn_fast.wgsl",
+      "role": "kernel",
+      "bytes": 5245,
+      "sha256": "394a57bff393e7637dc76649dc017b9d8a67a2ee086310e06c9a2867a9ae00ac"
+    },
+    {
       "path": "wgsl/gdn_eagle3_embed_indexed.wgsl",
       "source": "wgsl\\gdn_eagle3_embed_indexed.wgsl",
       "role": "kernel",
@@ -476,11 +490,32 @@
       "sha256": "f62a88f484c9ecb50f70401b90b2812837e53d7b1150c7aa95f8b0944c91629c"
     },
     {
+      "path": "wgsl/gdn_eagle3_rms_fast_sg.wgsl",
+      "source": "wgsl\\gdn_eagle3_rms_fast_sg.wgsl",
+      "role": "kernel",
+      "bytes": 1328,
+      "sha256": "95622ed272f554c1b42ecaf0fbdc3c80bff9a3a4f2eaf7e2fb7a2ec9fd419005"
+    },
+    {
+      "path": "wgsl/gdn_eagle3_rms_fast.wgsl",
+      "source": "wgsl\\gdn_eagle3_rms_fast.wgsl",
+      "role": "kernel",
+      "bytes": 1206,
+      "sha256": "c0a68880017311c3159a595f0189537da32329e0dc94911cb4cea923cd31d187"
+    },
+    {
       "path": "wgsl/gdn_eagle3_rms.wgsl",
       "source": "wgsl\\gdn_eagle3_rms.wgsl",
       "role": "kernel",
       "bytes": 2396,
       "sha256": "270d65a4ef1bb70991dfde37a75656e00f65e63dfee0fb670afa12f152488bd4"
+    },
+    {
+      "path": "wgsl/gdn_eagle3_select_fast_sg.wgsl",
+      "source": "wgsl\\gdn_eagle3_select_fast_sg.wgsl",
+      "role": "kernel",
+      "bytes": 2078,
+      "sha256": "f9da2744fde7de9c89f96330f9cd848871f820cbc46501efaeccb6b07c7ee994"
     },
     {
       "path": "wgsl/gdn_eagle3_select.wgsl",
@@ -493,15 +528,15 @@
       "path": "wgsl/gdn_eagle3_tied_fast_sg.wgsl",
       "source": "wgsl\\gdn_eagle3_tied_fast_sg.wgsl",
       "role": "kernel",
-      "bytes": 3521,
-      "sha256": "62fad8ee0f137065aa117c5837dfe5e00d3b500b66dc6de36dcf52940f3de0e1"
+      "bytes": 4281,
+      "sha256": "d2f1d2a4400c0f868cfb7a2d5dd0a58ee58c4e5484be0decd9db65368472e168"
     },
     {
       "path": "wgsl/gdn_eagle3_tied_fast.wgsl",
       "source": "wgsl\\gdn_eagle3_tied_fast.wgsl",
       "role": "kernel",
-      "bytes": 2974,
-      "sha256": "d3d5cb7a88ca4989721f3932461219046ff67782a3f3e3b13a5dea7d315c390b"
+      "bytes": 3855,
+      "sha256": "a72fa939e0596c78e6c2a8d2ff12a2a6506de30515ece8e7c7294c9e2aaf67a6"
     },
     {
       "path": "wgsl/gdn_eagle3_tied.wgsl",
@@ -542,15 +577,15 @@
       "path": "wgsl/q4_gemv_fast_sg.wgsl",
       "source": "wgsl\\q4_gemv_fast_sg.wgsl",
       "role": "kernel",
-      "bytes": 5890,
-      "sha256": "bae77289f3418419b1e19d82f90a11e5e72bbd1f165ec83c48fcd06d47b7ae37"
+      "bytes": 10035,
+      "sha256": "1ffa0b2a564f1e733f0fe9dc9bb6a5412edc3fd3326f94a4b2f6cfe58f882d79"
     },
     {
       "path": "wgsl/q4_gemv_fast.wgsl",
       "source": "wgsl\\q4_gemv_fast.wgsl",
       "role": "kernel",
-      "bytes": 5073,
-      "sha256": "5305a0b5439ade36a5577e1aefcb04316cfb4cc8ea7b6449fb64859099e4c180"
+      "bytes": 9220,
+      "sha256": "ac66c7896f67a56c36ea23a0918f15082f81fbfbc173425ae793079342e5d6a6"
     },
     {
       "path": "wgsl/q4_gemv_smallm_v2_f16.wgsl",
@@ -1127,11 +1162,13 @@
     },
     {
       "file": "q4_gemv_fast.wgsl",
-      "role": "Engine B fast tier: word-parallel M=1 Q4 GEMV + fused gate/up SwiGLU, 64 lanes per row, workgroup reduction, native FMA (default on GPUs without usable subgroups; not bit-exact to the reference)",
+      "role": "Engine B fast tier: word-parallel staged-x M=1 Q4 GEMV + gemv_add + fused SwiGLU + gemv3, 8 rows/WG, native FMA (not bit-exact to reference)",
       "replaces": null,
       "dispatch": {
-        "gemv": "(ceil(rows / 4), 1, 1)",
-        "swiglu": "(ceil(rows / 4), 1, 1)"
+        "gemv": "(ceil(rows / 8), 1, 1)",
+        "gemv_add": "(ceil(rows / 8), 1, 1)",
+        "swiglu": "(ceil(rows / 8), 1, 1)",
+        "gemv3": "(ceil(totalRows / 8), 1, 1)"
       },
       "verifiedBy": [
         "tests/fastKernels.test.ts"
@@ -1139,6 +1176,10 @@
       "entryPoints": [
         {
           "name": "gemv",
+          "workgroupSize": "256"
+        },
+        {
+          "name": "gemv_add",
           "workgroupSize": "256"
         },
         {
@@ -1200,8 +1241,10 @@
       "role": "Engine B Tier 1: q4_gemv_fast with subgroupAdd reductions (subgroup size 4..64)",
       "replaces": null,
       "dispatch": {
-        "gemv": "(ceil(rows / 4), 1, 1)",
-        "swiglu": "(ceil(rows / 4), 1, 1)"
+        "gemv": "(ceil(rows / 8), 1, 1)",
+        "gemv_add": "(ceil(rows / 8), 1, 1)",
+        "swiglu": "(ceil(rows / 8), 1, 1)",
+        "gemv3": "(ceil(totalRows / 8), 1, 1)"
       },
       "requires": [
         "subgroups"
@@ -1212,6 +1255,10 @@
       "entryPoints": [
         {
           "name": "gemv",
+          "workgroupSize": "256"
+        },
+        {
+          "name": "gemv_add",
           "workgroupSize": "256"
         },
         {
@@ -1270,11 +1317,11 @@
     },
     {
       "file": "gdn_eagle3_tied_fast.wgsl",
-      "role": "Engine B fast tier: word-parallel tied-table subset logits (16,384 rows per step), coalesced Q4 loads, native FMA",
+      "role": "Engine B fast tier: word-parallel staged-x tied-table subset logits (8 rows/WG), coalesced Q4 loads, native FMA",
       "replaces": null,
       "dispatch": {
-        "subset_logits": "(ceil(count / 4), 1, 1)",
-        "subset_logits_slice": "(ceil(count / 4), 1, 1)"
+        "subset_logits": "(ceil(count / 8), 1, 1)",
+        "subset_logits_slice": "(ceil(count / 8), 1, 1)"
       },
       "verifiedBy": [
         "tests/fastKernels.test.ts"
@@ -1332,8 +1379,8 @@
       "role": "Engine B Tier 1: gdn_eagle3_tied_fast with subgroupAdd reductions (subgroup size 4..64)",
       "replaces": null,
       "dispatch": {
-        "subset_logits": "(ceil(count / 4), 1, 1)",
-        "subset_logits_slice": "(ceil(count / 4), 1, 1)"
+        "subset_logits": "(ceil(count / 8), 1, 1)",
+        "subset_logits_slice": "(ceil(count / 8), 1, 1)"
       },
       "requires": [
         "subgroups"
@@ -1386,6 +1433,302 @@
           "space": "storage,read_write",
           "name": "output",
           "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "gdn_eagle3_rms_fast.wgsl",
+      "role": "Engine B fast tier: native hardware inverseSqrt 256-lane RMSNorm",
+      "replaces": null,
+      "dispatch": {
+        "main": "(rows, 1, 1)"
+      },
+      "verifiedBy": [
+        "tests/fastKernels.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "main",
+          "workgroupSize": "256"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "x",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "weights",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "gdn_eagle3_rms_fast_sg.wgsl",
+      "role": "Engine B Tier 1: subgroupAdd 256-lane RMSNorm",
+      "replaces": null,
+      "dispatch": {
+        "main": "(rows, 1, 1)"
+      },
+      "requires": [
+        "subgroups"
+      ],
+      "verifiedBy": [
+        "tests/fastKernels.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "main",
+          "workgroupSize": "256"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "x",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "weights",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "gdn_eagle3_dn_fast.wgsl",
+      "role": "Engine B fast tier: single-pass in-place conv4+SiLU and fused pack+recur+commit+gate DeltaNet (zero clearBuffer)",
+      "replaces": null,
+      "dispatch": {
+        "conv_step": "(ceil(channels / 128), 1, 1)",
+        "dn_step": "(heads, 1, 1)"
+      },
+      "verifiedBy": [
+        "tests/fastKernels.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "conv_step",
+          "workgroupSize": "128"
+        },
+        {
+          "name": "dn_step",
+          "workgroupSize": "128"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "src_a",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "src_b",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "state",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "out",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 5,
+          "space": "storage,read",
+          "name": "aux",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 6,
+          "space": "storage,read",
+          "name": "z_in",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "gdn_eagle3_dn_fast_sg.wgsl",
+      "role": "Engine B Tier 1: subgroupAdd fused conv4 + DeltaNet chain step",
+      "replaces": null,
+      "dispatch": {
+        "conv_step": "(ceil(channels / 128), 1, 1)",
+        "dn_step": "(heads, 1, 1)"
+      },
+      "requires": [
+        "subgroups"
+      ],
+      "verifiedBy": [
+        "tests/fastKernels.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "conv_step",
+          "workgroupSize": "128"
+        },
+        {
+          "name": "dn_step",
+          "workgroupSize": "128"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "src_a",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "src_b",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "state",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "out",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 5,
+          "space": "storage,read",
+          "name": "aux",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 6,
+          "space": "storage,read",
+          "name": "z_in",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "gdn_eagle3_select_fast_sg.wgsl",
+      "role": "Engine B Tier 1: subgroupMax/subgroupAdd on-GPU greedy argmax + softmax top-1 probability",
+      "replaces": null,
+      "dispatch": {
+        "select_top1": "(1, 1, 1)"
+      },
+      "requires": [
+        "subgroups"
+      ],
+      "verifiedBy": [
+        "tests/fastKernels.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "select_top1",
+          "workgroupSize": "256"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "logits",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "ids",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "slots",
+          "type": "array<u32>"
         }
       ]
     },
@@ -1803,7 +2146,9 @@
       "yse_cutoff_new",
       "yse_cutoff_invoke",
       "yse_cutoff_decide",
-      "yse_cutoff_commit"
+      "yse_cutoff_commit",
+      "yse_cutoff_max_k",
+      "yse_cutoff_record_fused"
     ],
     "imports": 0
   },

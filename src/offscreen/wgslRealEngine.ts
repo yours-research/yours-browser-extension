@@ -210,6 +210,40 @@ interface VerifyFaPatchTarget {
   gqaPartStep: DispatchStep;
 }
 
+const WGSL_DRAFT_TAP_CAPTURE = /* wgsl */ `
+struct TapParams {
+  count: u32,
+  dst_offset: u32,
+  hidden: u32,
+  max_spec: u32,
+  max_accepted: u32,
+  pad0: u32,
+  pad1: u32,
+  pad2: u32,
+};
+@group(0) @binding(0) var<uniform> p: TapParams;
+@group(0) @binding(1) var<storage, read> src: array<f32>;
+@group(0) @binding(2) var<storage, read> accept_out: array<u32>;
+@group(0) @binding(3) var<storage, read_write> dst: array<f32>;
+
+@compute @workgroup_size(256)
+fn copy_tap(@builtin(global_invocation_id) id: vec3<u32>) {
+  if (id.x < p.count) {
+    dst[p.dst_offset + id.x] = src[id.x];
+  }
+}
+
+@compute @workgroup_size(256)
+fn select_accepted_taps(@builtin(global_invocation_id) id: vec3<u32>) {
+  let total = 3u * p.hidden;
+  if (id.x >= total) { return; }
+  let slot = id.x / p.hidden;
+  let col = id.x - slot * p.hidden;
+  let accepted = min(p.max_accepted, accept_out[0]);
+  dst[id.x] = src[(slot * p.max_spec + accepted) * p.hidden + col];
+}
+`;
+
 interface VerifyGraphPlan {
   M: number;
   uniformBuf: GpuBufferLike;
@@ -222,6 +256,8 @@ interface VerifyGraphPlan {
   bgArgBatch1: unknown;
   bgArgBatch2: unknown;
   bgSpecAccept: unknown;
+  bgVerifyTapCopy: [unknown, unknown, unknown];
+  bgVerifyTapSelect: unknown;
   ownedBuffers: GpuBufferLike[];
 }
 
@@ -423,6 +459,9 @@ export class WgslQwen35Engine {
   private dnProjUnstashPipe!: unknown;
   private gqaTreePartialPipe!: unknown;
   private gqaTreeCombinePipe!: unknown;
+  private tapCopyPipe!: unknown;
+  private tapSelectAcceptedPipe!: unknown;
+  private bgDecodeTap: unknown[] = [];
   private usingDp4a = false;
 
   // Phase E1 + E2 Deferred-Commit Tree Verification state
@@ -1065,6 +1104,8 @@ export class WgslQwen35Engine {
             this.dnProjUnstashPipe,
             this.gqaTreePartialPipe,
             this.gqaTreeCombinePipe,
+            this.tapCopyPipe,
+            this.tapSelectAcceptedPipe,
           ] = await Promise.all([
             createValidatedPipeline(device, `${tier}-embed-lookup`, getWgslShaderSource(wasm, ids.embed), dyn4Layout),
             createValidatedPipeline(device, `${tier}-rmsnorm-batch`, getWgslShaderSource(wasm, ids.rmsNorm), dyn4Layout),
@@ -1093,6 +1134,8 @@ export class WgslQwen35Engine {
             createValidatedPipeline(device, `${tier}-dn-proj-unstash`, dnProjStashSrc, dynRwLayout, 'unstash'),
             createValidatedPipeline(device, `${tier}-gqa-tree-v2-partial`, gqaTreeV2Src, gqaTreeLayout, 'partial'),
             createValidatedPipeline(device, `${tier}-gqa-tree-v2-combine`, gqaTreeV2Src, gqaTreeLayout, 'combine'),
+            createValidatedPipeline(device, `${tier}-draft-tap-copy`, WGSL_DRAFT_TAP_CAPTURE, staticArg2Layout, 'copy_tap'),
+            createValidatedPipeline(device, `${tier}-draft-tap-select`, WGSL_DRAFT_TAP_CAPTURE, staticArg2Layout, 'select_accepted_taps'),
           ]);
 
           this.gqaSplitPipe = this.gqaSplitPlainPipe;
@@ -1298,7 +1341,7 @@ export class WgslQwen35Engine {
       );
       this.verifyStaging64B = this.track(
         device.createBuffer({
-          size: 64,
+          size: 256,
           usage: GPU_USAGE.MAP_READ | GPU_USAGE.COPY_DST,
         }),
       );
@@ -1341,6 +1384,19 @@ export class WgslQwen35Engine {
           { binding: 2, resource: { buffer: partIdxBuf } },
           { binding: 3, resource: { buffer: this.tokOutBuf } },
         ],
+      });
+      this.bgDecodeTap = [0, 1, 2].map((slot) => {
+        const uTap = this.track(device.createBuffer({ size: 32, usage: GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST }));
+        device.queue.writeBuffer(uTap, 0, new Uint32Array([H, slot * H, H, MAX_SPEC_TOKENS, 0, 0, 0, 0]));
+        return device.createBindGroup({
+          layout: staticRead2Bgl,
+          entries: [
+            { binding: 0, resource: { buffer: uTap } },
+            { binding: 1, resource: { buffer: this.hiddenBuf } },
+            { binding: 2, resource: { buffer: this.verifyAcceptOutBuf } },
+            { binding: 3, resource: { buffer: this.draftTapBuf } },
+          ],
+        });
       });
 
       const uniformBytes = UNIFORM_MAX_SLOTS * 256;
@@ -2974,17 +3030,17 @@ export class WgslQwen35Engine {
       const isLastSlice = s === bounds.length - 1;
       const tSliceEnc0 = performance.now();
       const enc = device.createCommandEncoder();
-      let pass = enc.beginComputePass();
+      const pass = enc.beginComputePass();
       for (let stepIdx = slice.start; stepIdx < slice.end; stepIdx++) {
         const st = this.decodeSteps[stepIdx]!;
         pass.setPipeline(st.pipeline);
         pass.setBindGroup(0, st.bindGroup, [st.uniformByteOffset]);
         pass.dispatchWorkgroups(st.wx, st.wy, st.wz);
         const tapSlot = tapStepEnds.get(stepIdx + 1);
-        if (tapSlot !== undefined) {
-          pass.end();
-          enc.copyBufferToBuffer(this.hiddenBuf, 0, this.draftTapBuf, tapSlot * H * 4, H * 4);
-          pass = enc.beginComputePass();
+        if (tapSlot !== undefined && this.bgDecodeTap[tapSlot]) {
+          pass.setPipeline(this.tapCopyPipe);
+          pass.setBindGroup(0, this.bgDecodeTap[tapSlot]);
+          pass.dispatchWorkgroups(Math.ceil(H / 256), 1, 1);
         }
       }
       if (isLastSlice && greedy) {
@@ -3394,6 +3450,41 @@ export class WgslQwen35Engine {
 
     this.assertVerifyNormSlicesDisjoint(M, H);
 
+    const bgVerifyTapCopy = [0, 1, 2].map((slot) => {
+      const uTap = device.createBuffer({ size: 32, usage: GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST });
+      ownedBuffers.push(uTap);
+      device.queue.writeBuffer(
+        uTap,
+        0,
+        new Uint32Array([M * H, slot * MAX_SPEC_TOKENS * H, H, MAX_SPEC_TOKENS, M - 1, 0, 0, 0]),
+      );
+      return device.createBindGroup({
+        layout: this.staticRead2Bgl,
+        entries: [
+          { binding: 0, resource: { buffer: uTap } },
+          { binding: 1, resource: { buffer: this.hiddenBuf } },
+          { binding: 2, resource: { buffer: this.verifyAcceptOutBuf } },
+          { binding: 3, resource: { buffer: this.verifyTapScratchBuf } },
+        ],
+      });
+    }) as [unknown, unknown, unknown];
+    const uTapSel = device.createBuffer({ size: 32, usage: GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST });
+    ownedBuffers.push(uTapSel);
+    device.queue.writeBuffer(
+      uTapSel,
+      0,
+      new Uint32Array([3 * H, 0, H, MAX_SPEC_TOKENS, M - 1, 0, 0, 0]),
+    );
+    const bgVerifyTapSelect = device.createBindGroup({
+      layout: this.staticRead2Bgl,
+      entries: [
+        { binding: 0, resource: { buffer: uTapSel } },
+        { binding: 1, resource: { buffer: this.verifyTapScratchBuf } },
+        { binding: 2, resource: { buffer: this.verifyAcceptOutBuf } },
+        { binding: 3, resource: { buffer: this.draftTapBuf } },
+      ],
+    });
+
     const plan: VerifyGraphPlan = {
       M,
       uniformBuf,
@@ -3406,6 +3497,8 @@ export class WgslQwen35Engine {
       bgArgBatch1,
       bgArgBatch2,
       bgSpecAccept,
+      bgVerifyTapCopy,
+      bgVerifyTapSelect,
       ownedBuffers,
     };
     this.verifyPlans.set(M, plan);
@@ -3440,14 +3533,91 @@ export class WgslQwen35Engine {
     rollbackEncodeMs: number;
     rollbackWaitMs: number;
   }> {
+    return this.executeSpeculativeVerify(
+      currentTokenId,
+      { kind: 'tokens', draftTokens },
+      sampling,
+      pacingMode,
+    );
+  }
+
+  /**
+   * Single-submit fused Draft + Verify: encodes Engine B (`encodeDraftChain`) ahead of
+   * target verification in the SAME command encoder, copies GPU-drafted token slots directly
+   * into `tokenIdsBuf`, and reads back both the 64-byte verify accept record and the `8*draftLen`
+   * draft `(token_id, cond_prob)` records in ONE `submit` + ONE `mapAsync`.
+   */
+  async decodeFusedDraftVerifyStep(
+    currentTokenId: number,
+    draftLen: number,
+    encodeDraftChain: (encoder: GPUCommandEncoder) => {
+      slots: GPUBuffer;
+      recordsByteOffset: number;
+      bytes: number;
+    },
+    sampling: SamplingOptions,
+    pacingMode: GpuPacingMode = 'balanced',
+  ): Promise<{
+    tokens: number[];
+    acceptedCount: number;
+    draftedCount: number;
+    draftRecordWords: Uint32Array;
+    gpuMs: number;
+    breatherMs: number;
+    planBuilt: boolean;
+    planMs: number;
+    encodeMs: number;
+    mapMs: number;
+    rollbackEncodeMs: number;
+    rollbackWaitMs: number;
+  }> {
+    const res = await this.executeSpeculativeVerify(
+      currentTokenId,
+      { kind: 'fused', draftLen, encodeDraftChain },
+      sampling,
+      pacingMode,
+    );
+    return { ...res, draftRecordWords: res.draftRecordWords! };
+  }
+
+  private async executeSpeculativeVerify(
+    currentTokenId: number,
+    draftSource:
+      | { kind: 'tokens'; draftTokens: number[] }
+      | {
+          kind: 'fused';
+          draftLen: number;
+          encodeDraftChain: (encoder: GPUCommandEncoder) => {
+            slots: GPUBuffer;
+            recordsByteOffset: number;
+            bytes: number;
+          };
+        },
+    sampling: SamplingOptions,
+    pacingMode: GpuPacingMode = 'balanced',
+  ): Promise<{
+    tokens: number[];
+    acceptedCount: number;
+    draftedCount: number;
+    draftRecordWords?: Uint32Array;
+    gpuMs: number;
+    breatherMs: number;
+    planBuilt: boolean;
+    planMs: number;
+    encodeMs: number;
+    mapMs: number;
+    rollbackEncodeMs: number;
+    rollbackWaitMs: number;
+  }> {
     if (sampling.temperature > 0 && sampling.topK !== 1) {
       throw new Error('decodeSpeculativeStep requires greedy sampling.');
     }
-    if (draftTokens.length === 0 || draftTokens.length > MAX_SPEC_DRAFT) {
-      throw new Error(`Invalid draftTokens length (${draftTokens.length}); expected 1..${MAX_SPEC_DRAFT}.`);
+    const draftLen =
+      draftSource.kind === 'tokens' ? draftSource.draftTokens.length : draftSource.draftLen;
+    if (draftLen === 0 || draftLen > MAX_SPEC_DRAFT) {
+      throw new Error(`Invalid draftTokens length (${draftLen}); expected 1..${MAX_SPEC_DRAFT}.`);
     }
-    const tokens = [currentTokenId, ...draftTokens];
-    const M = tokens.length;
+    const M = 1 + draftLen;
     await this.ensureKvCapacity(this.seqPos + M);
     const device = this.device!;
     if (this.seqPos + M > this.maxSeqCapacity) {
@@ -3480,16 +3650,37 @@ export class WgslQwen35Engine {
       fp.gqaPartStep.wz = maxParts;
     }
 
-    device.queue.writeBuffer(this.tokenIdsBuf, 0, new Uint32Array(tokens));
+    if (draftSource.kind === 'tokens') {
+      device.queue.writeBuffer(
+        this.tokenIdsBuf,
+        0,
+        new Uint32Array([currentTokenId, ...draftSource.draftTokens]),
+      );
+    }
     device.queue.writeBuffer(plan.uniformBuf, plan.dynByteStart, plan.dynCpu);
 
     const enc = device.createCommandEncoder();
+    let draftInfo: { slots: GPUBuffer; recordsByteOffset: number; bytes: number } | null = null;
+    if (draftSource.kind === 'fused') {
+      draftInfo = draftSource.encodeDraftChain(enc as unknown as GPUCommandEncoder);
+      if (draftInfo.bytes !== 8 * draftLen || 64 + draftInfo.bytes > 256) {
+        throw new Error(`Invalid fused draft readback size (${draftInfo.bytes}B for k=${draftLen}).`);
+      }
+      enc.copyBufferToBuffer(
+        draftInfo.slots as unknown as GpuBufferLike,
+        0,
+        this.tokenIdsBuf,
+        0,
+        M * 4,
+      );
+    }
     // Snapshot DeltaNet state before running speculative M-token pass
     enc.copyBufferToBuffer(this.dnStateBuf, 0, this.dnStateBackupBuf, 0, dnCount * this.dnSingleBytes);
     enc.copyBufferToBuffer(this.dnConvBuf, 0, this.dnConvBackupBuf, 0, dnCount * this.dnConvSingleBytes);
 
-    let pass = enc.beginComputePass();
+    const pass = enc.beginComputePass();
     const captureTaps = this.captureDraftTaps && L > 31 && Boolean(this.verifyTapScratchBuf);
+    const tapCopyWgCount = Math.ceil((M * H) / 256);
     for (let i = 0; i < plan.steps.length; i++) {
       const st = plan.steps[i]!;
       pass.setPipeline(st.pipeline);
@@ -3504,16 +3695,10 @@ export class WgslQwen35Engine {
               : i + 1 === plan.tapAfterStepIndices[2]
                 ? 2
                 : -1;
-        if (tapSlot >= 0) {
-          pass.end();
-          enc.copyBufferToBuffer(
-            this.hiddenBuf,
-            0,
-            this.verifyTapScratchBuf,
-            tapSlot * MAX_SPEC_TOKENS * H * 4,
-            M * H * 4,
-          );
-          pass = enc.beginComputePass();
+        if (tapSlot !== -1) {
+          pass.setPipeline(this.tapCopyPipe);
+          pass.setBindGroup(0, plan.bgVerifyTapCopy[tapSlot]);
+          pass.dispatchWorkgroups(tapCopyWgCount, 1, 1);
         }
       }
     }
@@ -3526,40 +3711,48 @@ export class WgslQwen35Engine {
     pass.setPipeline(this.specAcceptPipe);
     pass.setBindGroup(0, plan.bgSpecAccept);
     pass.dispatchWorkgroups(1, 1, 1);
+    if (captureTaps && this.draftTapBuf) {
+      pass.setPipeline(this.tapSelectAcceptedPipe);
+      pass.setBindGroup(0, plan.bgVerifyTapSelect);
+      pass.dispatchWorkgroups(Math.ceil((3 * H) / 256), 1, 1);
+    }
     pass.end();
     enc.copyBufferToBuffer(this.verifyAcceptOutBuf, 0, this.verifyStaging64B, 0, 64);
+    if (draftInfo) {
+      enc.copyBufferToBuffer(
+        draftInfo.slots as unknown as GpuBufferLike,
+        draftInfo.recordsByteOffset,
+        this.verifyStaging64B,
+        64,
+        draftInfo.bytes,
+      );
+    }
     const verifyCmd = enc.finish();
     const encodeMs = performance.now() - tEnc0;
 
+    const readBytes = draftInfo ? 64 + draftInfo.bytes : 64;
     const t0 = performance.now();
     this.rollback.submitWith([verifyCmd]); // P9b: a pending rollback runs first
-    await this.verifyStaging64B.mapAsync(GPU_MAP_READ);
+    await this.verifyStaging64B.mapAsync(GPU_MAP_READ, 0, readBytes);
     const mapMs = performance.now() - t0;
     const gpuMs = mapMs;
-    const acceptView = new Uint32Array(this.verifyStaging64B.getMappedRange());
-    const acceptedCount = Math.min(draftTokens.length, acceptView[0]!);
+    const mapped = this.verifyStaging64B.getMappedRange(0, readBytes);
+    const acceptView = new Uint32Array(mapped, 0, 16);
+    const acceptedCount = Math.min(draftLen, acceptView[0]!);
     const predicted = Array.from(acceptView.subarray(2, 2 + M));
+    const draftRecordWords = draftInfo
+      ? new Uint32Array(mapped, 64, 2 * draftLen).slice()
+      : undefined;
     this.verifyStaging64B.unmap();
 
-    // Update packed layers [3, 15, 31] anchor taps from the last committed accepted row BEFORE any rollback
-    if (this.captureDraftTaps && L > 31 && this.draftTapBuf && this.verifyTapScratchBuf) {
-      const tapEnc = device.createCommandEncoder();
-      for (let tapSlot = 0; tapSlot < 3; tapSlot++) {
-        tapEnc.copyBufferToBuffer(
-          this.verifyTapScratchBuf,
-          (tapSlot * MAX_SPEC_TOKENS + acceptedCount) * H * 4,
-          this.draftTapBuf,
-          tapSlot * H * 4,
-          H * 4,
-        );
-      }
-      device.queue.submit([tapEnc.finish()]);
+    // Anchor taps for layers [3, 15, 31] were already extracted on-GPU by tapSelectAcceptedPipe in the verify pass.
+    if (captureTaps && this.draftTapBuf) {
       this.draftTapValid = true;
     }
 
     let rollbackEncodeMs = 0;
     const rollbackWaitMs = 0;
-    if (acceptedCount < draftTokens.length) {
+    if (acceptedCount < draftLen) {
       const tRbEnc0 = performance.now();
       const keepTokens = acceptedCount + 1;
       const rbU32 = new Uint32Array(this.rbUniformScratch);
@@ -3630,7 +3823,8 @@ export class WgslQwen35Engine {
     return {
       tokens: predicted.slice(0, acceptedCount + 1),
       acceptedCount,
-      draftedCount: draftTokens.length,
+      draftedCount: draftLen,
+      draftRecordWords,
       gpuMs,
       breatherMs,
       planBuilt,

@@ -215,6 +215,11 @@ export class InferenceEngine {
   private offscreenSpecAdapterPromise: Promise<OffscreenSpecAdapter | null> | null = null;
   private offscreenSpecTokenizerRef: PreTrainedTokenizer | null = null;
   private offscreenSpecDeviceRef: GPUDevice | null = null;
+  private cachedSpecWasmBytes: ArrayBuffer | null = null;
+  private residentGdnHead: {
+    device: GPUDevice;
+    promise: Promise<GdnDraftRuntime | null>;
+  } | null = null;
   private adapterName = 'webgpu-default';
   private engineBActiveForAdapter = false;
   private measuredChainStepMs: number[] | null = null;
@@ -668,6 +673,10 @@ export class InferenceEngine {
       await this.prewarmBaseSystemPrompt();
       if (!isGemma4) {
         await this.ensureZeroConfigSpecCalibration();
+        if (this.config.enableSpeculative && this.config.speculativeEngineMode !== 'engine-a') {
+          const adapter = await this.getOrCreateOffscreenSpecAdapter();
+          await adapter?.prewarm();
+        }
       }
 
       const coldLoadMs = performance.now() - startMs;
@@ -734,14 +743,15 @@ export class InferenceEngine {
     this.prefixCache = null;
     this.wgslSnapshot = null;
     this.wgslSnapshotMeta = null;
-    if (this.offscreenSpecAdapter) {
-      this.offscreenSpecAdapter.dispose();
-      this.offscreenSpecAdapter = null;
+    this.disposeSpecAdapterSession();
+    if (this.residentGdnHead) {
+      const pending = this.residentGdnHead.promise;
+      this.residentGdnHead = null;
+      void pending.then(
+        (head) => head?.dispose(),
+        () => {},
+      );
     }
-    this.offscreenSpecAdapterPromise = null;
-    this.engineBActiveForAdapter = false;
-    this.offscreenSpecTokenizerRef = null;
-    this.offscreenSpecDeviceRef = null;
     if (this.wgslEngine) {
       this.wgslEngine.dispose();
       this.wgslEngine = null;
@@ -775,8 +785,21 @@ export class InferenceEngine {
     });
   }
 
+  private disposeSpecAdapterSession(): void {
+    if (this.offscreenSpecAdapter) {
+      this.offscreenSpecAdapter.dispose();
+      this.offscreenSpecAdapter = null;
+    }
+    this.offscreenSpecAdapterPromise = null;
+    this.engineBActiveForAdapter = false;
+    this.offscreenSpecTokenizerRef = null;
+    this.offscreenSpecDeviceRef = null;
+  }
+
   async resetContext(restoreBasePrompt = false): Promise<void> {
     this.abortBackgroundPrefill();
+    // Reset per-chat SpecCore/Engine-A session state while keeping the 35MB resident GdnDraftRuntime alive.
+    this.disposeSpecAdapterSession();
     if (restoreBasePrompt && this.prefixCache?.hasBasePrompt() && this.wgslEngine) {
       const restored = await this.prefixCache.resetToBasePrompt();
       if (restored) {
@@ -1579,14 +1602,65 @@ export class InferenceEngine {
         try {
           const anchor = { taps, rootToken: 271 };
           await runtime.proposeChain(anchor, 5);
+          await runtime.proposeChain(anchor, 5);
           const headSamples: number[] = [];
-          for (let i = 0; i < 2; i++) {
+          for (let i = 0; i < 5; i++) {
             const h0 = performance.now();
             await runtime.proposeChain(anchor, 5);
             headSamples.push(performance.now() - h0);
           }
           headSamples.sort((a, b) => a - b);
-          headMs = Number((headSamples[0] ?? 15).toFixed(3));
+          const standaloneHeadMs = Number(
+            (headSamples[Math.floor(headSamples.length / 2)] ?? 15).toFixed(3),
+          );
+          headMs = standaloneHeadMs;
+
+          // Measure true fused single-submit marginal headMs (fused M=6 minus plain verify M=6),
+          // eliminating the ~2.3ms separate submit+mapAsync IPC overhead that fused Draft+Verify skips.
+          if (typeof engine.decodeFusedDraftVerifyStep === 'function') {
+            const dummyDraft = [17, 18, 19, 20, 21];
+            const fusedDeltas: number[] = [];
+            // Warmup k=1 (M=2) and k=5 (M=6) verify + fused plans so Turn 1 pays zero compile hitch.
+            await engine.restoreGpuPrefixSlot(calSlot);
+            await engine.decodeFusedDraftVerifyStep(
+              271,
+              1,
+              (enc) => runtime.encodeChain(enc, anchor, 1),
+              greedy,
+              'max-speed',
+            );
+            engine.flushPendingRollback?.('end-of-turn');
+            await engine.restoreGpuPrefixSlot(calSlot);
+            await engine.decodeSpeculativeStep(271, dummyDraft, greedy, 'max-speed');
+            engine.flushPendingRollback?.('end-of-turn');
+            await engine.restoreGpuPrefixSlot(calSlot);
+            await engine.decodeFusedDraftVerifyStep(
+              271,
+              5,
+              (enc) => runtime.encodeChain(enc, anchor, 5),
+              greedy,
+              'max-speed',
+            );
+            engine.flushPendingRollback?.('end-of-turn');
+            for (let i = 0; i < 5; i++) {
+              await engine.restoreGpuPrefixSlot(calSlot);
+              const plain = await engine.decodeSpeculativeStep(271, dummyDraft, greedy, 'max-speed');
+              engine.flushPendingRollback?.('end-of-turn');
+              await engine.restoreGpuPrefixSlot(calSlot);
+              const fused = await engine.decodeFusedDraftVerifyStep(
+                271,
+                5,
+                (enc) => runtime.encodeChain(enc, anchor, 5),
+                greedy,
+                'max-speed',
+              );
+              engine.flushPendingRollback?.('end-of-turn');
+              fusedDeltas.push(fused.gpuMs - plain.gpuMs);
+            }
+            fusedDeltas.sort((a, b) => a - b);
+            const medianDelta = fusedDeltas[Math.floor(fusedDeltas.length / 2)] ?? standaloneHeadMs;
+            headMs = Number(Math.max(0.55, Math.min(standaloneHeadMs, medianDelta)).toFixed(3));
+          }
         } finally {
           runtime.dispose();
         }
@@ -1662,11 +1736,15 @@ export class InferenceEngine {
           baseStr.endsWith('/') ? baseStr : `${baseStr}/`,
           originFallback,
         );
-        const wasmResp = await fetch(new URL('wasm/yours_spec_core.wasm', cycle17Base));
-        if (!wasmResp.ok) {
-          return null;
+        let wasmBytes = this.cachedSpecWasmBytes;
+        if (!wasmBytes) {
+          const wasmResp = await fetch(new URL('wasm/yours_spec_core.wasm', cycle17Base));
+          if (!wasmResp.ok) {
+            return null;
+          }
+          wasmBytes = await wasmResp.arrayBuffer();
+          this.cachedSpecWasmBytes = wasmBytes;
         }
-        const wasmBytes = await wasmResp.arrayBuffer();
         if (this.offscreenSpecAdapter) {
           this.offscreenSpecAdapter.dispose();
         }
@@ -1687,6 +1765,43 @@ export class InferenceEngine {
               : shouldEnableEngineB(effectiveHeadMs, effectiveT1Ms);
         engine.setCaptureDraftTaps?.(enableEngineB);
 
+        const loadResidentHead = enableEngineB
+          ? (): Promise<GdnDraftRuntime | null> => {
+              if (this.residentGdnHead && this.residentGdnHead.device !== device) {
+                const stale = this.residentGdnHead.promise;
+                this.residentGdnHead = null;
+                void stale.then(
+                  (head) => head?.dispose(),
+                  () => {},
+                );
+              }
+              if (!this.residentGdnHead) {
+                const promise = (async () => {
+                  const bundle = await loadGdnBundle(new URL('assets/exp007/manifest.json', cycle17Base));
+                  if (!bundle) return null;
+                  if (bundle.sha256 !== EXP007B_DRAFT_HEAD_SHA256) {
+                    throw new Error('Draft head does not match the deployment SHA-256');
+                  }
+                  return GdnDraftRuntime.create(
+                    device,
+                    bundle,
+                    { slices },
+                    shaderAssets(new URL('wgsl/', cycle17Base)),
+                  );
+                })().catch((err) => {
+                  if (this.residentGdnHead?.promise === promise) {
+                    this.residentGdnHead = null;
+                  }
+                  throw err;
+                });
+                this.residentGdnHead = { device, promise };
+              }
+              return this.residentGdnHead.promise;
+            }
+          : undefined;
+
+        const autoValueGate = specMode === 'auto';
+        const exploreEvery = autoValueGate ? 20 : 4;
         const measuredOpts = this.measuredEngineBReport
           ? (() => {
               const base = toAdapterOptions(
@@ -1696,7 +1811,7 @@ export class InferenceEngine {
               );
               return {
                 profile: base.profile,
-                cutoff: { ...base.cutoff, valueGate: true },
+                cutoff: { ...base.cutoff, valueGate: autoValueGate, evGate: true, exploreEvery },
               };
             })()
           : {
@@ -1704,9 +1819,12 @@ export class InferenceEngine {
                 stepMs: effectiveStepMs,
                 rejectPenaltyMs: effectiveRejectMs,
               },
-              ...(effectiveHeadMs !== null
-                ? { cutoff: { headMs: effectiveHeadMs, valueGate: true } }
-                : { cutoff: { valueGate: true } }),
+              cutoff: {
+                ...(effectiveHeadMs !== null ? { headMs: Math.max(0.55, effectiveHeadMs) } : {}),
+                valueGate: autoValueGate,
+                evGate: true,
+                exploreEvery,
+              },
             };
         const adapter = await OffscreenSpecAdapter.create({
           wasm: wasmBytes,
@@ -1720,15 +1838,10 @@ export class InferenceEngine {
                   }),
           },
           ...measuredOpts,
-          ...(enableEngineB
+          ...(loadResidentHead
             ? {
-                engineC: {
-                  manifestUrl: new URL('assets/exp007/manifest.json', cycle17Base),
-                  expectedSha256: EXP007B_DRAFT_HEAD_SHA256,
-                  device,
-                  table: { slices },
-                  readShader: shaderAssets(new URL('wgsl/', cycle17Base)),
-                },
+                loadLearned: loadResidentHead,
+                ownsLearnedHead: false,
               }
             : {}),
         });
@@ -1993,6 +2106,14 @@ export class InferenceEngine {
         }
       }
 
+      const useSpeculative = this.config.enableSpeculative && sampleOpts.temperature <= 0;
+      const specAdapter = useSpeculative ? await this.getOrCreateOffscreenSpecAdapter() : null;
+      const speculator =
+        useSpeculative && !specAdapter ? this.getOrCreateEngineASpeculator() : null;
+      this.wgslEngine?.setCaptureDraftTaps?.(
+        Boolean(useSpeculative && specAdapter && this.engineBActiveForAdapter),
+      );
+
       phaseMarks.prefillStart = epochNow();
       const { nextToken: firstToken, prefillMs } = await this.prefillAndPickFirstToken(
         promptTokenIds,
@@ -2012,7 +2133,6 @@ export class InferenceEngine {
 
       const generatedIds: number[] = [];
       const sessionTokenIds = [...prefixTokenIds, ...promptTokenIds];
-      const useSpeculative = this.config.enableSpeculative && sampleOpts.temperature <= 0;
       const groundingTokens =
         useSpeculative && groundingText && groundingText.trim().length > 0
           ? this.tokenizer.encode(groundingText, { add_special_tokens: false })
@@ -2022,12 +2142,6 @@ export class InferenceEngine {
         .map((m) => m.content)
         .join('\n')
         .slice(-12000);
-      const specAdapter = useSpeculative ? await this.getOrCreateOffscreenSpecAdapter() : null;
-      const speculator =
-        useSpeculative && !specAdapter ? this.getOrCreateEngineASpeculator() : null;
-      this.wgslEngine?.setCaptureDraftTaps?.(
-        Boolean(useSpeculative && specAdapter && this.engineBActiveForAdapter),
-      );
       if (useSpeculative) {
         const seedIds = [...groundingTokens, ...sessionTokenIds];
         // Cap initial SAM ingest at trailing 8192 tokens so turn startup stays <3ms on 32K+ prompts
@@ -2061,7 +2175,7 @@ export class InferenceEngine {
         const meanSpecStepMs = specSteps > 0 && totalSpecGpuMs > 0 ? totalSpecGpuMs / specSteps : 0;
         const speedupMultiplier =
           specSteps > 0 && meanSpecStepMs > 0
-            ? Math.max(1, Number(((tau * this.engineACostModel.t1Ms) / meanSpecStepMs).toFixed(2)))
+            ? Number(((tau * this.engineACostModel.t1Ms) / meanSpecStepMs).toFixed(2))
             : undefined;
         const draftRoute: 'learned' | 'copy-grammar' | 'hybrid' | undefined = specAdapter
           ? learnedSteps > 0
@@ -2132,6 +2246,7 @@ export class InferenceEngine {
       };
 
       let iter = 0;
+      let fusedAcceptStreak = 0;
       let lastTelemetryEmitMs = decodeStartMs;
       while (generatedIds.length < this.config.maxNewTokens) {
         if (emitTokenAndCheckDone(nextToken)) {
@@ -2185,12 +2300,79 @@ export class InferenceEngine {
             const anchor =
               tapInfo.valid && tapInfo.taps ? { taps: tapInfo.taps, rootToken: nextToken } : undefined;
             if (budget >= 1 && !supressNearClose) {
-              routedProposal = await specAdapter.propose(budget, anchor, false);
-              if (routedProposal.headInvoked) {
+              const canFuse =
+                Boolean(anchor) &&
+                typeof this.wgslEngine!.decodeFusedDraftVerifyStep === 'function' &&
+                this.wgslEngine!.activeSeqPos + 1 + budget <= this.wgslEngine!.maxContextTokens;
+              const plan = await specAdapter.planOrPropose(budget, anchor, canFuse);
+              if (plan.kind === 'fused' && anchor && this.wgslEngine!.decodeFusedDraftVerifyStep) {
+                // Fused steps pay M = 1 + k target verify before CPU inspects probs; keep k=1 unless on a clean accept streak.
+                const fusedCap = fusedAcceptStreak >= 2 ? 2 : 1;
+                const fusedK = Math.min(plan.k, fusedCap);
+                const draftMs = performance.now() - tDraft0;
+                stepDraftMs = draftMs;
+                headInvocations += 1;
+                learnedSteps += 1;
+                const fusedRes = await this.wgslEngine!.decodeFusedDraftVerifyStep(
+                  nextToken,
+                  fusedK,
+                  (enc) => plan.runtime.encodeChain(enc, anchor, fusedK),
+                  sampleOpts,
+                  this.config.gpuPacingMode,
+                );
+                fusedAcceptStreak = fusedRes.acceptedCount === fusedK ? fusedAcceptStreak + 1 : 0;
+                const learned = plan.runtime.decodeChainRecords(fusedRes.draftRecordWords, fusedK);
+                this.engineACostModel.recordStepTiming(
+                  1 + fusedK,
+                  fusedRes.gpuMs,
+                  fusedRes.acceptedCount < fusedRes.draftedCount,
+                );
+                specAdapter.commitFused(learned, []);
+                this.cachedTokenCount = this.wgslEngine!.activeSeqPos;
+                specDrafted += fusedRes.draftedCount;
+                specAccepted += fusedRes.acceptedCount;
+                specSteps += 1;
+                totalSpecGpuMs += fusedRes.gpuMs;
+                if (!this.config.fastDecodePath || iter % 4 === 0) {
+                  this.refreshCacheTelemetry();
+                }
+
+                const tEmit0 = performance.now();
+                let stoppedMidBatch = false;
+                for (let i = 0; i < fusedRes.acceptedCount; i++) {
+                  if (emitTokenAndCheckDone(fusedRes.tokens[i]!)) {
+                    stoppedMidBatch = true;
+                    break;
+                  }
+                }
+                const emitMs = performance.now() - tEmit0;
+                phaseSteps.push({
+                  kind: 'chain',
+                  M: 1 + fusedK,
+                  kept: 1 + fusedRes.acceptedCount,
+                  draftMs,
+                  planMs: fusedRes.planMs ?? 0,
+                  encodeMs: fusedRes.encodeMs ?? 0,
+                  mapMs: fusedRes.mapMs ?? fusedRes.gpuMs,
+                  rollbackEncodeMs: fusedRes.rollbackEncodeMs ?? 0,
+                  rollbackWaitMs: fusedRes.rollbackWaitMs ?? 0,
+                  emitMs,
+                  yieldMs,
+                  planBuilt: fusedRes.planBuilt ?? false,
+                });
+                if (stoppedMidBatch) {
+                  break;
+                }
+                nextToken = fusedRes.tokens[fusedRes.acceptedCount]!;
+                iter++;
+                continue;
+              }
+              routedProposal = plan.kind === 'proposal' ? plan.proposal : null;
+              if (routedProposal?.headInvoked) {
                 headInvocations += 1;
               }
               let draftSuffixText = emittedText;
-              for (const dt of routedProposal.tree.tokens) {
+              for (const dt of routedProposal?.tree.tokens ?? []) {
                 if (this.eosTokenIds.has(dt)) break;
                 cleanDraft.push(dt);
                 if (stopOnToolCall) {

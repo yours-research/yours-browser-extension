@@ -57,6 +57,8 @@ interface Exports {
   yse_cutoff_invoke(c: number, tool: number, aProbs: number, aParents: number, nA: number, maxNodes: number): number;
   yse_cutoff_decide(c: number, tool: number, aProbs: number, nA: number, bTokens: number, bProbs: number, nB: number, maxNodes: number): number;
   yse_cutoff_gated(c: number): number;
+  yse_cutoff_max_k?(c: number, tool: number, maxNodes: number): number;
+  yse_cutoff_record_fused?(c: number, tool: number, bTokens: number, bProbs: number, nB: number): void;
   yse_cutoff_out_probs(c: number): number;
   yse_cutoff_commit(c: number, toks: number, n: number): number;
   yse_cutoff_conditional(c: number, tool: number, depth: number, cond: number): number;
@@ -246,6 +248,21 @@ export class LearnedCutoffWasm {
   /** Head calls the per-regime value gate declined. */
   get gated(): number {
     return this.c.x.yse_cutoff_gated(this.handle);
+  }
+  /** Recommended head-chain depth 1..=maxNodes for the next learned-head call. */
+  recommendedK(maxNodes: number, tool = false): number {
+    return this.c.x.yse_cutoff_max_k ? this.c.x.yse_cutoff_max_k(this.handle, tool ? 1 : 0, maxNodes) : maxNodes;
+  }
+  /** Register a fused single-submit learned chain already verified on-GPU at its full length. */
+  recordFused(bTokens: readonly number[], bProbs: readonly number[], tool = false): void {
+    const c = this.c;
+    const n = Math.min(bTokens.length, bProbs.length, 16);
+    if (c.x.yse_cutoff_record_fused) {
+      c.reset();
+      c.x.yse_cutoff_record_fused(this.handle, tool ? 1 : 0, c.stage(bTokens, 'i32'), c.stage(bProbs, 'f64'), n);
+      return;
+    }
+    this.decide([], bTokens, bProbs, n, tool);
   }
   /** k* >= 0 when the cut learned chain wins, -1 when Engine A wins; plus calibrated path probabilities. */
   decide(aProbs: readonly number[], bTokens: readonly number[], bProbs: readonly number[], maxNodes: number, tool = false): { k: number; calibrated: number[] } {

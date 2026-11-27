@@ -38,12 +38,23 @@ export async function runInPage(o: {
     const adapter = await gpu?.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) throw new Error('WebGPU adapter unavailable');
     label = adapter.info?.description || adapter.info?.vendor;
-    // Request subgroups when available so the fast Tier-1 kernels can be selected.
-    const requiredFeatures = adapter.features.has('subgroups') ? (['subgroups'] as GPUFeatureName[]) : [];
+    // Request subgroups + shader-f16 when available so the fast Tier-1 kernels can be selected.
+    const requiredFeatures: GPUFeatureName[] = [];
+    if (adapter.features.has('subgroups')) requiredFeatures.push('subgroups');
+    if (adapter.features.has('shader-f16')) requiredFeatures.push('shader-f16');
     device = await adapter.requestDevice({
       requiredFeatures,
       requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize },
     });
+    // Propagate adapter.info onto device.adapterInfo when Chrome leaves it unset so selectDraftTier sees subgroup limits.
+    const devWithInfo = device as GPUDevice & { adapterInfo?: GPUAdapterInfo };
+    if (adapter.info && (!devWithInfo.adapterInfo || typeof devWithInfo.adapterInfo.subgroupMaxSize !== 'number')) {
+      try {
+        Object.defineProperty(device, 'adapterInfo', { value: adapter.info, configurable: true });
+      } catch {
+        // Read-only host object on browsers that already expose device.adapterInfo natively.
+      }
+    }
   }
   const bundle = await loadGdnBundle(new URL('assets/exp007/manifest.json', base));
   if (!bundle) throw new Error('No EXP-007 draft head under assets/exp007/');

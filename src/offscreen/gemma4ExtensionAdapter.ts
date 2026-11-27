@@ -99,6 +99,30 @@ export interface WgslRuntimeEngine extends GpuPrefixSlotBackend {
     rollbackEncodeMs?: number;
     rollbackWaitMs?: number;
   }>;
+  decodeFusedDraftVerifyStep?(
+    currentTokenId: number,
+    draftLen: number,
+    encodeDraftChain: (encoder: GPUCommandEncoder) => {
+      slots: GPUBuffer;
+      recordsByteOffset: number;
+      bytes: number;
+    },
+    sampling: SamplingOptions,
+    pacingMode?: GpuPacingMode,
+  ): Promise<{
+    tokens: number[];
+    acceptedCount: number;
+    draftedCount: number;
+    draftRecordWords: Uint32Array;
+    gpuMs: number;
+    breatherMs: number;
+    planBuilt?: boolean;
+    planMs?: number;
+    encodeMs?: number;
+    mapMs?: number;
+    rollbackEncodeMs?: number;
+    rollbackWaitMs?: number;
+  }>;
   getDevice?(): GPUDevice | null;
   getTiedTableSlices?(): Array<{ buffer: GPUBuffer; startRow: number; endRow: number }>;
   getDraftAnchorTaps?(): { taps: GPUBuffer; valid: boolean };

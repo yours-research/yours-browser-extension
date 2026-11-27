@@ -48,6 +48,10 @@ export interface LearnedDrafter {
   dispose(): void;
 }
 
+export type FusedDraftPlan =
+  | { kind: 'proposal'; proposal: RoutedProposal }
+  | { kind: 'fused'; runtime: GdnDraftRuntime; k: number };
+
 export interface OffscreenSpecAdapterOptions {
   /** yours_spec_core.wasm bytes (from the RC1 pack). */
   wasm: ArrayBuffer | ArrayBufferView;
@@ -72,8 +76,10 @@ export interface OffscreenSpecAdapterOptions {
    * `false` restores the RC1 router (the learned chain fills the budget).
    */
   cutoff?: false | Omit<LearnedCutoffOptions, 'profile' | 'threshold' | 'draftMs'>;
-  /** Test hook: supply the learned drafter directly (overrides `engineC`). */
+  /** Test hook or shared host cache: supply the learned drafter directly (overrides `engineC`). */
   loadLearned?: () => Promise<LearnedDrafter | null>;
+  /** When false, `dispose()` releases WASM session state without disposing the shared learned head. */
+  ownsLearnedHead?: boolean;
 }
 
 /** wasm Engine A + host grammar, as a BenchDrafter (drop-in for the TS EngineA). */
@@ -165,6 +171,7 @@ export class OffscreenSpecAdapter {
     readonly router: HybridDraftRouter,
     private readonly pathA: PathAWasm,
     readonly cutoff?: LearnedCutoffWasm,
+    private readonly ownsLearnedHead = true,
   ) {}
 
   static async create(o: OffscreenSpecAdapterOptions): Promise<OffscreenSpecAdapter> {
@@ -191,7 +198,20 @@ export class OffscreenSpecAdapter {
     const cutoff = o.cutoff === false ? undefined
       : core.cutoff({ ...o.cutoff, profile: o.profile, threshold, draftMs: o.draftMs ?? 0.05 });
     const policy = cutoff ? adaptivePolicy(cutoff, threshold, () => engineA.toolStep) : thresholdPolicy(threshold);
-    return new OffscreenSpecAdapter(core, engineA, new HybridDraftRouter(engineA, load, threshold, policy), core.pathA(), cutoff);
+    return new OffscreenSpecAdapter(
+      core,
+      engineA,
+      new HybridDraftRouter(engineA, load, threshold, policy),
+      core.pathA(),
+      cutoff,
+      o.ownsLearnedHead !== false,
+    );
+  }
+
+  /** Pre-load Engine B GPU weights and pipelines before turn 1 decode starts. */
+  async prewarm(): Promise<void> {
+    this.open();
+    await this.router.getOrLoadHead();
   }
 
   beginTurn(promptIds: readonly number[], promptText: string, enableThinking?: boolean): void {
@@ -208,6 +228,59 @@ export class OffscreenSpecAdapter {
    */
   propose(maxNodes: number, anchor?: DraftAnchor, tree = true): Promise<RoutedProposal> {
     return this.router.propose({ maxNodes, tree }, anchor);
+  }
+
+  /**
+   * Single-decision routing helper for hosts that support fused single-submit
+   * Draft + Verify (`GdnDraftRuntime.encodeChain` encoded ahead of target verify
+   * in the same command buffer, eliminating one GPU submit + mapAsync round-trip).
+   *
+   * Returns `{ kind: 'fused', runtime, k }` when Engine A has no proposal, the
+   * policy approves invoking Engine B, and the loaded head is a `GdnDraftRuntime`.
+   * Otherwise resolves the normal `RoutedProposal` without double-calling `shouldInvoke`.
+   */
+  async planOrPropose(maxNodes: number, anchor?: DraftAnchor, allowFused = true): Promise<FusedDraftPlan> {
+    this.open();
+    if (!Number.isInteger(maxNodes) || maxNodes < 0 || maxNodes > 15) {
+      throw new Error('Invalid draft budget');
+    }
+    const budget: DraftBudget = { maxNodes, tree: false };
+    const tree = this.engineA.propose(budget);
+    if (!maxNodes || !anchor || !this.router.shouldInvoke(tree, budget)) {
+      return { kind: 'proposal', proposal: { source: 'A', tree } };
+    }
+    const headCap = this.router.maxHeadNodes(tree, budget);
+    if (!headCap) {
+      return { kind: 'proposal', proposal: { source: 'A', tree } };
+    }
+    const head = await this.router.getOrLoadHead();
+    if (!head) {
+      return { kind: 'proposal', proposal: { source: 'A', tree } };
+    }
+    if (allowFused && tree.tokens.length === 0 && head instanceof GdnDraftRuntime) {
+      return { kind: 'fused', runtime: head, k: headCap };
+    }
+    const headBudget = headCap === maxNodes ? budget : { maxNodes: headCap, tree: false };
+    const learned = await head.propose(anchor, headBudget);
+    return {
+      kind: 'proposal',
+      proposal: { ...this.router.selectProposal(tree, learned, budget), headInvoked: true },
+    };
+  }
+
+  /** Record the decoded learned chain after a fused Draft + Verify step completes on GPU. */
+  commitFused(
+    learned: { tokens: readonly number[]; probs?: readonly number[] },
+    emitted: readonly number[],
+  ): void {
+    this.open();
+    if (learned.probs && learned.probs.length === learned.tokens.length) {
+      this.cutoff?.recordFused(learned.tokens, learned.probs, this.engineA.toolStep);
+    }
+    if (emitted.length > 0) {
+      this.engineA.observe(emitted, true);
+      this.cutoff?.commit(emitted);
+    }
   }
 
   /** For the extension's shared scalar/speculative token-emission hook. */
@@ -243,7 +316,9 @@ export class OffscreenSpecAdapter {
   dispose(): void {
     if (this.closed) return;
     this.closed = true;
-    this.router.dispose();
+    if (this.ownsLearnedHead) {
+      this.router.dispose();
+    }
     this.pathA.free();
     this.cutoff?.free();
     this.engineA.engine.free();
@@ -262,6 +337,7 @@ export function adaptivePolicy(cutoff: LearnedCutoffWasm, threshold: number, too
   const legacy = thresholdPolicy(threshold);
   return {
     invoke: (a, budget) => cutoff.shouldInvoke(a, budget.maxNodes, toolStep()),
+    maxHeadNodes: (_a, budget) => (budget.tree ? budget.maxNodes : cutoff.recommendedK(budget.maxNodes, toolStep())),
     select(a, learned, budget) {
       const chain = learned.parents.every((p, i) => p === i - 1);
       if (!learned.probs || learned.probs.length !== learned.tokens.length || !chain) return legacy.select(a, learned, budget);

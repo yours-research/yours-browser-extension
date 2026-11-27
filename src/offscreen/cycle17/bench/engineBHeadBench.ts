@@ -123,6 +123,6 @@ export function toAdapterOptions(report: EngineBBenchReport, stepMs: readonly nu
   if (!stepMs.length || stepMs.some((v) => !(v > 0))) throw new Error('stepMs must be positive wall times for M = 1..');
   return {
     profile: { stepMs: [...stepMs], rejectPenaltyMs: report.reject?.rejectPenaltyMs ?? fallbackRejectPenaltyMs },
-    cutoff: { headMs: report.headMs },
+    cutoff: { headMs: report.headMs, valueGate: true },
   };
 }
