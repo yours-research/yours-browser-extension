@@ -27,6 +27,8 @@ export async function runInPage(o: {
   table?: TiedTable;
   probe?: VerifyProbe;
   budgetMs?: number;
+  /** Kernel tier ('auto' default). Run once with 'reference' to compare. */
+  mode?: 'auto' | 'reference' | 'fast';
 }) {
   const base = new URL(String(o.assetsBase), (globalThis as { location?: { href: string } }).location?.href);
   let device = o.device;
@@ -36,7 +38,10 @@ export async function runInPage(o: {
     const adapter = await gpu?.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) throw new Error('WebGPU adapter unavailable');
     label = adapter.info?.description || adapter.info?.vendor;
+    // Request subgroups when available so the fast Tier-1 kernels can be selected.
+    const requiredFeatures = adapter.features.has('subgroups') ? (['subgroups'] as GPUFeatureName[]) : [];
     device = await adapter.requestDevice({
+      requiredFeatures,
       requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize },
     });
   }
@@ -56,10 +61,10 @@ export async function runInPage(o: {
   const tapsResponse = await fetch(new URL('fixtures/trained-exp007/taps.f32', base));
   if (!tapsResponse.ok) throw new Error('Unable to load the golden taps');
   const taps = new Float32Array(await tapsResponse.arrayBuffer());
-  const runtime = await GdnDraftRuntime.create(device, bundle, table, shaderAssets(new URL('wgsl/', base)));
+  const runtime = await GdnDraftRuntime.create(device, bundle, table, shaderAssets(new URL('wgsl/', base)), { mode: o.mode });
   try {
     const report = await runEngineBBench(runtime, { taps, rootToken: GOLDEN_ROOT_TOKEN }, o.probe, { budgetMs: o.budgetMs ?? 10_000, device: label });
-    return { ...report, headSha256: bundle.sha256, chainStats: { ...runtime.chainStats } };
+    return { ...report, headSha256: bundle.sha256, tier: runtime.tier, chainStats: { ...runtime.chainStats } };
   } finally {
     runtime.dispose();
     owned?.destroy();

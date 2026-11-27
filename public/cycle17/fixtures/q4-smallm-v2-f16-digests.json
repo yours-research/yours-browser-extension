@@ -1,0 +1,9 @@
+{
+  "tier": "f16",
+  "cases": 42,
+  "rows": 67,
+  "columns": 160,
+  "linear": "1ecc9f7a3ccf81a16b6231f0b9e1f5fd8365857aeb82a24c81eaf270a071bd13",
+  "fused": "aed6af974d31e20f141e97abc990c2a5f58f2c950b5530da07b07854d761dbc7",
+  "shard": "8d7ab8380b1e975736b1ec0f61236da68b2f4c375b9af0874517c744b83bf08b"
+}

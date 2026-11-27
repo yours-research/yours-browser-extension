@@ -52,6 +52,22 @@ describe('specCalibration & break-even guard', () => {
     expect(hit?.headMs).toBe(15.1);
     expect(await loadSpecCalibration('nvidia|ampere|rtx3090', 'other-sha')).toBeNull();
     expect(isValidSpecCalibration({ adapterName: 'a' }, 'a', 'b')).toBe(false);
+    // Reject stale pre-M11 calibration entries lacking current packRevision
+    expect(
+      isValidSpecCalibration(
+        {
+          adapterName: 'nvidia|ampere|rtx3090',
+          dropinSha256: 'sha-007b',
+          t1Ms: 10.65,
+          stepMs: [10.65],
+          headMs: 16.8,
+          rejectPenaltyMs: 2.35,
+          measuredAtIso: '2026-11-27T18:00:00.000Z',
+        },
+        'nvidia|ampere|rtx3090',
+        'sha-007b',
+      ),
+    ).toBe(false);
   });
 
   it('IncrementalTokenDecoder matches decodeGeneratedText byte-for-byte on every token', async () => {

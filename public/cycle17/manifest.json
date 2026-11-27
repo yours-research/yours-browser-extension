@@ -3,7 +3,7 @@
   "version": 2,
   "source": {
     "repo": "yours-speculative-engine",
-    "commit": "0f807cebbeb6cb6276b5fc75149bd1abeefcb909",
+    "commit": "b7fb760cbea6e4a300af8a0feb17e1e8db9cef44",
     "dirty": false
   },
   "targets": {
@@ -38,8 +38,8 @@
       "path": "bench/bench-engine-b-head.mjs",
       "source": "(bundled src/bench/engineBHeadBenchPage.ts)",
       "role": "bench",
-      "bytes": 33453,
-      "sha256": "5132d53b5c0a360c69fada43f1ed351160e6027c692a275f35fe1763685796cc"
+      "bytes": 37044,
+      "sha256": "5e2a67cdaca460e3243a65cb8e2c249d45cd09234204665c340246d4c5daa0b9"
     },
     {
       "path": "benchmarks/results/exp007-eval/exp007b/qualification.json",
@@ -108,8 +108,8 @@
       "path": "docs/CYCLE17_ENGINE_B_DROPIN.md",
       "source": "docs/CYCLE17_ENGINE_B_DROPIN.md",
       "role": "doc",
-      "bytes": 15041,
-      "sha256": "4b4eea959984c33b511dc4c09b53832d51e283db9d01a5cc4766aaf67b9e2aed"
+      "bytes": 15681,
+      "sha256": "77ad71eff2714e6d836c23c698b6fc701d6399d551fd03a35f4b1bf71decd437"
     },
     {
       "path": "docs/CYCLE17_ROLLBACK_PATCHES.md",
@@ -124,6 +124,13 @@
       "role": "doc",
       "bytes": 14833,
       "sha256": "334b0f1269579a5251f440c855e0c087a95e2256bdb6eeb3a96cbedd63a4b034"
+    },
+    {
+      "path": "docs/ENGINE_B_FAST_KERNELS.md",
+      "source": "docs/ENGINE_B_FAST_KERNELS.md",
+      "role": "doc",
+      "bytes": 5944,
+      "sha256": "7bf95faca11fd69c274f43aed4688cbe81a979d1c352ce79691be8f7a66ed594"
     },
     {
       "path": "docs/EXP007_BROWSER_RUNTIME.md",
@@ -248,8 +255,8 @@
       "path": "ts/bench/engineBHeadBenchPage.ts",
       "source": "src/bench/engineBHeadBenchPage.ts",
       "role": "ts-entry",
-      "bytes": 3450,
-      "sha256": "90ce91a28ed3af4ff32d25c1c242106217ec93d02b63789029bb50420fead09b"
+      "bytes": 3820,
+      "sha256": "fed1fd084d687a5c5423666fbbcd577a7478c96d704e9ef50bf69a94a9683e76"
     },
     {
       "path": "ts/draft/gdnEagle3Loader.ts",
@@ -269,8 +276,8 @@
       "path": "ts/draft/gdnEagle3Runtime.ts",
       "source": "src/draft/gdnEagle3Runtime.ts",
       "role": "ts-entry",
-      "bytes": 25782,
-      "sha256": "7ca81b1c365ae0741385309939f51febb1b2afebf34440058650b6f454fa656b"
+      "bytes": 30648,
+      "sha256": "3635d888361ea1dd1620e0f0591aedf9adc8468f2f097ca141246f0537363a3d"
     },
     {
       "path": "ts/draft/hybridRouter.ts",
@@ -360,8 +367,8 @@
       "path": "ts/rc1/wasmEngineAdapter.ts",
       "source": "src/rc1/wasmEngineAdapter.ts",
       "role": "ts-entry",
-      "bytes": 11387,
-      "sha256": "9b7d813ee22b39cbb60a8b65d89d3f7c126e888511f9badcc3c22ecb06420761"
+      "bytes": 11579,
+      "sha256": "d87ac8dc9c566b9c474a1120bc74b822182ee137609a93d6778d10a0a6b52761"
     },
     {
       "path": "ts/tsconfig.json",
@@ -483,6 +490,20 @@
       "sha256": "f4848691d4b491e0f1bdbc3d01a6e251d864548b32ef5c4c23bbf84771b5b46f"
     },
     {
+      "path": "wgsl/gdn_eagle3_tied_fast_sg.wgsl",
+      "source": "wgsl\\gdn_eagle3_tied_fast_sg.wgsl",
+      "role": "kernel",
+      "bytes": 3521,
+      "sha256": "62fad8ee0f137065aa117c5837dfe5e00d3b500b66dc6de36dcf52940f3de0e1"
+    },
+    {
+      "path": "wgsl/gdn_eagle3_tied_fast.wgsl",
+      "source": "wgsl\\gdn_eagle3_tied_fast.wgsl",
+      "role": "kernel",
+      "bytes": 2974,
+      "sha256": "d3d5cb7a88ca4989721f3932461219046ff67782a3f3e3b13a5dea7d315c390b"
+    },
+    {
       "path": "wgsl/gdn_eagle3_tied.wgsl",
       "source": "wgsl\\gdn_eagle3_tied.wgsl",
       "role": "kernel",
@@ -516,6 +537,20 @@
       "role": "kernel",
       "bytes": 4111,
       "sha256": "3c8ab253355db5969bbf3b5ae00dfe198601f4e65b8315aeca092c61b22e7b54"
+    },
+    {
+      "path": "wgsl/q4_gemv_fast_sg.wgsl",
+      "source": "wgsl\\q4_gemv_fast_sg.wgsl",
+      "role": "kernel",
+      "bytes": 5890,
+      "sha256": "bae77289f3418419b1e19d82f90a11e5e72bbd1f165ec83c48fcd06d47b7ae37"
+    },
+    {
+      "path": "wgsl/q4_gemv_fast.wgsl",
+      "source": "wgsl\\q4_gemv_fast.wgsl",
+      "role": "kernel",
+      "bytes": 5073,
+      "sha256": "5305a0b5439ade36a5577e1aefcb04316cfb4cc8ea7b6449fb64859099e4c180"
     },
     {
       "path": "wgsl/q4_gemv_smallm_v2_f16.wgsl",
@@ -1087,6 +1122,270 @@
           "space": "storage,read_write",
           "name": "slots",
           "type": "array<u32>"
+        }
+      ]
+    },
+    {
+      "file": "q4_gemv_fast.wgsl",
+      "role": "Engine B fast tier: word-parallel M=1 Q4 GEMV + fused gate/up SwiGLU, 64 lanes per row, workgroup reduction, native FMA (default on GPUs without usable subgroups; not bit-exact to the reference)",
+      "replaces": null,
+      "dispatch": {
+        "gemv": "(ceil(rows / 4), 1, 1)",
+        "swiglu": "(ceil(rows / 4), 1, 1)"
+      },
+      "verifiedBy": [
+        "tests/fastKernels.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "gemv",
+          "workgroupSize": "256"
+        },
+        {
+          "name": "swiglu",
+          "workgroupSize": "256"
+        },
+        {
+          "name": "gemv3",
+          "workgroupSize": "256"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "weights",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "input",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "output_b",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 5,
+          "space": "storage,read_write",
+          "name": "output_c",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "q4_gemv_fast_sg.wgsl",
+      "role": "Engine B Tier 1: q4_gemv_fast with subgroupAdd reductions (subgroup size 4..64)",
+      "replaces": null,
+      "dispatch": {
+        "gemv": "(ceil(rows / 4), 1, 1)",
+        "swiglu": "(ceil(rows / 4), 1, 1)"
+      },
+      "requires": [
+        "subgroups"
+      ],
+      "verifiedBy": [
+        "tests/fastKernels.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "gemv",
+          "workgroupSize": "256"
+        },
+        {
+          "name": "swiglu",
+          "workgroupSize": "256"
+        },
+        {
+          "name": "gemv3",
+          "workgroupSize": "256"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "weights",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "input",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "output_b",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 5,
+          "space": "storage,read_write",
+          "name": "output_c",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "gdn_eagle3_tied_fast.wgsl",
+      "role": "Engine B fast tier: word-parallel tied-table subset logits (16,384 rows per step), coalesced Q4 loads, native FMA",
+      "replaces": null,
+      "dispatch": {
+        "subset_logits": "(ceil(count / 4), 1, 1)",
+        "subset_logits_slice": "(ceil(count / 4), 1, 1)"
+      },
+      "verifiedBy": [
+        "tests/fastKernels.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "subset_logits",
+          "workgroupSize": "256"
+        },
+        {
+          "name": "subset_logits_slice",
+          "workgroupSize": "256"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "slab",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "ids",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read",
+          "name": "features",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "gdn_eagle3_tied_fast_sg.wgsl",
+      "role": "Engine B Tier 1: gdn_eagle3_tied_fast with subgroupAdd reductions (subgroup size 4..64)",
+      "replaces": null,
+      "dispatch": {
+        "subset_logits": "(ceil(count / 4), 1, 1)",
+        "subset_logits_slice": "(ceil(count / 4), 1, 1)"
+      },
+      "requires": [
+        "subgroups"
+      ],
+      "verifiedBy": [
+        "tests/fastKernels.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "subset_logits",
+          "workgroupSize": "256"
+        },
+        {
+          "name": "subset_logits_slice",
+          "workgroupSize": "256"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "slab",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "ids",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read",
+          "name": "features",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
         }
       ]
     },
@@ -1926,6 +2225,10 @@
       "replace": "const dnNormOff = (lo.dnIdx + 1) * MAX_SPEC_TOKENS * H; // block 0 = transient verify / final-norm rows",
       "occurrences": 2,
       "appliedWhen": "\\(lo\\.dnIdx \\+ 1\\) \\* MAX_SPEC_TOKENS \\* H",
+      "appliedCounts": [
+        2,
+        1
+      ],
       "rationale": "Both the verify graph and the rejection replay must address the same disjoint per-layer slice; layer 0 previously overlapped the final normalised hidden state (Cycle 14/15 chain-replay corruption).",
       "verify": "Force rejection at the root and after an interior token; assert committed recurrent matrices, conv tails and the next serial token equal serial decode."
     },
@@ -2058,7 +2361,11 @@
       "search": "      const tRb = performance.now();\n      device.queue.submit([rbEnc.finish()]);\n      await device.queue.onSubmittedWorkDone();\n      gpuMs += performance.now() - tRb;",
       "replace": "      const tRb = performance.now();\n      // P9a: queue order already makes every later submit see the restored state, and\n      // writeBuffer is ordered with submits. The rollback's GPU time lands in the next map.\n      device.queue.submit([rbEnc.finish()]);\n      gpuMs += performance.now() - tRb;",
       "occurrences": 1,
-      "appliedWhen": "P9a: queue order already makes every later submit see the restored state",
+      "appliedWhen": "this\\.rollback\\.defer\\(rbEnc\\.finish\\(\\)\\)|P9a: queue order already makes every later submit see the restored state",
+      "appliedCounts": [
+        1,
+        2
+      ],
       "rationale": "The reject branch waited for the rollback (second submit + onSubmittedWorkDone) before returning, which is the fence round trip inside the measured 3.67 ms M=5 reject surcharge. Every later GPU operation is queued behind the rollback, and every later readback (mapAsync) resolves after it, so the wait adds latency without adding ordering. Device loss surfaces at the next mapAsync, as for any step.",
       "verify": "Forced-rejection replay (P1b verify) still equals serial decode; rc1-speculative microbench t5RejectMs - t5Ms drops; abort mid-turn and device-loss paths unchanged."
     },
@@ -2086,7 +2393,7 @@
       "search": "    const t0 = performance.now();\n    device.queue.submit([enc.finish()]);\n    await this.verifyStaging64B.mapAsync(GPU_MAP_READ);",
       "replace": "    const t0 = performance.now();\n    this.rollback.submitWith([enc.finish()]); // P9b: a pending rollback runs first\n    await this.verifyStaging64B.mapAsync(GPU_MAP_READ);",
       "occurrences": 1,
-      "appliedWhen": "this\\.rollback\\.submitWith\\(\\[enc\\.finish\\(\\)\\]\\)",
+      "appliedWhen": "this\\.rollback\\.submitWith\\(\\[",
       "rationale": "The chain-verify hot path writes only tokenIdsBuf and its per-plan uniform buffer before submitting, neither of which the rollback reads, so prepending the pending rollback preserves queue order and saves the extra submit.",
       "verify": "As P9b-rollback-defer-reject."
     },
@@ -2097,6 +2404,7 @@
       "repo": "tinygpt-browser",
       "file": "src/offscreen/wgslRealEngine.ts",
       "kind": "manual",
+      "appliedWhen": "private rollback = new DeferredRollback<",
       "anchors": [
         {
           "text": "  async decodeStep(",
@@ -2157,7 +2465,7 @@
       "search": "        pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [this.arch.dnValHeads * 2, H, wAb, dnNormOff, M * (this.dnConvDim + this.dnValDim), 0, M, 0], q4V2Wx(this.arch.dnValHeads * 2));\n\n        pushStatic(this.convPipe, vBgConv,",
       "replace": "        pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [this.arch.dnValHeads * 2, H, wAb, dnNormOff, M * (this.dnConvDim + this.dnValDim), 0, M, 0], q4V2Wx(this.arch.dnValHeads * 2));\n        // P9c: keep this layer's raw projections before conv overwrites workBuf in place.\n        pushStatic(this.dnProjStashPipe, vBgDnProjStash, [M, 0, this.dnConvDim, this.dnValDim, this.arch.dnValHeads * 2, lo.dnIdx * MAX_SPEC_TOKENS * this.dnProjWidth, 0, 0], Math.ceil((M * this.dnProjWidth) / 256));\n\n        pushStatic(this.convPipe, vBgConv,",
       "occurrences": 1,
-      "appliedWhen": "pushStatic\\(this\\.dnProjStashPipe, vBgDnProjStash",
+      "appliedWhen": "pushStatic\\(\\s*this\\.dnProjStashPipe,\\s*vBgDnProjStash",
       "rationale": "The chain verify graph computes every DeltaNet layer's QKV/Z/AB rows for all M tokens, then conv overwrites them. Stashing them (one copy dispatch per layer, M x 12,352 f32) lets a rejection skip recomputing them.",
       "verify": "tests/rollbackP9.test.ts (WARP): stash then unstash reproduces the keep-row layout; V2 Q4 rows at M=6 equal M=keep recomputes bit-for-bit."
     },
@@ -2182,6 +2490,7 @@
       "repo": "tinygpt-browser",
       "file": "src/offscreen/wgslRealEngine.ts",
       "kind": "manual",
+      "appliedWhen": "this\\.dnProjCacheBuf = this\\.track\\(",
       "anchors": [
         {
           "text": "      this.dnConvBackupBuf = this.track(",
@@ -2216,6 +2525,7 @@
       "repo": "tinygpt-browser",
       "file": "src/offscreen/inferenceEngine.ts",
       "kind": "manual",
+      "appliedWhen": "phaseMarks\\.firstToken = performance\\.timeOrigin",
       "anchors": [
         {
           "text": "const ttftMs = performance.now() - runStartMs;",

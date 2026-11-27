@@ -32,7 +32,7 @@ import {
 } from '../engines/toolGrammar.js';
 import { HybridDraftRouter, thresholdPolicy, type RoutePolicy, type RoutedProposal } from '../draft/hybridRouter.js';
 import { loadGdnBundle } from '../draft/gdnEagle3Loader.js';
-import { GdnDraftRuntime, type DraftAnchor, type ReadShader, type TiedTable } from '../draft/gdnEagle3Runtime.js';
+import { GdnDraftRuntime, type DraftAnchor, type DraftRuntimeOptions, type ReadShader, type TiedTable } from '../draft/gdnEagle3Runtime.js';
 import type { DraftTree, VerifyResult } from '../verifier/rejection.js';
 import { SpecCoreWasm, type EngineAWasm, type LearnedCutoffOptions, type LearnedCutoffWasm, type PathAWasm } from '../wasm/specCore.js';
 
@@ -62,7 +62,11 @@ export interface OffscreenSpecAdapterOptions {
   draftMs?: number;
   maxCtx?: number;
   /** Engine C (EXP-007). Omit, or point at a missing manifest, for Engine A only. */
-  engineC?: { manifestUrl: URL; device: GPUDevice; table: TiedTable; readShader: ReadShader; expectedSha256?: string };
+  engineC?: {
+    manifestUrl: URL; device: GPUDevice; table: TiedTable; readShader: ReadShader; expectedSha256?: string;
+    /** Kernel tier: 'auto' (default, fastest supported) or 'reference' (bit-exact scalar kernels). */
+    mode?: DraftRuntimeOptions['mode'];
+  };
   /**
    * Adaptive per-step learned cutoff (A+B+C) in spec-core WASM. Default on.
    * `false` restores the RC1 router (the learned chain fills the budget).
@@ -173,7 +177,7 @@ export class OffscreenSpecAdapter {
       o.loadLearned ??
       (async (): Promise<LearnedDrafter | null> => {
         if (!o.engineC) return null;
-        const { manifestUrl, device, table, readShader } = o.engineC;
+        const { manifestUrl, device, table, readShader, mode } = o.engineC;
         bundle ??= loadGdnBundle(manifestUrl).catch((error) => {
           bundle = undefined;
           throw error;
@@ -181,7 +185,7 @@ export class OffscreenSpecAdapter {
         const valid = await bundle;
         if (valid && o.engineC.expectedSha256 && valid.sha256 !== o.engineC.expectedSha256)
           throw new Error('Draft head does not match the deployment SHA-256');
-        return valid && GdnDraftRuntime.create(device, valid, table, readShader);
+        return valid && GdnDraftRuntime.create(device, valid, table, readShader, { mode });
       });
     const threshold = o.threshold ?? 0.7;
     const cutoff = o.cutoff === false ? undefined

@@ -141,6 +141,7 @@ var U = "uniform";
 var R = "read-only-storage";
 var W = "storage";
 var q4Layout = [U, R, R, W];
+var q4x3Layout = [U, R, R, W, W, W];
 var tiedLayout = [U, R, R, R, W];
 var convLayout = [U, R, R, R, W, W, R];
 var ioLayout = [U, R, R, R, W, R, R, W];
@@ -160,12 +161,37 @@ var shaders = {
   gate: ["DN_IO", "gate", ioLayout],
   topK: ["TOPK_BATCH", "topk_batch", [U, R, W]],
   embedIndexed: ["gdn_eagle3_embed_indexed", "embed", tiedLayout],
-  select: ["gdn_eagle3_select", "select_top1", [U, R, R, W]]
+  select: ["gdn_eagle3_select", "select_top1", [U, R, R, W]],
+  // Fast tiers (not bit-identical to the reference kernels above).
+  q4Fast: ["q4_gemv_fast", "gemv", q4Layout],
+  swigluFast: ["q4_gemv_fast", "swiglu", q4Layout],
+  scoresFast: ["gdn_eagle3_tied_fast", "subset_logits", tiedLayout],
+  sliceScoresFast: ["gdn_eagle3_tied_fast", "subset_logits_slice", tiedLayout],
+  q4x3Fast: ["q4_gemv_fast", "gemv3", q4x3Layout],
+  q4x3FastSg: ["q4_gemv_fast_sg", "gemv3", q4x3Layout],
+  q4FastSg: ["q4_gemv_fast_sg", "gemv", q4Layout],
+  swigluFastSg: ["q4_gemv_fast_sg", "swiglu", q4Layout],
+  scoresFastSg: ["gdn_eagle3_tied_fast_sg", "subset_logits", tiedLayout],
+  sliceScoresFastSg: ["gdn_eagle3_tied_fast_sg", "subset_logits_slice", tiedLayout]
 };
 var draftShaderEntries = Object.values(shaders).map(([name, entryPoint]) => ({
   file: name + ".wgsl",
   entryPoint
 }));
+var TIER_KERNELS = {
+  reference: { q4: "q4", swiglu: "swiglu", scores: "scores", sliceScores: "sliceScores", fused3: null, rowsPerGroup: 64 },
+  fast: { q4: "q4Fast", swiglu: "swigluFast", scores: "scoresFast", sliceScores: "sliceScoresFast", fused3: "q4x3Fast", rowsPerGroup: 4 },
+  "fast-subgroups": { q4: "q4FastSg", swiglu: "swigluFastSg", scores: "scoresFastSg", sliceScores: "sliceScoresFastSg", fused3: "q4x3FastSg", rowsPerGroup: 4 }
+};
+var SHARED_KERNELS = ["rms", "embed", "conv", "commitConv", "pack", "recur", "commitState", "gate", "topK", "embedIndexed", "select"];
+function selectDraftTier(device, mode = "auto") {
+  if (mode === "reference") return "reference";
+  const features = device.features;
+  const info = device.adapterInfo;
+  const max = info?.subgroupMaxSize, min = info?.subgroupMinSize;
+  const subgroupsOk = !!features?.has("subgroups") && typeof max === "number" && max <= 64 && (min ?? max) >= 4;
+  return subgroupsOk ? "fast-subgroups" : "fast";
+}
 function shaderAssets(directory) {
   return async (filename) => {
     const response = await fetch(new URL(filename, directory));
@@ -173,11 +199,11 @@ function shaderAssets(directory) {
     return response.text();
   };
 }
-async function compile(device, read) {
+async function compile(device, read, keys) {
   const modules = /* @__PURE__ */ new Map();
   const pipes = /* @__PURE__ */ new Map();
   await Promise.all(
-    Object.keys(shaders).map(async (key) => {
+    keys.map(async (key) => {
       const [file, entryPoint, types] = shaders[key];
       let module = modules.get(file);
       if (!module) {
@@ -228,7 +254,7 @@ var MAX_CHAIN = 15;
 var CHAIN_RECORDS = 16;
 var SLOT_WORDS = CHAIN_RECORDS + 2 * (MAX_CHAIN + 1);
 var GdnDraftRuntime = class _GdnDraftRuntime {
-  constructor(device, bundle, slices, kernels, owner, weights, aux, convWeights) {
+  constructor(tier, device, bundle, slices, kernels, owner, weights, aux, convWeights) {
     this.device = device;
     this.bundle = bundle;
     this.slices = slices;
@@ -237,6 +263,8 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
     this.weights = weights;
     this.aux = aux;
     this.convWeights = convWeights;
+    this.tier = tier;
+    this.k = TIER_KERNELS[tier];
   }
   device;
   bundle;
@@ -252,8 +280,17 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
   chainQueue = Promise.resolve();
   /** Submits and readback bytes issued by the single-submit chain path (diagnostics). */
   chainStats = { proposals: 0, submits: 0, readbackBytes: 0 };
-  static async create(device, bundle, table, readShader) {
+  /** Kernel tier in use (see DraftKernelTier). */
+  tier;
+  k;
+  static async create(device, bundle, table, readShader, options = {}) {
     const { hidden, vocab } = bundle.config;
+    let tier = selectDraftTier(device, options.mode);
+    const q4Cols = ["fusion.weight", "qkv.weight", "z.weight", "ab.weight", "out.weight", "gate.weight", "up.weight", "down.weight"].map((n) => bundle.tensor(n).shape[1]);
+    if (tier !== "reference" && (hidden % 32 || q4Cols.some((c) => c % 32))) {
+      if (options.mode === "fast") throw new Error("Fast draft kernels need Q4 widths that are multiples of 32");
+      tier = "reference";
+    }
     const slices = "slices" in table ? table.slices : [{ ...table, startRow: 0, endRow: vocab }];
     let nextRow = 0;
     for (const slice of slices) {
@@ -265,7 +302,8 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
     }
     if (nextRow !== vocab)
       throw new Error("Invalid tied Q4 storage range");
-    const kernels = await compile(device, readShader);
+    const t = TIER_KERNELS[tier];
+    const kernels = await compile(device, readShader, [...SHARED_KERNELS, t.q4, t.swiglu, t.scores, t.sliceScores, ...t.fused3 ? [t.fused3] : []]);
     const owner = new Buffers(device);
     const upload = (label, value) => owner.make(label, value.byteLength, GPUBufferUsage.STORAGE, value);
     try {
@@ -285,6 +323,7 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
         return { ...slice, count: pairs.length / 2, ids: pairs.length ? upload("draft subset slice", Uint32Array.from(pairs)) : void 0 };
       });
       return new _GdnDraftRuntime(
+        tier,
         device,
         bundle,
         resident,
@@ -298,6 +337,18 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
       owner.destroy();
       throw error;
     }
+  }
+  /** Fast tiers: one dispatch for the QKV, Z and AB projections of the same input (same width, no residual). */
+  fused3() {
+    if (!this.k.fused3) return null;
+    const [q, z, ab] = ["qkv.weight", "z.weight", "ab.weight"].map((n) => this.bundle.tensor(n));
+    if (q.shape[1] !== z.shape[1] || q.shape[1] !== ab.shape[1]) return null;
+    const rows = q.shape[0] + z.shape[0] + ab.shape[0];
+    return {
+      key: this.k.fused3,
+      params: [q.shape[0], q.shape[1], q.offset / 4, 0, z.shape[0], ab.shape[0], z.offset / 4, ab.offset / 4],
+      groups: Math.ceil(rows / this.k.rowsPerGroup)
+    };
   }
   checkAnchor(anchor) {
     const { config } = this.bundle;
@@ -393,10 +444,10 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
       const e = this.bundle.tensor(name);
       const [rows, cols] = e.shape;
       run(
-        up ? "swiglu" : "q4",
+        up ? this.k.swiglu : this.k.q4,
         [rows, cols, e.offset / 4, 0, 0, residual, 1, up ? this.bundle.tensor(up).offset / 4 : 0],
         [this.weights, input, out],
-        Math.ceil(rows / 64)
+        Math.ceil(rows / this.k.rowsPerGroup)
       );
     };
     const rms = (name, input) => run("rms", [h, 1, this.bundle.tensor(name).offset / 4, 0], [input, this.weights, b.norm], 1);
@@ -412,9 +463,13 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
           Math.ceil(h / 64)
         );
       rms("input_norm.weight", b.mixed);
-      linear("qkv.weight", b.norm, b.raw);
-      linear("z.weight", b.norm, b.z);
-      linear("ab.weight", b.norm, b.ab);
+      const f3 = this.fused3();
+      if (f3) run(f3.key, f3.params, [this.weights, b.norm, b.raw, b.z, b.ab], f3.groups);
+      else {
+        linear("qkv.weight", b.norm, b.raw);
+        linear("z.weight", b.norm, b.z);
+        linear("ab.weight", b.norm, b.ab);
+      }
       const conv = [mask, b.raw, this.convWeights, b.history, b.activated, choice];
       const io = [b.activated, b.ab, this.aux, b.packed, b.y, b.z, b.gated];
       const dn = [mask, b.packed, b.matrix, b.y, choice];
@@ -433,10 +488,10 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
       for (const slice of this.slices) {
         if (slice.ids)
           run(
-            this.slices.length === 1 ? "scores" : "sliceScores",
+            this.slices.length === 1 ? this.k.scores : this.k.sliceScores,
             [h, 1, slice.count, slice.wordOffset ?? 0],
             [slice.buffer, slice.ids, b.norm, b.logits],
-            Math.ceil(slice.count / 64)
+            Math.ceil(slice.count / this.k.rowsPerGroup)
           );
       }
       run("select", [subset, step, CHAIN_RECORDS, 0], [b.logits, b.subsetGlobal, b.slots], 1);
@@ -570,10 +625,10 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
           const e = this.bundle.tensor(name);
           const [rows, cols] = e.shape;
           run(
-            up ? "swiglu" : "q4",
+            up ? this.k.swiglu : this.k.q4,
             [rows, cols, e.offset / 4, 0, 0, residual, 1, up ? this.bundle.tensor(up).offset / 4 : 0],
             [this.weights, input, out],
-            Math.ceil(rows / 64)
+            Math.ceil(rows / this.k.rowsPerGroup)
           );
         };
         const rms = (name, input) => run("rms", [h, 1, this.bundle.tensor(name).offset / 4, 0], [input, this.weights, norm], 1);
@@ -596,9 +651,13 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
           Math.ceil(h / 64)
         );
         rms("input_norm.weight", mixed);
-        linear("qkv.weight", norm, raw);
-        linear("z.weight", norm, z);
-        linear("ab.weight", norm, ab);
+        const f3 = this.fused3();
+        if (f3) run(f3.key, f3.params, [this.weights, norm, raw, z, ab], f3.groups);
+        else {
+          linear("qkv.weight", norm, raw);
+          linear("z.weight", norm, z);
+          linear("ab.weight", norm, ab);
+        }
         const conv = [mask, raw, this.convWeights, next.history, activated, choice];
         const io = [activated, ab, this.aux, packed, y, z, gated];
         const dn = [mask, packed, next.matrix, y, choice];
@@ -616,10 +675,10 @@ var GdnDraftRuntime = class _GdnDraftRuntime {
         rms("final_norm.weight", next.feature);
         for (const slice of this.slices) {
           if (slice.ids) run(
-            this.slices.length === 1 ? "scores" : "sliceScores",
+            this.slices.length === 1 ? this.k.scores : this.k.sliceScores,
             [h, 1, slice.count, slice.wordOffset ?? 0],
             [slice.buffer, slice.ids, norm, logits],
-            Math.ceil(slice.count / 64)
+            Math.ceil(slice.count / this.k.rowsPerGroup)
           );
         }
         run("topK", [subset, subset, width, 0], [logits, ranked], 1);
@@ -729,7 +788,9 @@ async function runInPage(o) {
     const adapter = await gpu?.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new Error("WebGPU adapter unavailable");
     label = adapter.info?.description || adapter.info?.vendor;
+    const requiredFeatures = adapter.features.has("subgroups") ? ["subgroups"] : [];
     device = await adapter.requestDevice({
+      requiredFeatures,
       requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize }
     });
   }
@@ -749,10 +810,10 @@ async function runInPage(o) {
   const tapsResponse = await fetch(new URL("fixtures/trained-exp007/taps.f32", base));
   if (!tapsResponse.ok) throw new Error("Unable to load the golden taps");
   const taps = new Float32Array(await tapsResponse.arrayBuffer());
-  const runtime = await GdnDraftRuntime.create(device, bundle, table, shaderAssets(new URL("wgsl/", base)));
+  const runtime = await GdnDraftRuntime.create(device, bundle, table, shaderAssets(new URL("wgsl/", base)), { mode: o.mode });
   try {
     const report = await runEngineBBench(runtime, { taps, rootToken: GOLDEN_ROOT_TOKEN }, o.probe, { budgetMs: o.budgetMs ?? 1e4, device: label });
-    return { ...report, headSha256: bundle.sha256, chainStats: { ...runtime.chainStats } };
+    return { ...report, headSha256: bundle.sha256, tier: runtime.tier, chainStats: { ...runtime.chainStats } };
   } finally {
     runtime.dispose();
     owned?.destroy();

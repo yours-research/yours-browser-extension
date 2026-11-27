@@ -1,0 +1,198 @@
+{
+  "format": "gdn-eagle3-draft",
+  "format_version": 1,
+  "file": "draft_head.bin",
+  "total_bytes": 9152,
+  "sha256": "c0272737e1d1c0fc59b4d4486253954b5b4b865bc4b48b3ff5851538eedb8eb9",
+  "byte_order": "little",
+  "config": {
+    "hidden": 32,
+    "heads": 2,
+    "dim": 16,
+    "intermediate": 32,
+    "vocab": 37,
+    "subset": 8,
+    "taps": 4
+  },
+  "layer_taps": [
+    3,
+    15,
+    31
+  ],
+  "tap_convention": "0-based decoder layer output (post residual, pre final norm); features concatenated in listed order",
+  "subset_size": 8,
+  "q4_layout": "row-major blocks of 32 weights; 20 bytes = 4 x u32 nibbles (low first), f16 scale, f16 low; w = q*scale + low; padding columns are discarded",
+  "shared_weights": "token embeddings and draft lm_head rows come from the target's tied table, gathered by subset_ids",
+  "tensors": [
+    {
+      "name": "log_rate",
+      "offset": 0,
+      "byte_length": 8,
+      "kind": "f32",
+      "shape": [
+        2
+      ]
+    },
+    {
+      "name": "dt_bias",
+      "offset": 8,
+      "byte_length": 8,
+      "kind": "f32",
+      "shape": [
+        2
+      ]
+    },
+    {
+      "name": "conv",
+      "offset": 16,
+      "byte_length": 1536,
+      "kind": "f32",
+      "shape": [
+        96,
+        4
+      ]
+    },
+    {
+      "name": "fusion.weight",
+      "offset": 1552,
+      "byte_length": 1920,
+      "kind": "q4",
+      "shape": [
+        32,
+        96
+      ],
+      "blocks_per_row": 3,
+      "padded_cols": 96
+    },
+    {
+      "name": "input_norm.weight",
+      "offset": 3472,
+      "byte_length": 128,
+      "kind": "f32",
+      "shape": [
+        32
+      ]
+    },
+    {
+      "name": "qkv.weight",
+      "offset": 3600,
+      "byte_length": 1920,
+      "kind": "q4",
+      "shape": [
+        96,
+        32
+      ],
+      "blocks_per_row": 1,
+      "padded_cols": 32
+    },
+    {
+      "name": "z.weight",
+      "offset": 5520,
+      "byte_length": 640,
+      "kind": "q4",
+      "shape": [
+        32,
+        32
+      ],
+      "blocks_per_row": 1,
+      "padded_cols": 32
+    },
+    {
+      "name": "ab.weight",
+      "offset": 6160,
+      "byte_length": 80,
+      "kind": "q4",
+      "shape": [
+        4,
+        32
+      ],
+      "blocks_per_row": 1,
+      "padded_cols": 32
+    },
+    {
+      "name": "head_norm.weight",
+      "offset": 6240,
+      "byte_length": 64,
+      "kind": "f32",
+      "shape": [
+        16
+      ]
+    },
+    {
+      "name": "out.weight",
+      "offset": 6304,
+      "byte_length": 640,
+      "kind": "q4",
+      "shape": [
+        32,
+        32
+      ],
+      "blocks_per_row": 1,
+      "padded_cols": 32
+    },
+    {
+      "name": "ff_norm.weight",
+      "offset": 6944,
+      "byte_length": 128,
+      "kind": "f32",
+      "shape": [
+        32
+      ]
+    },
+    {
+      "name": "gate.weight",
+      "offset": 7072,
+      "byte_length": 640,
+      "kind": "q4",
+      "shape": [
+        32,
+        32
+      ],
+      "blocks_per_row": 1,
+      "padded_cols": 32
+    },
+    {
+      "name": "up.weight",
+      "offset": 7712,
+      "byte_length": 640,
+      "kind": "q4",
+      "shape": [
+        32,
+        32
+      ],
+      "blocks_per_row": 1,
+      "padded_cols": 32
+    },
+    {
+      "name": "down.weight",
+      "offset": 8352,
+      "byte_length": 640,
+      "kind": "q4",
+      "shape": [
+        32,
+        32
+      ],
+      "blocks_per_row": 1,
+      "padded_cols": 32
+    },
+    {
+      "name": "final_norm.weight",
+      "offset": 8992,
+      "byte_length": 128,
+      "kind": "f32",
+      "shape": [
+        32
+      ]
+    },
+    {
+      "name": "subset_ids",
+      "offset": 9120,
+      "byte_length": 32,
+      "kind": "u32",
+      "shape": [
+        8
+      ]
+    }
+  ],
+  "metadata": {}
+}

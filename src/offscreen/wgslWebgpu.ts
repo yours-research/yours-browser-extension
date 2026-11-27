@@ -177,8 +177,9 @@ export async function acquireWgslDevice(): Promise<{
       device?: string;
       description?: string;
       subgroupMinSize?: number;
+      subgroupMaxSize?: number;
     };
-    limits?: { minSubgroupSize?: number };
+    limits?: { minSubgroupSize?: number; maxSubgroupSize?: number };
   };
   const adapterNameParts = [
     adapterExtra.info?.vendor,
@@ -191,6 +192,9 @@ export async function acquireWgslDevice(): Promise<{
   const adapterName = adapterNameParts.join('|') || 'webgpu-default';
   const subgroupMinSize = Number(
     adapterExtra.info?.subgroupMinSize ?? adapterExtra.limits?.minSubgroupSize ?? 32,
+  );
+  const subgroupMaxSize = Number(
+    adapterExtra.info?.subgroupMaxSize ?? adapterExtra.limits?.maxSubgroupSize ?? subgroupMinSize,
   );
   const features = new Set(Array.from(adapter.features));
   const wantF16 = features.has('shader-f16');
@@ -224,6 +228,28 @@ export async function acquireWgslDevice(): Promise<{
       device = await adapter.requestDevice();
     } catch (err) {
       throw lastError ?? err;
+    }
+  }
+
+  const deviceWithInfo = device as unknown as {
+    adapterInfo?: { subgroupMinSize?: number; subgroupMaxSize?: number };
+  };
+  if (
+    !deviceWithInfo.adapterInfo ||
+    typeof deviceWithInfo.adapterInfo.subgroupMaxSize !== 'number'
+  ) {
+    try {
+      Object.defineProperty(device, 'adapterInfo', {
+        value: {
+          ...(adapterExtra.info ?? {}),
+          ...(deviceWithInfo.adapterInfo ?? {}),
+          subgroupMinSize,
+          subgroupMaxSize,
+        },
+        configurable: true,
+      });
+    } catch {
+      // Ignore read-only host object
     }
   }
 

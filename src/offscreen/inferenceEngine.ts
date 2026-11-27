@@ -374,6 +374,9 @@ export class InferenceEngine {
             : DEFAULT_ENGINE_CONFIG.modelId)
         : this.config.modelId;
     const modelChanged = nextModelId !== this.config.modelId;
+    const prevSpecMode = this.config.speculativeEngineMode ?? 'auto';
+    const nextSpecMode = patch.speculativeEngineMode ?? prevSpecMode;
+    const specModeChanged = nextSpecMode !== prevSpecMode;
 
     this.config = {
       ...this.config,
@@ -392,6 +395,12 @@ export class InferenceEngine {
       this.log('info', 'offscreen', 'WGSL engine model/geometry/tier config changed; unloading active session.');
       await this.unloadModel();
     } else {
+      if (specModeChanged && this.offscreenSpecAdapter) {
+        this.offscreenSpecAdapter.dispose();
+        this.offscreenSpecAdapter = null;
+        this.offscreenSpecAdapterPromise = null;
+        this.engineBActiveForAdapter = false;
+      }
       this.updateTelemetry({
         modelId: this.config.modelId,
         dtype: this.config.dtype,
@@ -1470,7 +1479,7 @@ export class InferenceEngine {
         this.log(
           'info',
           'offscreen',
-          `Loaded cached spec calibration (${this.adapterName}): t1=${cached.t1Ms.toFixed(2)}ms, headMs=${cached.headMs.toFixed(2)}ms, rejectP=${cached.rejectPenaltyMs.toFixed(2)}ms, engineB=${shouldEnableEngineB(cached.headMs, cached.t1Ms) ? 'enabled' : 'bypassed (Engine A)'}.`,
+          `Loaded cached spec calibration (${this.adapterName}, tier=${cached.kernelTier ?? 'auto'}): t1=${cached.t1Ms.toFixed(2)}ms, headMs=${cached.headMs.toFixed(2)}ms, rejectP=${cached.rejectPenaltyMs.toFixed(2)}ms, engineB=${shouldEnableEngineB(cached.headMs, cached.t1Ms) ? 'enabled' : 'bypassed (Engine A)'}.`,
         );
         return;
       }
@@ -1554,6 +1563,7 @@ export class InferenceEngine {
       const bundle = await loadGdnBundle(new URL('assets/exp007/manifest.json', cycle17Base));
       const tapsResp = await fetch(new URL('fixtures/trained-exp007/taps.f32', cycle17Base));
       let headMs = 999;
+      let kernelTier: string | undefined;
       if (bundle && tapsResp.ok) {
         if (bundle.sha256 !== EXP007B_DRAFT_HEAD_SHA256) {
           throw new Error('EXP-007b calibration manifest SHA-256 mismatch');
@@ -1565,6 +1575,7 @@ export class InferenceEngine {
           { slices },
           shaderAssets(new URL('wgsl/', cycle17Base)),
         );
+        kernelTier = runtime.tier;
         try {
           const anchor = { taps, rootToken: 271 };
           await runtime.proposeChain(anchor, 5);
@@ -1597,6 +1608,7 @@ export class InferenceEngine {
       await saveSpecCalibration({
         adapterName: this.adapterName,
         dropinSha256: EXP007B_DRAFT_HEAD_SHA256,
+        kernelTier,
         t1Ms,
         stepMs,
         headMs,
@@ -1607,7 +1619,7 @@ export class InferenceEngine {
       this.log(
         'info',
         'offscreen',
-        `Silent spec calibration (${calMs.toFixed(0)}ms, ${this.adapterName}): t1=${t1Ms.toFixed(2)}ms, t5=${t5Ms.toFixed(2)}ms, headMs=${headMs.toFixed(2)}ms, rejectP=${rejectPenaltyMs.toFixed(2)}ms, engineB=${shouldEnableEngineB(headMs, t1Ms) ? 'enabled' : 'bypassed (Engine A)'}.`,
+        `Silent spec calibration (${calMs.toFixed(0)}ms, ${this.adapterName}, tier=${kernelTier ?? 'unknown'}): t1=${t1Ms.toFixed(2)}ms, t5=${t5Ms.toFixed(2)}ms, headMs=${headMs.toFixed(2)}ms, rejectP=${rejectPenaltyMs.toFixed(2)}ms, engineB=${shouldEnableEngineB(headMs, t1Ms) ? 'enabled' : 'bypassed (Engine A)'}.`,
       );
     } finally {
       engine.deleteGpuPrefixSlot(calSlot);
@@ -1666,7 +1678,13 @@ export class InferenceEngine {
           this.measuredEngineBReport?.reject?.rejectPenaltyMs ??
           this.measuredRejectPenaltyMs ??
           this.engineACostModel.rejectPenaltyMs;
-        const enableEngineB = shouldEnableEngineB(effectiveHeadMs, effectiveT1Ms);
+        const specMode = this.config.speculativeEngineMode ?? 'auto';
+        const enableEngineB =
+          specMode === 'learned'
+            ? true
+            : specMode === 'engine-a'
+              ? false
+              : shouldEnableEngineB(effectiveHeadMs, effectiveT1Ms);
         engine.setCaptureDraftTaps?.(enableEngineB);
 
         const measuredOpts = this.measuredEngineBReport
@@ -2933,6 +2951,7 @@ export class InferenceEngine {
               { slices: ebSlices },
               shaderAssets(new URL('wgsl/', cycle17Base)),
             );
+            const activeTier = runtime.tier;
             try {
               const ebReport = await runEngineBBench(
                 runtime,
@@ -2941,8 +2960,50 @@ export class InferenceEngine {
                 { budgetMs: 10_000 },
               );
               measuredEbReport = ebReport;
+
+              // Also measure legacy reference tier side-by-side when fast tier is active.
+              let referenceReport:
+                | {
+                    tier: 'reference';
+                    headMs: number;
+                    head: Array<{ k: number; medianMs: number; p10Ms: number; p90Ms: number; samples: number }>;
+                    elapsedMs: number;
+                  }
+                | undefined;
+              if (activeTier !== 'reference') {
+                const refRuntime = await GdnDraftRuntime.create(
+                  ebDevice,
+                  bundle,
+                  { slices: ebSlices },
+                  shaderAssets(new URL('wgsl/', cycle17Base)),
+                  { mode: 'reference' },
+                );
+                try {
+                  const refBench = await runEngineBBench(
+                    refRuntime,
+                    { taps, rootToken: 271 },
+                    undefined,
+                    { budgetMs: 6_000 },
+                  );
+                  referenceReport = {
+                    tier: 'reference',
+                    headMs: Number(refBench.headMs.toFixed(3)),
+                    head: refBench.head.map((h) => ({
+                      ...h,
+                      medianMs: Number(h.medianMs.toFixed(3)),
+                      p10Ms: Number(h.p10Ms.toFixed(3)),
+                      p90Ms: Number(h.p90Ms.toFixed(3)),
+                    })),
+                    elapsedMs: Number(refBench.elapsedMs.toFixed(1)),
+                  };
+                } finally {
+                  refRuntime.dispose();
+                }
+              }
+
               engineB = {
                 headSha256: bundle.sha256,
+                tier: activeTier,
                 headMs: Number(ebReport.headMs.toFixed(3)),
                 head: ebReport.head.map((h) => ({
                   ...h,
@@ -2961,6 +3022,7 @@ export class InferenceEngine {
                       },
                     }
                   : {}),
+                ...(referenceReport ? { reference: referenceReport } : {}),
                 elapsedMs: Number(ebReport.elapsedMs.toFixed(1)),
               };
             } finally {
@@ -3009,6 +3071,7 @@ export class InferenceEngine {
         await saveSpecCalibration({
           adapterName: this.adapterName,
           dropinSha256: EXP007B_DRAFT_HEAD_SHA256,
+          kernelTier: engineB?.tier,
           t1Ms,
           stepMs,
           headMs: measuredEbReport.headMs,

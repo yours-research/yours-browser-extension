@@ -6,6 +6,7 @@ const U = 'uniform',
   R = 'read-only-storage',
   W = 'storage';
 const q4Layout = [U, R, R, W] as const;
+const q4x3Layout = [U, R, R, W, W, W] as const;
 const tiedLayout = [U, R, R, R, W] as const;
 const convLayout = [U, R, R, R, W, W, R] as const;
 const ioLayout = [U, R, R, R, W, R, R, W] as const;
@@ -27,6 +28,17 @@ const shaders = {
   topK: ['TOPK_BATCH', 'topk_batch', [U, R, W]],
   embedIndexed: ['gdn_eagle3_embed_indexed', 'embed', tiedLayout],
   select: ['gdn_eagle3_select', 'select_top1', [U, R, R, W]],
+  // Fast tiers (not bit-identical to the reference kernels above).
+  q4Fast: ['q4_gemv_fast', 'gemv', q4Layout],
+  swigluFast: ['q4_gemv_fast', 'swiglu', q4Layout],
+  scoresFast: ['gdn_eagle3_tied_fast', 'subset_logits', tiedLayout],
+  sliceScoresFast: ['gdn_eagle3_tied_fast', 'subset_logits_slice', tiedLayout],
+  q4x3Fast: ['q4_gemv_fast', 'gemv3', q4x3Layout],
+  q4x3FastSg: ['q4_gemv_fast_sg', 'gemv3', q4x3Layout],
+  q4FastSg: ['q4_gemv_fast_sg', 'gemv', q4Layout],
+  swigluFastSg: ['q4_gemv_fast_sg', 'swiglu', q4Layout],
+  scoresFastSg: ['gdn_eagle3_tied_fast_sg', 'subset_logits', tiedLayout],
+  sliceScoresFastSg: ['gdn_eagle3_tied_fast_sg', 'subset_logits_slice', tiedLayout],
 } as const satisfies Record<string, readonly [string, string, readonly Access[]]>;
 type Kernel = keyof typeof shaders;
 
@@ -34,6 +46,35 @@ type Kernel = keyof typeof shaders;
 export const draftShaderEntries = Object.values(shaders).map(([name, entryPoint]) => ({
   file: name + '.wgsl', entryPoint,
 }));
+
+/**
+ * Kernel tier for the hot projections and subset logits.
+ *  - 'reference': the bit-exact scalar kernels (CPU/WARP four-way parity path).
+ *  - 'fast': word-parallel f32 kernels with workgroup reductions and native FMA (any WebGPU device).
+ *  - 'fast-subgroups': the same with subgroupAdd (device feature 'subgroups', subgroup size 4..64).
+ * Fast tiers agree with the reference to float rounding, not bit-for-bit.
+ */
+export type DraftKernelTier = 'reference' | 'fast' | 'fast-subgroups';
+export interface DraftRuntimeOptions {
+  /** 'auto' (default) picks the fastest tier the device supports; 'reference' keeps bit-exact kernels. */
+  mode?: 'auto' | 'reference' | 'fast';
+}
+const TIER_KERNELS = {
+  reference: { q4: 'q4', swiglu: 'swiglu', scores: 'scores', sliceScores: 'sliceScores', fused3: null, rowsPerGroup: 64 },
+  fast: { q4: 'q4Fast', swiglu: 'swigluFast', scores: 'scoresFast', sliceScores: 'sliceScoresFast', fused3: 'q4x3Fast', rowsPerGroup: 4 },
+  'fast-subgroups': { q4: 'q4FastSg', swiglu: 'swigluFastSg', scores: 'scoresFastSg', sliceScores: 'sliceScoresFastSg', fused3: 'q4x3FastSg', rowsPerGroup: 4 },
+} as const satisfies Record<DraftKernelTier, { q4: Kernel; swiglu: Kernel; scores: Kernel; sliceScores: Kernel; fused3: Kernel | null; rowsPerGroup: number }>;
+const SHARED_KERNELS: Kernel[] = ['rms', 'embed', 'conv', 'commitConv', 'pack', 'recur', 'commitState', 'gate', 'topK', 'embedIndexed', 'select'];
+
+/** Choose the tier: subgroups need the device feature and a known subgroup size of at most 64. */
+export function selectDraftTier(device: GPUDevice, mode: DraftRuntimeOptions['mode'] = 'auto'): DraftKernelTier {
+  if (mode === 'reference') return 'reference';
+  const features = (device as { features?: { has(name: string): boolean } }).features;
+  const info = (device as { adapterInfo?: { subgroupMinSize?: number; subgroupMaxSize?: number } }).adapterInfo;
+  const max = info?.subgroupMaxSize, min = info?.subgroupMinSize;
+  const subgroupsOk = !!features?.has('subgroups') && typeof max === 'number' && max <= 64 && (min ?? max) >= 4;
+  return subgroupsOk ? 'fast-subgroups' : 'fast';
+}
 
 export interface DraftAnchor {
   /** Concatenated post-residual hidden vectors in 3, 15, 31 order, before final norm.
@@ -61,11 +102,11 @@ export function shaderAssets(directory: URL): ReadShader {
   };
 }
 
-async function compile(device: GPUDevice, read: ReadShader) {
+async function compile(device: GPUDevice, read: ReadShader, keys: readonly Kernel[]) {
   const modules = new Map<string, Promise<GPUShaderModule>>();
   const pipes = new Map<Kernel, GPUComputePipeline>();
   await Promise.all(
-    (Object.keys(shaders) as Kernel[]).map(async (key) => {
+    keys.map(async (key) => {
       const [file, entryPoint, types] = shaders[key];
       let module = modules.get(file);
       if (!module) {
@@ -146,7 +187,11 @@ export class GdnDraftRuntime {
   private chainQueue: Promise<unknown> = Promise.resolve();
   /** Submits and readback bytes issued by the single-submit chain path (diagnostics). */
   readonly chainStats = { proposals: 0, submits: 0, readbackBytes: 0 };
+  /** Kernel tier in use (see DraftKernelTier). */
+  readonly tier: DraftKernelTier;
+  private readonly k: (typeof TIER_KERNELS)[DraftKernelTier];
   private constructor(
+    tier: DraftKernelTier,
     private readonly device: GPUDevice,
     private readonly bundle: GdnBundle,
     private readonly slices: ResidentSlice[],
@@ -155,10 +200,20 @@ export class GdnDraftRuntime {
     private readonly weights: GPUBuffer,
     private readonly aux: GPUBuffer,
     private readonly convWeights: GPUBuffer,
-  ) {}
+  ) {
+    this.tier = tier;
+    this.k = TIER_KERNELS[tier];
+  }
 
-  static async create(device: GPUDevice, bundle: GdnBundle, table: TiedTable, readShader: ReadShader) {
+  static async create(device: GPUDevice, bundle: GdnBundle, table: TiedTable, readShader: ReadShader, options: DraftRuntimeOptions = {}) {
     const { hidden, vocab } = bundle.config;
+    let tier = selectDraftTier(device, options.mode);
+    // The fast kernels assume whole 32-column Q4 blocks.
+    const q4Cols = ['fusion.weight', 'qkv.weight', 'z.weight', 'ab.weight', 'out.weight', 'gate.weight', 'up.weight', 'down.weight'].map((n) => bundle.tensor(n).shape[1]);
+    if (tier !== 'reference' && (hidden % 32 || q4Cols.some((c) => c % 32))) {
+      if (options.mode === 'fast') throw new Error('Fast draft kernels need Q4 widths that are multiples of 32');
+      tier = 'reference';
+    }
     const slices = 'slices' in table ? table.slices : [{ ...table, startRow: 0, endRow: vocab }];
     let nextRow = 0;
     for (const slice of slices) {
@@ -173,7 +228,8 @@ export class GdnDraftRuntime {
     }
     if (nextRow !== vocab)
       throw new Error('Invalid tied Q4 storage range');
-    const kernels = await compile(device, readShader);
+    const t = TIER_KERNELS[tier];
+    const kernels = await compile(device, readShader, [...SHARED_KERNELS, t.q4, t.swiglu, t.scores, t.sliceScores, ...(t.fused3 ? [t.fused3] : [])]);
     const owner = new Buffers(device);
     const upload = (label: string, value: ArrayBufferView) =>
       owner.make(label, value.byteLength, GPUBufferUsage.STORAGE, value);
@@ -194,6 +250,7 @@ export class GdnDraftRuntime {
         return { ...slice, count: pairs.length / 2, ids: pairs.length ? upload('draft subset slice', Uint32Array.from(pairs)) : undefined };
       });
       return new GdnDraftRuntime(
+        tier,
         device,
         bundle,
         resident,
@@ -207,6 +264,19 @@ export class GdnDraftRuntime {
       owner.destroy();
       throw error;
     }
+  }
+
+  /** Fast tiers: one dispatch for the QKV, Z and AB projections of the same input (same width, no residual). */
+  private fused3(): { key: Kernel; params: number[]; groups: number } | null {
+    if (!this.k.fused3) return null;
+    const [q, z, ab] = ['qkv.weight', 'z.weight', 'ab.weight'].map((n) => this.bundle.tensor(n));
+    if (q.shape[1] !== z.shape[1] || q.shape[1] !== ab.shape[1]) return null;
+    const rows = q.shape[0] + z.shape[0] + ab.shape[0];
+    return {
+      key: this.k.fused3,
+      params: [q.shape[0], q.shape[1], q.offset / 4, 0, z.shape[0], ab.shape[0], z.offset / 4, ab.offset / 4],
+      groups: Math.ceil(rows / this.k.rowsPerGroup),
+    };
   }
 
   private checkAnchor(anchor: DraftAnchor) {
@@ -302,8 +372,8 @@ export class GdnDraftRuntime {
     const linear = (name: string, input: GPUBuffer, out: GPUBuffer, residual = 0, up?: string) => {
       const e = this.bundle.tensor(name);
       const [rows, cols] = e.shape;
-      run(up ? 'swiglu' : 'q4', [rows, cols, e.offset / 4, 0, 0, residual, 1, up ? this.bundle.tensor(up).offset / 4 : 0],
-        [this.weights, input, out], Math.ceil(rows / 64));
+      run(up ? this.k.swiglu : this.k.q4, [rows, cols, e.offset / 4, 0, 0, residual, 1, up ? this.bundle.tensor(up).offset / 4 : 0],
+        [this.weights, input, out], Math.ceil(rows / this.k.rowsPerGroup));
     };
     const rms = (name: string, input: GPUBuffer) =>
       run('rms', [h, 1, this.bundle.tensor(name).offset / 4, 0], [input, this.weights, b.norm], 1);
@@ -317,9 +387,13 @@ export class GdnDraftRuntime {
         run('embedIndexed', [h, slice.startRow, slice.endRow, slice.wordOffset ?? 0, step, 0, 0, 0],
           [slice.buffer, b.slots, step ? b.feature : b.fused, b.mixed], Math.ceil(h / 64));
       rms('input_norm.weight', b.mixed);
-      linear('qkv.weight', b.norm, b.raw);
-      linear('z.weight', b.norm, b.z);
-      linear('ab.weight', b.norm, b.ab);
+      const f3 = this.fused3();
+      if (f3) run(f3.key, f3.params, [this.weights, b.norm, b.raw, b.z, b.ab], f3.groups);
+      else {
+        linear('qkv.weight', b.norm, b.raw);
+        linear('z.weight', b.norm, b.z);
+        linear('ab.weight', b.norm, b.ab);
+      }
       const conv = [mask, b.raw, this.convWeights, b.history, b.activated, choice];
       const io = [b.activated, b.ab, this.aux, b.packed, b.y, b.z, b.gated];
       const dn = [mask, b.packed, b.matrix, b.y, choice];
@@ -337,8 +411,8 @@ export class GdnDraftRuntime {
       rms('final_norm.weight', b.feature);
       for (const slice of this.slices) {
         if (slice.ids)
-          run(this.slices.length === 1 ? 'scores' : 'sliceScores', [h, 1, slice.count, slice.wordOffset ?? 0],
-            [slice.buffer, slice.ids, b.norm, b.logits], Math.ceil(slice.count / 64));
+          run(this.slices.length === 1 ? this.k.scores : this.k.sliceScores, [h, 1, slice.count, slice.wordOffset ?? 0],
+            [slice.buffer, slice.ids, b.norm, b.logits], Math.ceil(slice.count / this.k.rowsPerGroup));
       }
       run('select', [subset, step, CHAIN_RECORDS, 0], [b.logits, b.subsetGlobal, b.slots], 1);
     }
@@ -503,10 +577,10 @@ export class GdnDraftRuntime {
           const e = this.bundle.tensor(name);
           const [rows, cols] = e.shape;
           run(
-            up ? 'swiglu' : 'q4',
+            up ? this.k.swiglu : this.k.q4,
             [rows, cols, e.offset / 4, 0, 0, residual, 1, up ? this.bundle.tensor(up).offset / 4 : 0],
             [this.weights, input, out],
-            Math.ceil(rows / 64),
+            Math.ceil(rows / this.k.rowsPerGroup),
           );
         };
         const rms = (name: string, input: GPUBuffer) =>
@@ -530,9 +604,13 @@ export class GdnDraftRuntime {
           Math.ceil(h / 64),
         );
         rms('input_norm.weight', mixed);
-        linear('qkv.weight', norm, raw);
-        linear('z.weight', norm, z);
-        linear('ab.weight', norm, ab);
+        const f3 = this.fused3();
+        if (f3) run(f3.key, f3.params, [this.weights, norm, raw, z, ab], f3.groups);
+        else {
+          linear('qkv.weight', norm, raw);
+          linear('z.weight', norm, z);
+          linear('ab.weight', norm, ab);
+        }
         const conv = [mask, raw, this.convWeights, next.history, activated, choice];
         const io = [activated, ab, this.aux, packed, y, z, gated];
         const dn = [mask, packed, next.matrix, y, choice];
@@ -549,8 +627,8 @@ export class GdnDraftRuntime {
         linear('down.weight', mlp, next.feature, 1);
         rms('final_norm.weight', next.feature);
         for (const slice of this.slices) {
-          if (slice.ids) run(this.slices.length === 1 ? 'scores' : 'sliceScores',
-            [h, 1, slice.count, slice.wordOffset ?? 0], [slice.buffer, slice.ids, norm, logits], Math.ceil(slice.count / 64));
+          if (slice.ids) run(this.slices.length === 1 ? this.k.scores : this.k.sliceScores,
+            [h, 1, slice.count, slice.wordOffset ?? 0], [slice.buffer, slice.ids, norm, logits], Math.ceil(slice.count / this.k.rowsPerGroup));
         }
         run('topK', [subset, subset, width, 0], [logits, ranked], 1);
         copy(ranked, staging);

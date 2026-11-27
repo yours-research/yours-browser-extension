@@ -1,6 +1,10 @@
+export const CYCLE17_DROPIN_CALIBRATION_REV = 'm11-b7fb760';
+
 export interface PersistedSpecCalibration {
   adapterName: string;
   dropinSha256: string;
+  packRevision?: string;
+  kernelTier?: string;
   t1Ms: number;
   stepMs: number[];
   headMs: number;
@@ -13,7 +17,7 @@ const CALIBRATION_IDB_NAME = 'tinygpt-spec-calibration';
 const CALIBRATION_IDB_STORE = 'calibrations';
 
 export function buildSpecCalibrationKey(adapterName: string, dropinSha256: string): string {
-  return `${adapterName || 'webgpu-default'}::${dropinSha256}`;
+  return `${adapterName || 'webgpu-default'}::${dropinSha256}::${CYCLE17_DROPIN_CALIBRATION_REV}`;
 }
 
 export function isValidSpecCalibration(
@@ -26,6 +30,7 @@ export function isValidSpecCalibration(
   return (
     r.adapterName === adapterName &&
     r.dropinSha256 === dropinSha256 &&
+    r.packRevision === CYCLE17_DROPIN_CALIBRATION_REV &&
     typeof r.t1Ms === 'number' &&
     Number.isFinite(r.t1Ms) &&
     r.t1Ms > 0 &&
@@ -155,23 +160,27 @@ export async function loadSpecCalibration(
 }
 
 export async function saveSpecCalibration(entry: PersistedSpecCalibration): Promise<void> {
-  const key = buildSpecCalibrationKey(entry.adapterName, entry.dropinSha256);
+  const stamped: PersistedSpecCalibration = {
+    ...entry,
+    packRevision: entry.packRevision ?? CYCLE17_DROPIN_CALIBRATION_REV,
+  };
+  const key = buildSpecCalibrationKey(stamped.adapterName, stamped.dropinSha256);
   const storageKey = `${CALIBRATION_STORAGE_PREFIX}${key}`;
   const chromeStorage = (globalThis as { chrome?: { storage?: { local?: chrome.storage.LocalStorageArea } } })
     .chrome?.storage?.local;
   if (chromeStorage) {
     try {
       await new Promise<void>((resolve) => {
-        chromeStorage.set({ [storageKey]: entry }, () => resolve());
+        chromeStorage.set({ [storageKey]: stamped }, () => resolve());
       });
     } catch {
       // ignore chrome.storage errors
     }
   }
-  await writeToIdb(key, entry);
+  await writeToIdb(key, stamped);
   try {
     if (typeof globalThis.localStorage !== 'undefined') {
-      globalThis.localStorage.setItem(storageKey, JSON.stringify(entry));
+      globalThis.localStorage.setItem(storageKey, JSON.stringify(stamped));
     }
   } catch {
     // ignore localStorage errors

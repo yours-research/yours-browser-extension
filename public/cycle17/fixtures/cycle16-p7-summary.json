@@ -1,0 +1,140 @@
+{
+  "source": "Extension Cycle 16 final run-live-ab.mjs console report 2026-11-27T08:06:03.401Z to 08:10:44.798Z, browser 61a546a. Medians over repeats. json-person checked separately.",
+  "scoredPairs": 42,
+  "jsonPersonPairs": 3,
+  "geomean": {
+    "decode": 2.299,
+    "wall": 1.097
+  },
+  "median": {
+    "decodeOff": 85.1,
+    "decodeOn": 189.5,
+    "ttftMsOff": 88,
+    "ttftMsOn": 144,
+    "wallMsOff": 2900,
+    "wallMsOn": 2646
+  },
+  "tau": 5.33,
+  "alpha": 0.94,
+  "categories": {
+    "casual": { "decodeSpeedup": 2.20, "wallSpeedup": 1.11, "tau": 5.12, "alpha": 0.98 },
+    "thinking": { "decodeSpeedup": 2.22, "wallSpeedup": 1.08, "tau": 4.42, "alpha": 0.90 },
+    "copy": { "decodeSpeedup": 2.22, "wallSpeedup": 0.94, "tau": 5.45, "alpha": 0.95 },
+    "tools": { "decodeSpeedup": 2.38, "wallSpeedup": 1.12, "tau": 4.76, "alpha": 0.89 },
+    "code": { "decodeSpeedup": 2.68, "wallSpeedup": 1.49, "tau": 6.89, "alpha": 0.98 }
+  },
+  "prompts": [
+    {
+      "id": "chat-tokyo",
+      "category": "casual",
+      "medianDecodeOff": 86.5,
+      "medianDecodeOn": 173.2,
+      "medianWallMsOff": 2272,
+      "medianWallMsOn": 1803
+    },
+    {
+      "id": "chat-hashmap",
+      "category": "casual",
+      "medianDecodeOff": 87.2,
+      "medianDecodeOn": 184.1,
+      "medianWallMsOff": 3174,
+      "medianWallMsOn": 2606
+    },
+    {
+      "id": "chat-email",
+      "category": "casual",
+      "medianDecodeOff": 81.7,
+      "medianDecodeOn": 206.7,
+      "medianWallMsOff": 2653,
+      "medianWallMsOn": 2725
+    },
+    {
+      "id": "math-mul",
+      "category": "thinking",
+      "medianDecodeOff": 86,
+      "medianDecodeOn": 157.6,
+      "medianWallMsOff": 2184,
+      "medianWallMsOn": 1876
+    },
+    {
+      "id": "math-change",
+      "category": "thinking",
+      "medianDecodeOff": 87.4,
+      "medianDecodeOn": 192.9,
+      "medianWallMsOff": 1926,
+      "medianWallMsOn": 1902
+    },
+    {
+      "id": "math-sum",
+      "category": "thinking",
+      "medianDecodeOff": 87,
+      "medianDecodeOn": 224.3,
+      "medianWallMsOff": 2665,
+      "medianWallMsOn": 2429
+    },
+    {
+      "id": "copy-alpha",
+      "category": "copy",
+      "medianDecodeOff": 84.7,
+      "medianDecodeOn": 225.8,
+      "medianWallMsOff": 2980,
+      "medianWallMsOn": 2697
+    },
+    {
+      "id": "copy-battery",
+      "category": "copy",
+      "medianDecodeOff": 83,
+      "medianDecodeOn": 157.3,
+      "medianWallMsOff": 3050,
+      "medianWallMsOn": 2712
+    },
+    {
+      "id": "copy-recipe",
+      "category": "copy",
+      "medianDecodeOff": 85,
+      "medianDecodeOn": 214.3,
+      "medianWallMsOff": 3052,
+      "medianWallMsOn": 2678
+    },
+    {
+      "id": "copy-cons",
+      "category": "copy",
+      "medianDecodeOff": 83.7,
+      "medianDecodeOn": 160,
+      "medianWallMsOff": 2089,
+      "medianWallMsOn": 2603
+    },
+    {
+      "id": "tools-sum",
+      "category": "tools",
+      "medianDecodeOff": 78.9,
+      "medianDecodeOn": 176.5,
+      "medianWallMsOff": 4879,
+      "medianWallMsOn": 4239
+    },
+    {
+      "id": "tools-region",
+      "category": "tools",
+      "medianDecodeOff": 81.6,
+      "medianDecodeOn": 203.2,
+      "medianWallMsOff": 3627,
+      "medianWallMsOn": 3453
+    },
+    {
+      "id": "code-prime",
+      "category": "code",
+      "medianDecodeOff": 85.6,
+      "medianDecodeOn": 229.2,
+      "medianWallMsOff": 4138,
+      "medianWallMsOn": 2850
+    },
+    {
+      "id": "code-debounce",
+      "category": "code",
+      "medianDecodeOff": 85.4,
+      "medianDecodeOn": 231.2,
+      "medianWallMsOff": 3512,
+      "medianWallMsOn": 2698
+    }
+  ]
+}

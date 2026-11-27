@@ -206,6 +206,8 @@ export interface EngineConfig {
   executionHost: ExecutionHost;
   /** Enables zero-weight suffix speculative decoding for greedy generation */
   enableSpeculative: boolean;
+  /** Optional speculative routing override ('auto' = calibrated break-even, 'engine-a' = SAM+grammar only, 'learned' = force Engine B) */
+  speculativeEngineMode?: 'auto' | 'engine-a' | 'learned';
   /** Optional compute tier override ('tier1-f16-subgroups' | 'tier2-f16-shared' | 'tier3-f32-universal') */
   forceComputeTier?: WgslComputeTier | null;
   /** Optional external/local HTTP base URL serving a WGSL slab bundle (used for model benchmarking) */
@@ -236,6 +238,7 @@ export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
   gpuPacingMode: 'balanced',
   executionHost: 'worker',
   enableSpeculative: true,
+  speculativeEngineMode: 'auto',
   forceComputeTier: null,
   bundleBaseUrl: null,
 };
@@ -663,6 +666,7 @@ export interface SpecMicrobenchResult {
   };
   engineB?: {
     headSha256: string;
+    tier?: 'reference' | 'fast' | 'fast-subgroups';
     headMs: number;
     head: Array<{ k: number; medianMs: number; p10Ms: number; p90Ms: number; samples: number }>;
     reject?: {
@@ -671,6 +675,12 @@ export interface SpecMicrobenchResult {
       rejectMs: number;
       rejectPenaltyMs: number;
       samples: number;
+    };
+    reference?: {
+      tier: 'reference';
+      headMs: number;
+      head: Array<{ k: number; medianMs: number; p10Ms: number; p90Ms: number; samples: number }>;
+      elapsedMs: number;
     };
     elapsedMs: number;
     error?: string;
