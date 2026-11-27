@@ -11,28 +11,27 @@ import {
   ActionBar,
   AssistantMessage,
   BranchPicker,
-  CitationFootnoteList,
   EmptyPanelState,
   ErrorRecoveryCard,
-  InlineCitationPopover,
   InlineNotice,
   InlineToolStatus,
   OnboardingCard,
   AgentHandoffCard,
   PermissionCard,
   ReasoningTrace,
-  SourcesDrawer,
   ToolTraceList,
   UserMessageBubble,
-  WebSearchSourcesStrip,
-  type CitationFootnoteItem,
-  type InlineCitationSource,
   type InlineNoticeTone,
   type PromptStarterItem,
   type SourceCitation,
-  type WebSearchSourceItem,
 } from '@yours/ui';
 import type { TelemetryState } from '../../shared/protocol.ts';
+import {
+  collectTurnSourcesForAssistant,
+  extractDomainLabel,
+  findTurnKeyForAssistantNode,
+  type TurnResponseSource,
+} from '../responseSources.ts';
 import {
   buildGroupStepsFromToolNodes,
   formatToolChainSummary,
@@ -42,6 +41,7 @@ import {
 } from '../toolPresentation.ts';
 import type { ToolTraceRecord } from '@yours/harness/storage';
 import { GenUiRenderer } from './GenUiRenderer.tsx';
+import { TurnSourcesTrigger } from './TurnSourcesTrigger.tsx';
 
 export interface ChatThreadProps {
   nodes: MessageNode[];
@@ -59,8 +59,8 @@ export interface ChatThreadProps {
   engineTelemetry: TelemetryState;
   error: string | null;
   starters: readonly PromptStarterItem[];
-  sources: readonly SourceCitation[];
-  sourcesDrawerVariant?: 'pill' | 'inline';
+  sources?: readonly SourceCitation[];
+  sourcesByTurn?: Readonly<Record<string, TurnResponseSource[]>>;
   isModelReady?: boolean;
   isModelLoading?: boolean;
   selectedModelLabel?: string;
@@ -132,48 +132,15 @@ function getContextTagFromMessage(msg: HarnessMessage): string | undefined {
   return undefined;
 }
 
-function safeDomainFromUrl(url?: string): string | undefined {
-  if (!url) return undefined;
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return undefined;
+function openExternalSourceUrl(rawUrl: string): void {
+  if (!/^https?:\/\//i.test(rawUrl)) return;
+  if (typeof chrome !== 'undefined' && chrome.tabs?.create) {
+    void chrome.tabs.create({ url: rawUrl });
+    return;
   }
-}
-
-function toInlineCitationSource(src: SourceCitation, idx: number): InlineCitationSource {
-  return {
-    id: src.id,
-    index: idx + 1,
-    label: `[${idx + 1}]`,
-    title: src.title,
-    domain: safeDomainFromUrl(src.url),
-    snippet: src.subtitle || src.title,
-    url: src.url,
-  };
-}
-
-function toCitationFootnoteItem(src: SourceCitation, idx: number): CitationFootnoteItem {
-  return {
-    id: src.id,
-    index: idx + 1,
-    title: src.title,
-    domain: safeDomainFromUrl(src.url),
-    excerpt: src.subtitle || src.title,
-    url: src.url,
-    highlight: idx % 2 === 0 ? 'mono' : 'warm',
-    source: toInlineCitationSource(src, idx),
-  };
-}
-
-function toWebSearchSourceItem(src: SourceCitation): WebSearchSourceItem {
-  return {
-    id: src.id,
-    title: src.title,
-    url: src.url,
-    domain: safeDomainFromUrl(src.url),
-    snippet: src.subtitle || src.title,
-  };
+  if (typeof window !== 'undefined' && typeof window.open === 'function') {
+    window.open(rawUrl, '_blank', 'noopener,noreferrer');
+  }
 }
 
 function renderBranchPicker(
@@ -215,8 +182,7 @@ export function ChatThread({
   engineTelemetry,
   error,
   starters,
-  sources,
-  sourcesDrawerVariant = 'inline',
+  sourcesByTurn,
   isModelReady = true,
   isModelLoading = false,
   selectedModelLabel,
@@ -434,6 +400,14 @@ export function ChatThread({
             }
 
             const isLastAssistant = node.id === lastAssistantNodeId;
+            const hasContinuationAssistant = visibleNodes[i + 1]?.message.role === 'assistant';
+            const turnSources = !hasContinuationAssistant
+              ? collectTurnSourcesForAssistant({
+                  visibleNodes,
+                  assistantIndex: i,
+                  sourcesByTurn,
+                })
+              : [];
             const resolvedVramDeltaMb =
               engineTelemetry.vramDeltaMb !== null && engineTelemetry.vramDeltaMb !== 0
                 ? engineTelemetry.vramDeltaMb
@@ -464,33 +438,42 @@ export function ChatThread({
               <AssistantMessage
                 key={node.id}
                 footer={
-                  <ActionBar
-                    onCopy={() => onCopyText(body)}
-                    onRegenerate={() => onRegenerate(node.id)}
-                    onSpeak={() => onSpeakText(body)}
-                    onSave={() => onSaveMemory(body)}
-                    onThumbUp={() =>
-                      setFeedbackByNode((prev) => ({
-                        ...prev,
-                        [node.id]: prev[node.id] === 'up' ? null : 'up',
-                      }))
-                    }
-                    onThumbDown={() =>
-                      setFeedbackByNode((prev) => ({
-                        ...prev,
-                        [node.id]: prev[node.id] === 'down' ? null : 'down',
-                      }))
-                    }
-                    feedback={feedbackByNode[node.id] ?? null}
-                    speedMetrics={speedMetrics}
-                    rightSlot={picker}
-                  />
+                  <div className="ext-assistant-footer-row">
+                    {turnSources.length > 0 ? (
+                      <TurnSourcesTrigger
+                        sources={turnSources}
+                        onOpenUrl={openExternalSourceUrl}
+                      />
+                    ) : null}
+                    <ActionBar
+                      onCopy={() => onCopyText(body)}
+                      onRegenerate={() => onRegenerate(node.id)}
+                      onSpeak={() => onSpeakText(body)}
+                      onSave={() => onSaveMemory(body)}
+                      onThumbUp={() =>
+                        setFeedbackByNode((prev) => ({
+                          ...prev,
+                          [node.id]: prev[node.id] === 'up' ? null : 'up',
+                        }))
+                      }
+                      onThumbDown={() =>
+                        setFeedbackByNode((prev) => ({
+                          ...prev,
+                          [node.id]: prev[node.id] === 'down' ? null : 'down',
+                        }))
+                      }
+                      feedback={feedbackByNode[node.id] ?? null}
+                      speedMetrics={speedMetrics}
+                      rightSlot={picker}
+                    />
+                  </div>
                 }
               >
                 {combinedReasoning ? <ReasoningTrace status="done" content={combinedReasoning} /> : null}
                 <GenUiRenderer
                   content={body}
                   status="done"
+                  sources={turnSources}
                   onCopyText={onCopyText}
                   onSaveText={onSaveMemory}
                   onSelectChoice={onSelectChoice}
@@ -519,11 +502,9 @@ export function ChatThread({
         <PermissionCard
           title={`Allow ${pendingApproval.toolName}?`}
           domain={
-            safeDomainFromUrl(
-              typeof pendingApproval.arguments?.url === 'string'
-                ? pendingApproval.arguments.url
-                : undefined,
-            ) ?? 'local-extension'
+            typeof pendingApproval.arguments?.url === 'string'
+              ? extractDomainLabel(pendingApproval.arguments.url)
+              : 'local-extension'
           }
           scope={`${pendingApproval.toolName}(${JSON.stringify(pendingApproval.arguments ?? {}).slice(0, 68)})`}
           reason={pendingApproval.decision.reason}
@@ -586,91 +567,45 @@ export function ChatThread({
                 defaultExpanded={false}
               />
             ) : null}
-            {liveBody ? (
-              <AssistantMessage
-                footer={
-                  engineTelemetry.tokensPerSec !== null ? (
-                    <div className="yui-action-row">
-                      <div className="yui-speed-cluster" data-slot="live-speed-telemetry">
-                        <span className="yui-speed-readout">
-                          {`${engineTelemetry.tokensPerSec.toFixed(1)} tok/s`}
-                        </span>
-                        {engineTelemetry.speculativeStats?.tau !== undefined ? (
-                          <span className="yui-telem-chip is-spec">
-                            {`${engineTelemetry.speculativeStats.tau.toFixed(1)} tok/step`}
+            {liveBody ? (() => {
+              const activeTurnKey =
+                visibleNodes.length > 0
+                  ? findTurnKeyForAssistantNode(visibleNodes, visibleNodes.length - 1)
+                  : '__root__';
+              const liveSources = sourcesByTurn?.[activeTurnKey] ?? [];
+              return (
+                <AssistantMessage
+                  footer={
+                    engineTelemetry.tokensPerSec !== null ? (
+                      <div className="yui-action-row">
+                        <div className="yui-speed-cluster" data-slot="live-speed-telemetry">
+                          <span className="yui-speed-readout">
+                            {`${engineTelemetry.tokensPerSec.toFixed(1)} tok/s`}
                           </span>
-                        ) : null}
+                          {engineTelemetry.speculativeStats?.tau !== undefined ? (
+                            <span className="yui-telem-chip is-spec">
+                              {`${engineTelemetry.speculativeStats.tau.toFixed(1)} tok/step`}
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
-                  ) : undefined
-                }
-              >
-                <GenUiRenderer
-                  content={liveBody}
-                  status="streaming"
-                  onCopyText={onCopyText}
-                  onSaveText={onSaveMemory}
-                  onSelectChoice={onSelectChoice}
-                />
-              </AssistantMessage>
-            ) : null}
+                    ) : undefined
+                  }
+                >
+                  <GenUiRenderer
+                    content={liveBody}
+                    status="streaming"
+                    sources={liveSources}
+                    onCopyText={onCopyText}
+                    onSaveText={onSaveMemory}
+                    onSelectChoice={onSelectChoice}
+                  />
+                </AssistantMessage>
+              );
+            })() : null}
           </div>
         );
       })()}
-
-      {sources.length > 0 ? (
-        <div className="ext-sources-group">
-          <WebSearchSourcesStrip
-            sources={sources.map(toWebSearchSourceItem)}
-            initialVisibleCount={4}
-            onSelectSource={(target) => {
-              if (
-                target.url &&
-                /^https?:\/\//i.test(target.url) &&
-                typeof chrome !== 'undefined' &&
-                chrome.tabs?.create
-              ) {
-                void chrome.tabs.create({ url: target.url });
-              }
-            }}
-          />
-          <div className="ext-citation-row">
-            {sources.slice(0, 6).map((src, idx) => (
-              <InlineCitationPopover
-                key={src.id}
-                source={toInlineCitationSource(src, idx)}
-                hoverOpen
-                onJumpToSource={(target) => {
-                  if (
-                    target.url &&
-                    /^https?:\/\//i.test(target.url) &&
-                    typeof chrome !== 'undefined' &&
-                    chrome.tabs?.create
-                  ) {
-                    void chrome.tabs.create({ url: target.url });
-                  }
-                }}
-              />
-            ))}
-          </div>
-          <SourcesDrawer sources={sources} variant={sourcesDrawerVariant} />
-          <CitationFootnoteList
-            title="Verified Citations"
-            citations={sources.slice(0, 6).map((src, idx) => toCitationFootnoteItem(src, idx))}
-            onShowOnPage={(cit) => {
-              if (
-                cit.url &&
-                /^https?:\/\//i.test(cit.url) &&
-                typeof chrome !== 'undefined' &&
-                chrome.tabs?.create
-              ) {
-                void chrome.tabs.create({ url: cit.url });
-              }
-            }}
-            onCopyQuote={(cit) => onCopyText(`${cit.title}: ${cit.excerpt}`)}
-          />
-        </div>
-      ) : null}
 
       {error ? (
         <ErrorRecoveryCard

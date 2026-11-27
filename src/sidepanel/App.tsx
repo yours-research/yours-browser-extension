@@ -92,6 +92,7 @@ import type { ExtractedPageContent } from '../tools/types.ts';
 import { shouldAutoPreloadModel } from './agentController.ts';
 import { ChatThread } from './components/ChatThread.tsx';
 import { DiagnosticsDrawer } from './components/DiagnosticsDrawer.tsx';
+import { toTurnResponseSources, type TurnResponseSource } from './responseSources.ts';
 import { measureDisplayRefreshRate } from './displayHz.ts';
 import { OffscreenEngineClient } from './engineClient.ts';
 import { collectFindMatches, type ThreadTextMatch } from './findInThread.ts';
@@ -771,6 +772,8 @@ export function App() {
   const [activePage, setActivePage] = useState<ExtractedPageContent | null>(null);
   const [quotedSelection, setQuotedSelection] = useState<string | null>(null);
   const [sources, setSources] = useState<SourceCitation[]>([]);
+  const [sourcesByTurn, setSourcesByTurn] = useState<Record<string, TurnResponseSource[]>>({});
+  const activeTurnSourceKeyRef = useRef<string>('__root__');
   const [toastState, setToastState] = useState<ToastBannerState | null>(null);
 
   const [backendKind, setBackendKind] = useState<RuntimeBackendKind>('wgsl');
@@ -1255,16 +1258,38 @@ export function App() {
   );
 
   const handleSourcesExtracted = useCallback((fetched: FetchedSourceResult[]) => {
+    const cleanItems = toTurnResponseSources(fetched);
+    if (cleanItems.length === 0) return;
+    const latestUser = [...chatRef.current.nodes].reverse().find((n) => n.message.role === 'user');
+    const turnKey = latestUser?.id ?? activeTurnSourceKeyRef.current ?? '__root__';
+
+    setSourcesByTurn((prev) => {
+      const existing = prev[turnKey] ?? [];
+      const map = new Map(existing.map((s) => [s.url, s]));
+      let changed = false;
+      for (const item of cleanItems) {
+        const cur = map.get(item.url);
+        if (!cur) {
+          map.set(item.url, item);
+          changed = true;
+        } else if (!cur.snippet && item.snippet) {
+          map.set(item.url, { ...cur, snippet: item.snippet });
+          changed = true;
+        }
+      }
+      return changed ? { ...prev, [turnKey]: Array.from(map.values()) } : prev;
+    });
+
     setSources((prev) => {
       const seen = new Set(prev.map((s) => s.url));
       const added: SourceCitation[] = [];
-      for (const item of fetched) {
-        if (item.url && !seen.has(item.url) && !item.error) {
+      for (const item of cleanItems) {
+        if (!seen.has(item.url)) {
           seen.add(item.url);
           added.push({
             id: item.url,
-            title: item.title || item.url,
-            subtitle: (item.excerpt ?? item.title ?? item.url).slice(0, 90),
+            title: item.title,
+            subtitle: item.snippet || item.domain,
             url: item.url,
           });
         }
@@ -1715,6 +1740,8 @@ export function App() {
   });
   const chatRef = useRef(chat);
   chatRef.current = chat;
+  const activeUserNodeForTurn = [...chat.nodes].reverse().find((n) => n.message.role === 'user');
+  activeTurnSourceKeyRef.current = activeUserNodeForTurn?.id ?? '__root__';
   const modelParamsHydratedRef = useRef(false);
   const prewarmedThreadKeyRef = useRef('');
   const liveGeneratedThreadIdRef = useRef<string | null>(null);
@@ -2794,6 +2821,7 @@ export function App() {
           client.resetContext(true),
         ]);
         setSources([]);
+        setSourcesByTurn({});
         if (pageEnabledRef.current) {
           const curPage = activePageRef.current;
           const curOrigin = curPage?.url ? normalizePermissionOrigin(curPage.url) : null;
@@ -3172,6 +3200,7 @@ export function App() {
               onClick={() => {
                 void chat.createThread({ systemPrompt: modeSystemPrompt });
                 setSources([]);
+        setSourcesByTurn({});
                 setExpandedNotchId(null);
               }}
             >
@@ -4337,6 +4366,7 @@ export function App() {
         onSelect: () => {
           void chat.createThread({ systemPrompt: modeSystemPrompt });
           setSources([]);
+        setSourcesByTurn({});
           setExpandedNotchId(null);
         },
       },
@@ -4757,6 +4787,7 @@ export function App() {
           error={chat.error || recoverableError}
           starters={STARTER_PROMPTS}
           sources={sources}
+          sourcesByTurn={sourcesByTurn}
           isModelReady={
             backendKind !== 'wgsl' ||
             engineSnapshot.telemetry.status === 'ready' ||

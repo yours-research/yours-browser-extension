@@ -24,10 +24,13 @@ import {
   type TimelineStep,
 } from '@yours/ui/genui';
 
+import { linkifyInlineCitations, type TurnResponseSource } from '../responseSources.ts';
+
 export interface GenUiRendererProps {
   content: string;
   status?: StreamingResponseStatus;
   streamingSpeed?: number;
+  sources?: readonly TurnResponseSource[];
   onCopyText?: (text: string) => void;
   onSaveText?: (text: string) => void;
   onSelectChoice?: (question: string, choiceId: string) => void;
@@ -431,10 +434,14 @@ export function GenUiRenderer(props: GenUiRendererProps) {
           );
         }
         const isLast = idx === segments.length - 1;
+        const textWithCitations =
+          props.sources && props.sources.length > 0
+            ? linkifyInlineCitations(seg.value, props.sources)
+            : seg.value;
         return (
           <StreamingResponse
             key={`sr-${idx}`}
-            text={seg.value}
+            text={textWithCitations}
             status={isLast && props.status === 'streaming' ? 'streaming' : 'done'}
             speed={props.streamingSpeed ?? 20}
             ink="accent"

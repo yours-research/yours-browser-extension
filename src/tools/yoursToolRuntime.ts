@@ -284,7 +284,8 @@ function extractFetchedSourcesFromData(
         {
           url: rec.url,
           title: typeof rec.title === 'string' && rec.title.length > 0 ? rec.title : rec.url,
-          excerpt: cleanBody.slice(0, 140),
+          excerpt: cleanBody.slice(0, 200),
+          snippet: cleanBody.slice(0, 200),
           markdown: cleanBody,
           charCount: cleanBody.length,
           fromHiddenTab: canonicalToolName === 'read_tab',
@@ -306,7 +307,7 @@ function extractFetchedSourcesFromData(
     );
   }
   const maybeSearch = data as Partial<WebSearchResult>;
-  if (Array.isArray(maybeSearch.scrapedSources)) {
+  if (Array.isArray(maybeSearch.scrapedSources) && maybeSearch.scrapedSources.length > 0) {
     return maybeSearch.scrapedSources.filter(
       (item): item is FetchedSourceResult =>
         Boolean(item) &&
@@ -314,6 +315,19 @@ function extractFetchedSourcesFromData(
         typeof item.url === 'string' &&
         typeof item.excerpt === 'string',
     );
+  }
+  if (Array.isArray(maybeSearch.results) && maybeSearch.results.length > 0) {
+    return maybeSearch.results
+      .filter((item) => Boolean(item?.url))
+      .map((item) => ({
+        url: item.url,
+        title: item.title || item.url,
+        excerpt: item.snippet || '',
+        snippet: item.snippet || '',
+        markdown: '',
+        charCount: (item.snippet || '').length,
+        fromHiddenTab: Boolean(maybeSearch.fromHiddenTab),
+      }));
   }
   return [];
 }
