@@ -90,18 +90,18 @@ function prepareDistAndAssetsPlugin(): Plugin {
       fs.mkdirSync(wasmOutDir, { recursive: true });
       fs.copyFileSync(wasmBuilt, path.join(wasmOutDir, 'tinygpt_wgsl_engine.wasm'));
 
-      const bundleDir = path.resolve(__dirname, 'model-bundle/qwen35-4b');
-      if (fs.existsSync(path.join(bundleDir, 'manifest.json'))) {
-        syncModelBundleToDist(bundleDir, path.join(outDir, 'models', 'qwen35-4b'));
+      const modelsOutDir = path.join(outDir, 'models');
+      if (fs.existsSync(modelsOutDir)) {
+        for (const entry of fs.readdirSync(modelsOutDir)) {
+          if (entry !== 'pragma-1-4b-rc1') {
+            fs.rmSync(path.join(modelsOutDir, entry), { recursive: true, force: true });
+          }
+        }
       }
 
-      const gemma4Dir = path.resolve(__dirname, 'model-bundle/gemma4-e4b');
-      if (fs.existsSync(path.join(gemma4Dir, 'manifest.json'))) {
-        syncModelBundleToDist(
-          gemma4Dir,
-          path.join(outDir, 'models', 'gemma4-e4b'),
-          new Set(['embed_tokens_q2.bin', 'ple_tokens_q2.bin']),
-        );
+      const rc1BundleDir = path.resolve(__dirname, 'model-bundle/pragma-1-4b-rc1');
+      if (fs.existsSync(path.join(rc1BundleDir, 'manifest.json'))) {
+        syncModelBundleToDist(rc1BundleDir, path.join(modelsOutDir, 'pragma-1-4b-rc1'));
       }
     },
   };

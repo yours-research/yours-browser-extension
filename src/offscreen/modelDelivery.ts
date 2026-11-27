@@ -10,7 +10,6 @@ import {
   probeHardware,
   selectComputeTier,
   type HardwareProbeResult,
-  type ModelCatalogEntry,
   type WebGpuNavigatorLike,
 } from '@yours/models/hardware';
 import {
@@ -64,12 +63,6 @@ function createExtensionVault(): ModelVaultBackend {
     typeof self !== 'undefined' &&
     typeof (self as { postMessage?: unknown }).postMessage === 'function';
   return inWorker ? new OpfsSyncVault() : new OpfsAsyncVault();
-}
-
-function estimateContextLength(modelId: string, arch?: string): number {
-  if (modelId.toLowerCase().includes('gemma')) return 32768;
-  if (arch === 'qwen35-deltanet' || modelId.toLowerCase().includes('qwen3.5')) return 131072;
-  return 32768;
 }
 
 function inferParamsB(modelId: string, defaultB = 4): number {
@@ -154,7 +147,7 @@ export class ModelDeliveryService {
       recommendedTier: normalizeTier(rawProbe.profile.tier),
       maxBufferSizeMb: Math.round((maxBufferBytes / (1024 * 1024)) * 10) / 10,
       maxStorageBindingMb: Math.round((maxBindingBytes / (1024 * 1024)) * 10) / 10,
-      recommendedModelId: rawProbe.profile.recommendedModelId,
+      recommendedModelId: MODEL_PRESETS[0]?.id ?? rawProbe.profile.recommendedModelId,
       probedAt: Date.now(),
     };
 
@@ -162,17 +155,17 @@ export class ModelDeliveryService {
     const storedIds = new Set(storedModels.map((m) => m.modelId));
     const catalogMap = new Map<string, ModelCatalogChoice>();
 
-    // First include bundled/local extension presets (Qwen3.5-4B & Gemma 4 E4B QAT)
+    // Only expose the offline bundled Pragma-1-4B RC1 preset
     for (const preset of MODEL_PRESETS) {
       const isBundled = (BUNDLED_MODEL_IDS as readonly string[]).includes(preset.id);
       const cached = isBundled || storedIds.has(preset.id);
       catalogMap.set(preset.id, {
         id: preset.id,
         label: preset.label,
-        family: preset.id.toLowerCase().includes('gemma') ? 'Gemma 4' : 'Qwen3.5',
+        family: preset.id.toLowerCase().includes('pragma') ? 'Pragma' : 'Qwen3.5',
         paramsB: inferParamsB(preset.id, 4),
         estimatedSizeGb: preset.estimatedWeightGB[preset.defaultDtype],
-        contextLength: estimateContextLength(preset.id),
+        contextLength: 131072,
         source: isBundled ? 'bundled' : 'custom',
         cachedInOpfs: cached,
         bundled: isBundled,
@@ -181,38 +174,10 @@ export class ModelDeliveryService {
       });
     }
 
-    // Merge @yours/models catalog entries (Pragma & WebGPU verified presets)
-    for (const entry of this.registry.list()) {
-      const choice = this.mapCatalogEntry(entry, storedIds);
-      if (!catalogMap.has(choice.id)) {
-        catalogMap.set(choice.id, choice);
-      }
-    }
-
     const catalog = Array.from(catalogMap.values());
     this.lastHardware = hardware;
     this.lastCatalog = catalog;
     return { hardware, catalog, rawProbe };
-  }
-
-  private mapCatalogEntry(
-    entry: ModelCatalogEntry,
-    storedIds: ReadonlySet<string>,
-  ): ModelCatalogChoice {
-    const cached = storedIds.has(entry.modelId) || storedIds.has(entry.id);
-    return {
-      id: entry.modelId,
-      label: entry.displayName,
-      family: entry.family === 'pragma' ? 'Pragma' : entry.architecture,
-      paramsB: entry.parameterCountBillions,
-      estimatedSizeGb: Math.round((entry.approxSizeBytes / (1024 * 1024 * 1024)) * 100) / 100,
-      contextLength: estimateContextLength(entry.modelId, entry.architecture),
-      source: 'verified-manifest',
-      cachedInOpfs: cached,
-      bundled: false,
-      manifestVerified: cached || Boolean(entry.manifestUrl),
-      notes: entry.description,
-    };
   }
 
   async downloadVerifiedModelFromManifest(options: {

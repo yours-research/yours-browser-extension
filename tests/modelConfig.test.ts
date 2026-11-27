@@ -30,7 +30,11 @@ import {
   assertDisjointVerifyNormSlices,
   WgslQwen35Engine,
 } from '../src/offscreen/wgslRealEngine.ts';
-import { MODEL_PRESETS } from '../src/shared/protocol.ts';
+import {
+  DEFAULT_ENGINE_CONFIG,
+  MODEL_PRESETS,
+  migratePersistedModelConfigValue,
+} from '../src/shared/protocol.ts';
 import type { WgslComputeTier } from '../src/offscreen/wgslWebgpu.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -528,9 +532,34 @@ describe('WgslQwen35Engine fallback, KV growth, and GPU prefix slots', () => {
       }
     }
 
-    const rc1Preset = MODEL_PRESETS.find((p) => p.id === 'jtaylorexe/pragma-exp006-rc1');
-    expect(rc1Preset).toBeDefined();
-    expect(rc1Preset?.label).toContain('EXP-006');
+    expect(MODEL_PRESETS).toHaveLength(1);
+    const rc1Preset = MODEL_PRESETS[0];
+    expect(rc1Preset?.id).toBe('jtaylorexe/pragma-exp006-rc1');
+    expect(rc1Preset?.label).toBe('Pragma-1-4B RC1');
+    expect(DEFAULT_ENGINE_CONFIG.modelId).toBe('jtaylorexe/pragma-exp006-rc1');
+
+    expect(
+      migratePersistedModelConfigValue({ modelId: 'onnx-community/Qwen3.5-4B-ONNX-OPT' }),
+    ).toEqual({
+      value: { modelId: 'jtaylorexe/pragma-exp006-rc1' },
+      changed: true,
+    });
+    expect(
+      migratePersistedModelConfigValue({ modelId: 'jtaylorexe/pragma-exp004-gspo-rl' }),
+    ).toEqual({
+      value: { modelId: 'jtaylorexe/pragma-exp006-rc1' },
+      changed: true,
+    });
+    expect(
+      migratePersistedModelConfigValue({ modelId: 'onnx-community/gemma-4-E4B-it-qat-mobile-ONNX' }),
+    ).toEqual({
+      value: { modelId: 'jtaylorexe/pragma-exp006-rc1' },
+      changed: true,
+    });
+    expect(migratePersistedModelConfigValue({ modelId: 'jtaylorexe/pragma-exp006-rc1' })).toEqual({
+      value: { modelId: 'jtaylorexe/pragma-exp006-rc1' },
+      changed: false,
+    });
 
     const rc1Manifest = JSON.parse(
       fs.readFileSync('D:/yours-pragma-lab/05_wgsl_bundles/EXP-006-rc1/manifest.json', 'utf8'),

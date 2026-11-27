@@ -377,13 +377,15 @@ export class InferenceEngine {
         : derivedHfBundleUrl ??
           (normalizedPatchModelId && !isBundledPatchModel && isKnownPreset
             ? `https://huggingface.co/${normalizedPatchModelId}/resolve/main`
-            : explicitBundleBaseUrl);
+            : isBundledPatchModel
+              ? null
+              : explicitBundleBaseUrl);
     const bundleChanged = nextBundleBaseUrl !== (this.config.bundleBaseUrl ?? null);
     const nextModelId =
-      typeof normalizedPatchModelId === 'string' &&
-      normalizedPatchModelId.length > 0 &&
-      (isBundledPatchModel || isKnownPreset || Boolean(nextBundleBaseUrl))
-        ? normalizedPatchModelId
+      typeof normalizedPatchModelId === 'string' && normalizedPatchModelId.length > 0
+        ? (isBundledPatchModel || Boolean(nextBundleBaseUrl)
+            ? normalizedPatchModelId
+            : DEFAULT_ENGINE_CONFIG.modelId)
         : this.config.modelId;
     const modelChanged = nextModelId !== this.config.modelId;
 
@@ -505,8 +507,8 @@ export class InferenceEngine {
 
       const startMs = performance.now();
       const isGemma4 = isGemma4ModelId(this.config.modelId);
-      const modelLabel = isGemma4 ? 'Gemma 4 E4B QAT' : 'Qwen3.5-4B';
-      const assetSubdir = isGemma4 ? 'models/gemma4-e4b' : 'models/qwen35-4b';
+      const modelLabel = isGemma4 ? 'Gemma 4 E4B QAT' : 'Pragma-1-4B RC1';
+      const assetSubdir = isGemma4 ? 'models/gemma4-e4b' : 'models/pragma-1-4b-rc1';
 
       this.updateTelemetry({
         status: 'downloading',
@@ -554,7 +556,7 @@ export class InferenceEngine {
         };
         try {
           const fallbackCfgRes = await fetch(
-            resolveExtensionAssetUrl('models/qwen35-4b/tokenizer_config.json', this.assetBaseUrl),
+            resolveExtensionAssetUrl('models/pragma-1-4b-rc1/tokenizer_config.json', this.assetBaseUrl),
           );
           if (fallbackCfgRes.ok) {
             const qwenCfg = (await fallbackCfgRes.json()) as Record<string, unknown>;
@@ -580,28 +582,30 @@ export class InferenceEngine {
         );
       }
 
-      if (customBundleUrl) {
-        try {
-          const genCfgRes = await fetch(`${tokenizerUrl}/generation_config.json`);
-          if (genCfgRes.ok) {
-            const genCfg = (await genCfgRes.json()) as { eos_token_id?: number | number[] };
-            if (typeof genCfg.eos_token_id === 'number') {
-              extraEosIds.push(genCfg.eos_token_id);
-            } else if (Array.isArray(genCfg.eos_token_id)) {
-              for (const id of genCfg.eos_token_id) {
-                if (typeof id === 'number' && Number.isFinite(id)) extraEosIds.push(id);
-              }
+      try {
+        const genCfgRes = await fetch(`${tokenizerUrl}/generation_config.json`);
+        if (genCfgRes.ok) {
+          const genCfg = (await genCfgRes.json()) as { eos_token_id?: number | number[] };
+          if (typeof genCfg.eos_token_id === 'number') {
+            extraEosIds.push(genCfg.eos_token_id);
+          } else if (Array.isArray(genCfg.eos_token_id)) {
+            for (const id of genCfg.eos_token_id) {
+              if (typeof id === 'number' && Number.isFinite(id)) extraEosIds.push(id);
             }
           }
-        } catch {
-          // Ignore optional generation_config.json error
         }
+      } catch {
+        // Ignore optional generation_config.json error
       }
-      if (isGemma4) {
-        const jinjaUrl = `${tokenizerUrl.replace(/\/+$/, '')}/chat_template.jinja`;
-        const jinjaRes = await fetch(jinjaUrl);
-        if (jinjaRes.ok) {
-          tokenizer.chat_template = await jinjaRes.text();
+      if (isGemma4 || !tokenizer.chat_template) {
+        try {
+          const jinjaUrl = `${tokenizerUrl.replace(/\/+$/, '')}/chat_template.jinja`;
+          const jinjaRes = await fetch(jinjaUrl);
+          if (jinjaRes.ok) {
+            tokenizer.chat_template = await jinjaRes.text();
+          }
+        } catch {
+          // Ignore optional chat_template.jinja fetch error
         }
       }
       const tokenizerMs = performance.now() - tokStartMs;

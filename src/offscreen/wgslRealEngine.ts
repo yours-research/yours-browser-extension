@@ -119,7 +119,7 @@ export function assertDisjointVerifyNormSlices(
   }
 }
 const BUNDLED_MODEL_MISSING_MSG =
-  'Bundled model files missing in models/qwen35-4b/. Run npm run bundle:model.';
+  'Bundled model files missing in models/pragma-1-4b-rc1/.';
 
 export interface WgslLoadStats {
   coldLoadMs: number;
@@ -626,7 +626,7 @@ export class WgslQwen35Engine {
     if (bundleBaseUrl && bundleBaseUrl.trim().length > 0) {
       return `${bundleBaseUrl.trim().replace(/\/+$/, '')}/${fileName}`;
     }
-    return resolveExtensionAssetUrl(`models/qwen35-4b/${fileName}`, assetBaseUrl);
+    return resolveExtensionAssetUrl(`models/pragma-1-4b-rc1/${fileName}`, assetBaseUrl);
   }
 
   private async fetchBundledManifest(

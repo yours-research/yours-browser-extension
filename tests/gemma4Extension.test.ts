@@ -6,12 +6,9 @@ import { BUNDLED_MODEL_IDS, isGemma4ModelId } from '../src/shared/protocol.ts';
 
 describe('Gemma 4 Extension Integration & Phase 3 Helpers', () => {
   it('identifies bundled model IDs accurately', () => {
-    expect(BUNDLED_MODEL_IDS).toEqual([
-      'onnx-community/Qwen3.5-4B-ONNX-OPT',
-      'onnx-community/gemma-4-E4B-it-qat-mobile-ONNX',
-    ]);
+    expect(BUNDLED_MODEL_IDS).toEqual(['jtaylorexe/pragma-exp006-rc1']);
     expect(isGemma4ModelId('onnx-community/gemma-4-E4B-it-qat-mobile-ONNX')).toBe(true);
-    expect(isGemma4ModelId('onnx-community/Qwen3.5-4B-ONNX-OPT')).toBe(false);
+    expect(isGemma4ModelId('jtaylorexe/pragma-exp006-rc1')).toBe(false);
   });
 
   it('computes INT4 global KV VRAM plan with 68 u32s/tok-head', () => {

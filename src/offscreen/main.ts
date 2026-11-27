@@ -7,6 +7,8 @@ import {
   DEFAULT_ENGINE_CONFIG,
   ENGINE_PORT_NAME,
   INITIAL_TELEMETRY_STATE,
+  migratePersistedModelConfigValue,
+  migrateStaleChromeStorageConfig,
   type BenchmarkSuiteResult,
   type ClientToEngineMessage,
   type EngineConfig,
@@ -32,6 +34,7 @@ const modelDelivery = new ModelDeliveryService();
 
 // Install WebGPU elevated-limits wrapper immediately on offscreen startup.
 installWebGpuLimitPatch();
+void migrateStaleChromeStorageConfig();
 if (typeof navigator !== 'undefined') {
   void navigator.storage?.persist?.().catch(() => {});
 }
@@ -342,16 +345,24 @@ function applyConfigPatchToMirror(patch: Partial<EngineConfig>): void {
       ? Math.min(131072, Math.round(patch.wgslMaxContext))
       : mirrorState.config.wgslMaxContext;
 
+  const resolvedModelId =
+    typeof patch.modelId === 'string' && patch.modelId.trim().length > 0
+      ? migratePersistedModelConfigValue({
+          modelId: patch.modelId.trim(),
+          bundleBaseUrl: patch.bundleBaseUrl ?? mirrorState.config.bundleBaseUrl,
+        }).value.modelId
+      : migratePersistedModelConfigValue({
+          modelId: mirrorState.config.modelId,
+          bundleBaseUrl: patch.bundleBaseUrl ?? mirrorState.config.bundleBaseUrl,
+        }).value.modelId;
+
   mirrorState.config = {
     ...mirrorState.config,
     ...patch,
     backend: 'wgsl',
     wgslKvMode: 'int8',
     wgslMaxContext: nextMaxContext,
-    modelId:
-      typeof patch.modelId === 'string' && patch.modelId.trim().length > 0
-        ? patch.modelId
-        : mirrorState.config.modelId,
+    modelId: resolvedModelId,
     dtype: 'q4f16',
   };
 }

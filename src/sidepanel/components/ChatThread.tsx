@@ -275,7 +275,7 @@ export function ChatThread({
         ) : null}
         {!isModelReady && onInitializeModel ? (
           <OnboardingCard
-            checkpointLabel={selectedModelLabel ?? 'Qwen3.5-4B (Q4F16)'}
+            checkpointLabel={selectedModelLabel ?? 'Pragma-1-4B RC1 (Q4F16)'}
             cacheSizeLabel={cacheSizeLabel ?? 'OPFS Verified'}
             adapterLabel={adapterLabel ?? 'WebGPU'}
             adapterReady={Boolean(engineTelemetry.computeTier)}
@@ -587,7 +587,24 @@ export function ChatThread({
               />
             ) : null}
             {liveBody ? (
-              <AssistantMessage>
+              <AssistantMessage
+                footer={
+                  engineTelemetry.tokensPerSec !== null ? (
+                    <div className="yui-action-row">
+                      <div className="yui-speed-cluster" data-slot="live-speed-telemetry">
+                        <span className="yui-speed-readout">
+                          {`${engineTelemetry.tokensPerSec.toFixed(1)} tok/s`}
+                        </span>
+                        {engineTelemetry.speculativeStats?.tau !== undefined ? (
+                          <span className="yui-telem-chip is-spec">
+                            {`${engineTelemetry.speculativeStats.tau.toFixed(1)} tok/step`}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : undefined
+                }
+              >
                 <GenUiRenderer
                   content={liveBody}
                   status="streaming"

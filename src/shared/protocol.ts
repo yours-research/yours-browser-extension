@@ -14,20 +14,8 @@ export interface ModelPreset {
 
 export const MODEL_PRESETS: ModelPreset[] = [
   {
-    id: 'onnx-community/Qwen3.5-4B-ONNX-OPT',
-    label: 'Qwen3.5-4B (Custom WGSL)',
-    defaultDtype: 'q4f16',
-    supportedDtypes: ['q4f16', 'q4'],
-    estimatedWeightGB: {
-      q4f16: 2.67,
-      q4: 2.96,
-      fp16: 8.5,
-    },
-    notes: 'Primary Qwen3.5 hybrid baseline. 24 Gated DeltaNet + 8 Full Attention layers.',
-  },
-  {
     id: 'jtaylorexe/pragma-exp006-rc1',
-    label: 'Pragma-1-4B RC1 (EXP-006, v81920, -254 MiB)',
+    label: 'Pragma-1-4B RC1',
     defaultDtype: 'q4f16',
     supportedDtypes: ['q4f16', 'q4'],
     estimatedWeightGB: {
@@ -35,67 +23,70 @@ export const MODEL_PRESETS: ModelPreset[] = [
       q4: 2.4,
       fp16: 7.5,
     },
-    notes: 'Pragma-1-4B RC1 release candidate (EXP-006) with scrubbed [0, 81919] tokenizer (-254 MiB LM head VRAM vs stock).',
-  },
-  {
-    id: 'jtaylorexe/pragma-exp004-gspo-rl',
-    label: 'Pragma EXP-004 GSPO-RL (v81920, -254 MiB)',
-    defaultDtype: 'q4f16',
-    supportedDtypes: ['q4f16', 'q4'],
-    estimatedWeightGB: {
-      q4f16: 2.2,
-      q4: 2.4,
-      fp16: 7.5,
-    },
-    notes: 'Promoted Qwen3.5-4B GSPO-RL bundle with pruned 81,920-token vocab (-254 MiB LM head VRAM vs stock).',
-  },
-  {
-    id: 'onnx-community/gemma-4-E4B-it-qat-mobile-ONNX',
-    label: 'Gemma 4 E4B QAT (Custom WGSL)',
-    defaultDtype: 'q4f16',
-    supportedDtypes: ['q4f16', 'q4'],
-    estimatedWeightGB: {
-      q4f16: 2.1,
-      q4: 2.3,
-      fp16: 8.0,
-    },
-    notes: 'Gemma 4 E4B QAT offline WGSL runtime. 35 sliding + 7 global layers, 18 KV-shared, PLE hot cache.',
-  },
-  {
-    id: 'onnx-community/Qwen3.5-0.8B-ONNX',
-    label: 'Qwen3.5-0.8B (Fast Hybrid Sanity)',
-    defaultDtype: 'q4f16',
-    supportedDtypes: ['q4f16', 'q4'],
-    estimatedWeightGB: {
-      q4f16: 0.65,
-      q4: 0.72,
-      fp16: 1.7,
-    },
-    notes: 'Lightweight Qwen3.5 hybrid baseline for quick smoke testing.',
-  },
-  {
-    id: 'onnx-community/Qwen3-4B-ONNX',
-    label: 'Qwen3-4B (Pure Attention Fallback)',
-    defaultDtype: 'q4f16',
-    supportedDtypes: ['q4f16', 'q4'],
-    estimatedWeightGB: {
-      q4f16: 2.5,
-      q4: 2.8,
-      fp16: 8.0,
-    },
-    notes: 'Fallback pure-GQA baseline for comparing against Qwen3.5 hybrid.',
+    notes: 'Pragma-1-4B RC1 (EXP-006) offline bundled WebGPU model with 81,920-token vocab (-254 MiB LM head VRAM).',
   },
 ];
 
-export const BUNDLED_MODEL_IDS = [
-  'onnx-community/Qwen3.5-4B-ONNX-OPT',
-  'onnx-community/gemma-4-E4B-it-qat-mobile-ONNX',
-] as const;
+export const BUNDLED_MODEL_IDS = ['jtaylorexe/pragma-exp006-rc1'] as const;
 
 export type BundledModelId = (typeof BUNDLED_MODEL_IDS)[number];
 
 export function isGemma4ModelId(modelId: string): boolean {
   return modelId.toLowerCase().includes('gemma-4') || modelId.toLowerCase().includes('gemma4');
+}
+
+export function migratePersistedModelConfigValue<T>(raw: T): { value: T; changed: boolean } {
+  const targetModelId = MODEL_PRESETS[0].id;
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (trimmed.length > 0 && trimmed !== targetModelId && trimmed.includes('/')) {
+      return { value: targetModelId as unknown as T, changed: true };
+    }
+    return { value: raw, changed: false };
+  }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const record = raw as Record<string, unknown>;
+    if (
+      typeof record.modelId === 'string' &&
+      record.modelId !== targetModelId &&
+      !record.bundleBaseUrl
+    ) {
+      return {
+        value: { ...record, modelId: targetModelId } as T,
+        changed: true,
+      };
+    }
+  }
+  return { value: raw, changed: false };
+}
+
+export async function migrateStaleChromeStorageConfig(): Promise<boolean> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+    return false;
+  }
+  try {
+    const allEntries = await new Promise<Record<string, unknown>>((resolve) => {
+      chrome.storage.local.get(null, (items) => {
+        resolve((items && typeof items === 'object' ? items : {}) as Record<string, unknown>);
+      });
+    });
+    const updates: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(allEntries)) {
+      const migrated = migratePersistedModelConfigValue(val);
+      if (migrated.changed) {
+        updates[key] = migrated.value;
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      await new Promise<void>((resolve) => {
+        chrome.storage.local.set(updates, () => resolve());
+      });
+      return true;
+    }
+  } catch {
+    // Ignore storage migration failures outside extension context
+  }
+  return false;
 }
 
 export interface ChatMessage {

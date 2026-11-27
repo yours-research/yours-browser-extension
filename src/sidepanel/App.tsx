@@ -71,6 +71,7 @@ import {
   BUNDLED_MODEL_IDS,
   DEFAULT_ENGINE_CONFIG,
   MODEL_PRESETS,
+  migrateStaleChromeStorageConfig,
   type EngineConfig,
 } from '../shared/protocol.ts';
 import {
@@ -164,6 +165,7 @@ declare global {
         pageEnabled: boolean;
         researchEnabled: boolean;
         enableThinking: boolean;
+        enableSpeculative: boolean;
         backendKind: RuntimeBackendKind;
         turnState: string;
         isGenerating: boolean;
@@ -1871,6 +1873,15 @@ export function App() {
       .then((hz: number) => client.setDisplayHz(hz))
       .catch(() => {});
 
+    void migrateStaleChromeStorageConfig()
+      .then((migrated) => {
+        if (migrated) {
+          setSelectedModelId(DEFAULT_ENGINE_CONFIG.modelId);
+          void client.updateConfig({ modelId: DEFAULT_ENGINE_CONFIG.modelId, bundleBaseUrl: null });
+        }
+      })
+      .catch(() => {});
+
     void client
       .checkResearchPermission()
       .then((granted) => {
@@ -2696,6 +2707,7 @@ export function App() {
           pageEnabled,
           researchEnabled,
           enableThinking: snap.config.enableThinking,
+          enableSpeculative: snap.config.enableSpeculative,
           backendKind,
           turnState: chat.state,
           isGenerating: chat.isGenerating,
@@ -4274,6 +4286,36 @@ export function App() {
       </button>
       <button
         type="button"
+        data-testid="turbo-toggle-chip"
+        aria-pressed={engineSnapshot.config.enableSpeculative}
+        className={`yui-chip-btn ${engineSnapshot.config.enableSpeculative ? 'is-active' : ''}`}
+        onClick={() => {
+          const next = !engineSnapshot.config.enableSpeculative;
+          void client.updateConfig({ enableSpeculative: next });
+        }}
+        title={
+          engineSnapshot.config.enableSpeculative
+            ? 'Turbo mode ON (speculative decoding enabled) — click to turn Off'
+            : 'Turbo mode OFF (standard decode) — click to turn On'
+        }
+      >
+        <svg
+          viewBox="0 0 16 16"
+          width={13}
+          height={13}
+          aria-hidden="true"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.6}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M9 1.75L3.75 9H8l-1 5.25L12.25 7H8l1-5.25z" />
+        </svg>
+        <span>{engineSnapshot.config.enableSpeculative ? 'Turbo' : 'Turbo Off'}</span>
+      </button>
+      <button
+        type="button"
         className={`yui-chip-btn yui-chip-btn--icon ${voiceState.active ? 'is-recording' : ''}`}
         onClick={() => void handleToggleVoice()}
         title="Local microphone dictation"
@@ -4334,6 +4376,20 @@ export function App() {
           const next = !engineSnapshot.config.enableThinking;
           client.updateConfig({ enableThinking: next });
           chat.updateOptions({ enableThinking: next });
+        },
+      },
+      {
+        id: 'toggle-turbo',
+        group: 'Conversation',
+        label: 'Toggle Turbo Mode',
+        description: engineSnapshot.config.enableSpeculative
+          ? 'Currently ON (speculative decoding) — switch to Non-Turbo'
+          : 'Currently OFF (standard decode) — switch to Turbo',
+        badge: engineSnapshot.config.enableSpeculative ? 'ON' : 'OFF',
+        keywords: ['turbo', 'speculative', 'speed', 'fast'],
+        onSelect: () => {
+          const next = !engineSnapshot.config.enableSpeculative;
+          void client.updateConfig({ enableSpeculative: next });
         },
       },
       {
@@ -4425,6 +4481,7 @@ export function App() {
       activePage?.title,
       hasAttachedPage,
       engineSnapshot.config.enableThinking,
+      engineSnapshot.config.enableSpeculative,
       client,
       theme,
       openFindBar,
@@ -4577,6 +4634,16 @@ export function App() {
               }
               topSlot={composerTopSlot}
               leftSlot={composerLeftSlot}
+              rightSlot={
+                chat.isGenerating && engineSnapshot.telemetry.tokensPerSec !== null ? (
+                  <span
+                    className={`yui-telem-chip ${engineSnapshot.config.enableSpeculative ? 'is-spec' : ''}`}
+                    data-testid="live-streaming-tok-s"
+                  >
+                    {`${engineSnapshot.telemetry.tokensPerSec.toFixed(1)} tok/s`}
+                  </span>
+                ) : undefined
+              }
               onOpenCommands={() => {
                 setCommandQuery('');
                 setExpandedNotchId(null);
