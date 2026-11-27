@@ -158,6 +158,7 @@ pub extern "C" fn full_attn_layer_kv_bytes(max_seq: u32, int8_kv: u32) -> u64 {
 /// 51 = topk_batch (E1/E2)
 /// 52 = accept_tree (E1/E2)
 /// 53 = q4_gemv_smallm (E1/E2 universal fallback)
+/// 59 = dn_proj_stash (P9c)
 #[no_mangle]
 pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
     match shader_id {
@@ -220,6 +221,7 @@ pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
         56 => set_shader_bytes(WGSL_Q4_GEMV_SMALLM_V2_F16.as_bytes()),
         57 => set_shader_bytes(WGSL_Q4_GATE_UP_SWIGLU_SMALLM_V2_F16.as_bytes()),
         58 => set_shader_bytes(WGSL_GQA_TREE_V2_SG.as_bytes()),
+        59 => set_shader_bytes(WGSL_DN_PROJ_STASH.as_bytes()),
         100..=199 => match gemma4::get_shader(shader_id) {
             Some(bytes) => set_shader_bytes(bytes),
             None => 0,
@@ -231,6 +233,8 @@ pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
 // ============================================================================
 // WGSL Kernels (Chrome 159 Tint compliant)
 // ============================================================================
+
+const WGSL_DN_PROJ_STASH: &str = include_str!("../../../public/cycle17/wgsl/dn_proj_stash.wgsl");
 
 const WGSL_Q4_SCALAR: &str = r#"
 struct GemvParams {

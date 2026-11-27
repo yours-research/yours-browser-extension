@@ -291,6 +291,9 @@ export interface TelemetryState {
     avgDraftLen?: number;
     skippedSteps?: number;
     speedupMultiplier?: number;
+    draftRoute?: 'learned' | 'copy-grammar' | 'hybrid';
+    learnedSteps?: number;
+    headInvocations?: number;
   } | null;
   baselineDecodeTokPerSec: number | null;
   vramDeltaMb: number | null;
@@ -594,6 +597,35 @@ export type ClientToEngineMessage =
       chunkMibList?: number[];
     };
 
+export interface GenerationPhaseStep {
+  kind: 'scalar' | 'chain' | 'tree';
+  M: number;
+  kept: number;
+  draftMs: number;
+  planMs: number;
+  encodeMs: number;
+  mapMs: number;
+  rollbackEncodeMs: number;
+  rollbackWaitMs: number;
+  emitMs: number;
+  yieldMs: number;
+  planBuilt: boolean;
+}
+
+export interface GenerationPhaseTrace {
+  marks: Record<string, number>;
+  info: {
+    promptTokens: number;
+    ctxPrefillTokens: number;
+    prefixReused: boolean;
+    slot: string | null;
+    slotRestoreMs: number | null;
+    bgPrefillActiveAtEnqueue: boolean;
+  };
+  steps: GenerationPhaseStep[];
+  tools: Array<{ name: string; start: number; end: number }>;
+}
+
 export interface GenerationTokenTrace {
   modelId: string;
   promptIds: number[];
@@ -601,6 +633,7 @@ export interface GenerationTokenTrace {
   promptText: string;
   generatedText: string;
   speculativeStats: TelemetryState['speculativeStats'];
+  phases?: GenerationPhaseTrace;
 }
 
 export interface SpecMicrobenchResult {
@@ -627,6 +660,20 @@ export interface SpecMicrobenchResult {
     ratioT16ToT1: number;
     rejectOverheadMs: number;
     chainRejectOverheadMs: number;
+  };
+  engineB?: {
+    headSha256: string;
+    headMs: number;
+    head: Array<{ k: number; medianMs: number; p10Ms: number; p90Ms: number; samples: number }>;
+    reject?: {
+      M: number;
+      acceptMs: number;
+      rejectMs: number;
+      rejectPenaltyMs: number;
+      samples: number;
+    };
+    elapsedMs: number;
+    error?: string;
   };
   error?: string;
 }

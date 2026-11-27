@@ -1,0 +1,2244 @@
+{
+  "format": "yours-rc1-dropin",
+  "version": 2,
+  "source": {
+    "repo": "yours-speculative-engine",
+    "commit": "0f807cebbeb6cb6276b5fc75149bd1abeefcb909",
+    "dirty": false
+  },
+  "targets": {
+    "tinygpt-browser": "f1b4a2c",
+    "yours-harness": "68cd16c"
+  },
+  "integratedAt": {
+    "tinygpt-browser": "61a546a29141cb9746dbce920c22e3a168a126e6",
+    "yours-harness": "a3ddb289cd588e0ba2b3ebdc9dcf6d1a5c966e18"
+  },
+  "draftHead": {
+    "manifest": "assets/exp007/manifest.json",
+    "sha256": "b456e39bb8e541809971527ea01092ba6f3f76efba47bc9e75b8b3612dbef3e1",
+    "target": "jtaylorexe/pragma-exp006-rc1"
+  },
+  "files": [
+    {
+      "path": "assets/exp007/draft_head.bin",
+      "source": "D:\\yours-pragma-lab\\05_wgsl_bundles\\EXP-007b-gdn-eagle3\\draft_head.bin",
+      "role": "production-draft-head",
+      "bytes": 35397184,
+      "sha256": "b456e39bb8e541809971527ea01092ba6f3f76efba47bc9e75b8b3612dbef3e1"
+    },
+    {
+      "path": "assets/exp007/manifest.json",
+      "source": "D:\\yours-pragma-lab\\05_wgsl_bundles\\EXP-007b-gdn-eagle3\\manifest.json",
+      "role": "production-draft-head",
+      "bytes": 4211,
+      "sha256": "0d44c9f7413dfd16cdb9b615011aa09365a811a6a216d39e235f718c9e20417a"
+    },
+    {
+      "path": "bench/bench-engine-b-head.mjs",
+      "source": "(bundled src/bench/engineBHeadBenchPage.ts)",
+      "role": "bench",
+      "bytes": 33453,
+      "sha256": "5132d53b5c0a360c69fada43f1ed351160e6027c692a275f35fe1763685796cc"
+    },
+    {
+      "path": "benchmarks/results/exp007-eval/exp007b/qualification.json",
+      "source": "benchmarks/results/exp007-eval/exp007b/qualification.json",
+      "role": "calibration",
+      "bytes": 91663,
+      "sha256": "92c0baf9b69a6f7dd1f7c0cb6cfb194d62b7f00463e7317e7553e385cce4fab4"
+    },
+    {
+      "path": "benchmarks/results/exp007-eval/exp007b/qualification.md",
+      "source": "benchmarks/results/exp007-eval/exp007b/qualification.md",
+      "role": "calibration",
+      "bytes": 5759,
+      "sha256": "a25a6dafc4ff17efab4ffcced07fee6b3ec957aa63db54630f07c80279cad937"
+    },
+    {
+      "path": "benchmarks/results/exp007-eval/fresh/oos.json",
+      "source": "benchmarks/results/exp007-eval/fresh/oos.json",
+      "role": "calibration",
+      "bytes": 49826,
+      "sha256": "ff059dd49de9e0033290f3ce193eba50ce9013ea7705d7b6bbb573d8b20371f2"
+    },
+    {
+      "path": "benchmarks/results/exp007-eval/fresh/oos.md",
+      "source": "benchmarks/results/exp007-eval/fresh/oos.md",
+      "role": "calibration",
+      "bytes": 9220,
+      "sha256": "7d3fddb48414020fd5a4177163c1ea708ff0f25ac833a27ead4eccdff52a682d"
+    },
+    {
+      "path": "benchmarks/results/exp007-eval/rc1/adaptive-cutoff.json",
+      "source": "benchmarks/results/exp007-eval/rc1/adaptive-cutoff.json",
+      "role": "calibration",
+      "bytes": 189762,
+      "sha256": "7261945a8abccfa607407954532966fabf8b981b9769f9e09dc373b64318d9bb"
+    },
+    {
+      "path": "benchmarks/results/exp007-eval/rc1/adaptive-cutoff.md",
+      "source": "benchmarks/results/exp007-eval/rc1/adaptive-cutoff.md",
+      "role": "calibration",
+      "bytes": 8437,
+      "sha256": "1a31ef873a804c7d1bb22ed44a75e116cbf9194ba97d344212195fb9ff398d3c"
+    },
+    {
+      "path": "benchmarks/results/exp007-eval/rc1/report.json",
+      "source": "benchmarks/results/exp007-eval/rc1/report.json",
+      "role": "calibration",
+      "bytes": 1016066,
+      "sha256": "9232d5bbb5aba821f6c0c2cc1005756246e320ef822a76c2e8f79dd06cce8522"
+    },
+    {
+      "path": "benchmarks/results/exp007-eval/rc1/report.md",
+      "source": "benchmarks/results/exp007-eval/rc1/report.md",
+      "role": "calibration",
+      "bytes": 16358,
+      "sha256": "07993e86b1a1b1b1a26319b28c68ebfe7cd841f94d12d56949029586a6118f1f"
+    },
+    {
+      "path": "docs/CYCLE15_AUDIT_AND_E1_OPT.md",
+      "source": "docs/CYCLE15_AUDIT_AND_E1_OPT.md",
+      "role": "doc",
+      "bytes": 18203,
+      "sha256": "0e1958fb197680d0ba74c77cf8f0b8e7cab1424b4adbc568d8d55e9d33f34800"
+    },
+    {
+      "path": "docs/CYCLE17_ENGINE_B_DROPIN.md",
+      "source": "docs/CYCLE17_ENGINE_B_DROPIN.md",
+      "role": "doc",
+      "bytes": 15041,
+      "sha256": "4b4eea959984c33b511dc4c09b53832d51e283db9d01a5cc4766aaf67b9e2aed"
+    },
+    {
+      "path": "docs/CYCLE17_ROLLBACK_PATCHES.md",
+      "source": "docs/CYCLE17_ROLLBACK_PATCHES.md",
+      "role": "doc",
+      "bytes": 10516,
+      "sha256": "efb484fdfb9ae683aa5313354b337757692eaae26255e4070a843518c5d21151"
+    },
+    {
+      "path": "docs/CYCLE17_WALLTIME_AND_ROLLBACK_AUDIT.md",
+      "source": "docs/CYCLE17_WALLTIME_AND_ROLLBACK_AUDIT.md",
+      "role": "doc",
+      "bytes": 14833,
+      "sha256": "334b0f1269579a5251f440c855e0c087a95e2256bdb6eeb3a96cbedd63a4b034"
+    },
+    {
+      "path": "docs/EXP007_BROWSER_RUNTIME.md",
+      "source": "docs/EXP007_BROWSER_RUNTIME.md",
+      "role": "doc",
+      "bytes": 5877,
+      "sha256": "9660f6bbdd0b1a79b062018e3355b4e69b0e33e9d0d0d138ff81a32ff0f154f4"
+    },
+    {
+      "path": "docs/EXP007B_QUALIFICATION_REPORT.md",
+      "source": "docs/EXP007B_QUALIFICATION_REPORT.md",
+      "role": "doc",
+      "bytes": 8633,
+      "sha256": "7acd69fe4dbbd2b7aa85166c75a49729b3e294528164736e7e9491fc1d7f3abf"
+    },
+    {
+      "path": "docs/Q4_SUBGROUP_CONFORMANCE.md",
+      "source": "docs/Q4_SUBGROUP_CONFORMANCE.md",
+      "role": "doc",
+      "bytes": 5093,
+      "sha256": "528dd62c734aba2b9aaf0dc63c0d873b06962b21de7679df6b9cf6883d36f481"
+    },
+    {
+      "path": "docs/RC1_INTEGRATION_PACK.md",
+      "source": "docs/RC1_INTEGRATION_PACK.md",
+      "role": "doc",
+      "bytes": 14038,
+      "sha256": "9d47b70aafc2fe7e00e9c12ddd38a1fd8604b12d0a01dbd71b23303b491061a6"
+    },
+    {
+      "path": "docs/TRAINED_EXP007_PARITY.md",
+      "source": "docs/TRAINED_EXP007_PARITY.md",
+      "role": "doc",
+      "bytes": 4172,
+      "sha256": "c85d87e1305240a8495acb94fdb15ed1e87885f0b079d1645846f01b7f60f560"
+    },
+    {
+      "path": "fixtures/cycle16-p7-summary.json",
+      "source": "fixtures/cycle16-p7-summary.json",
+      "role": "recorded-timing",
+      "bytes": 3596,
+      "sha256": "77de3416a12ad22eabf0c4b4e88bc0eb2a3be1b58e08298580fe5a38f39b0e40"
+    },
+    {
+      "path": "fixtures/cycle16-rc1-speculative-v2-report.json",
+      "source": "fixtures/cycle16-rc1-speculative-v2-report.json",
+      "role": "recorded-timing",
+      "bytes": 1262,
+      "sha256": "7a2ae6e784bdaa07744fa59a3c054ebc462a0cb3b8e4a6258033a1e28d903769"
+    },
+    {
+      "path": "fixtures/gdn-eagle3/draft_head.bin",
+      "source": "fixtures/gdn-eagle3/draft_head.bin",
+      "role": "fixture",
+      "bytes": 9152,
+      "sha256": "c0272737e1d1c0fc59b4d4486253954b5b4b865bc4b48b3ff5851538eedb8eb9"
+    },
+    {
+      "path": "fixtures/gdn-eagle3/forward.json",
+      "source": "fixtures/gdn-eagle3/forward.json",
+      "role": "fixture",
+      "bytes": 67557,
+      "sha256": "f140b7dc659a8c41b1ff2b63fa784c7e5b68dfb75f8e912c15ae3800721d899c"
+    },
+    {
+      "path": "fixtures/gdn-eagle3/manifest.json",
+      "source": "fixtures/gdn-eagle3/manifest.json",
+      "role": "fixture",
+      "bytes": 3907,
+      "sha256": "0f04284c1bfdc4a23301cb5d1714e5d7372c8186b38b8ed7d5594d615a7dde15"
+    },
+    {
+      "path": "fixtures/q4-smallm-v2-digests.json",
+      "source": "fixtures/q4-smallm-v2-digests.json",
+      "role": "fixture",
+      "bytes": 296,
+      "sha256": "001ae47b8b0e0bd6dadd30abf438aaf28476d6afd6500bfcc024b979fe0e640c"
+    },
+    {
+      "path": "fixtures/q4-smallm-v2-f16-digests.json",
+      "source": "fixtures/q4-smallm-v2-f16-digests.json",
+      "role": "fixture",
+      "bytes": 305,
+      "sha256": "eb3c8218d0ec0a1b0d864462c29fecbdd998163c1ba66581876dd341f2c0d47f"
+    },
+    {
+      "path": "fixtures/trained-exp007/1-logits.f32",
+      "source": "fixtures/trained-exp007/1-logits.f32",
+      "role": "trained-parity-fixture",
+      "bytes": 65536,
+      "sha256": "2d634e5c37b33f04e508203a3cb49a5d9633f89ee1010473ab1975c314c667be"
+    },
+    {
+      "path": "fixtures/trained-exp007/5-logits.f32",
+      "source": "fixtures/trained-exp007/5-logits.f32",
+      "role": "trained-parity-fixture",
+      "bytes": 65536,
+      "sha256": "c64d994d302e71b788ad2a011efd183a73f75b147fadfa0f1674a1f3dae08c7a"
+    },
+    {
+      "path": "fixtures/trained-exp007/golden.json",
+      "source": "fixtures/trained-exp007/golden.json",
+      "role": "trained-parity-fixture",
+      "bytes": 2456,
+      "sha256": "66dfeba9ea2639f087dc24f83d1aba664a2e8c5c44212a9019003b38ac132b2a"
+    },
+    {
+      "path": "fixtures/trained-exp007/taps.f32",
+      "source": "fixtures/trained-exp007/taps.f32",
+      "role": "trained-parity-fixture",
+      "bytes": 30720,
+      "sha256": "f9d6b7d5c571b2697f3073c06fa13160205a293f671e9d7ed3a66bcff0e03f10"
+    },
+    {
+      "path": "ts/bench/engineBHeadBench.ts",
+      "source": "src/bench/engineBHeadBench.ts",
+      "role": "ts-dependency",
+      "bytes": 5422,
+      "sha256": "60a2544ba221bdb5aa8bbcafb63dafc55fade1f689dfbcac8775117013ab3e69"
+    },
+    {
+      "path": "ts/bench/engineBHeadBenchPage.ts",
+      "source": "src/bench/engineBHeadBenchPage.ts",
+      "role": "ts-entry",
+      "bytes": 3450,
+      "sha256": "90ce91a28ed3af4ff32d25c1c242106217ec93d02b63789029bb50420fead09b"
+    },
+    {
+      "path": "ts/draft/gdnEagle3Loader.ts",
+      "source": "src/draft/gdnEagle3Loader.ts",
+      "role": "ts-entry",
+      "bytes": 7525,
+      "sha256": "2ce5de8d26fdde3e57d842bff540ef0e378c6f6486e1932167507b1ba142325b"
+    },
+    {
+      "path": "ts/draft/gdnEagle3Reference.ts",
+      "source": "src/draft/gdnEagle3Reference.ts",
+      "role": "ts-entry",
+      "bytes": 5256,
+      "sha256": "fc2fcd27b5f9f73383230a9665bcc4c76b7453374a36d828da80270ab2195b2a"
+    },
+    {
+      "path": "ts/draft/gdnEagle3Runtime.ts",
+      "source": "src/draft/gdnEagle3Runtime.ts",
+      "role": "ts-entry",
+      "bytes": 25782,
+      "sha256": "7ca81b1c365ae0741385309939f51febb1b2afebf34440058650b6f454fa656b"
+    },
+    {
+      "path": "ts/draft/hybridRouter.ts",
+      "source": "src/draft/hybridRouter.ts",
+      "role": "ts-entry",
+      "bytes": 4320,
+      "sha256": "ef66f0704b65cc2db4888214fe30ba584016a33de996fc20d070c69b5d423444"
+    },
+    {
+      "path": "ts/engines/toolCorpus.ts",
+      "source": "src/engines/toolCorpus.ts",
+      "role": "ts-dependency",
+      "bytes": 2252,
+      "sha256": "086680f4123f4f9285a9897fbdb68c0dfa5602881665678de9a41453d1cee86f"
+    },
+    {
+      "path": "ts/engines/toolGrammar.ts",
+      "source": "src/engines/toolGrammar.ts",
+      "role": "ts-dependency",
+      "bytes": 16890,
+      "sha256": "0a9bb44f5857a9628ebeeac03427baa3610acaf1979ae66fb68382c1b9b4ce63"
+    },
+    {
+      "path": "ts/engines/types.ts",
+      "source": "src/engines/types.ts",
+      "role": "ts-dependency",
+      "bytes": 1257,
+      "sha256": "ca3def4a76a0eaacbe1b6f4e4803be27024f9426f22f9f40b418ac0612065fe6"
+    },
+    {
+      "path": "ts/kernels/dnTreeV2.ts",
+      "source": "src/kernels/dnTreeV2.ts",
+      "role": "ts-entry",
+      "bytes": 7376,
+      "sha256": "3593973b76a59b5ac3043e20b9e1dfff5e796db7ae11d64cbc5281acfa333586"
+    },
+    {
+      "path": "ts/kernels/f32.ts",
+      "source": "src/kernels/f32.ts",
+      "role": "ts-dependency",
+      "bytes": 3858,
+      "sha256": "65fe4eaaa7dac55d1fc8c479bc6683f85e8e9482f321bac65d3d25405d95bf11"
+    },
+    {
+      "path": "ts/kernels/golden.ts",
+      "source": "src/kernels/golden.ts",
+      "role": "ts-dependency",
+      "bytes": 6396,
+      "sha256": "8b593e70a0e664c630381be2309356765e045f784c108e6d6edf75cc3259ad6a"
+    },
+    {
+      "path": "ts/kernels/gqaTreeV2.ts",
+      "source": "src/kernels/gqaTreeV2.ts",
+      "role": "ts-entry",
+      "bytes": 11873,
+      "sha256": "a6db732386d06493d901a5ca5bbdbaf30e409296d4e7464534695e63e78410f1"
+    },
+    {
+      "path": "ts/kernels/q4SmallMV2.ts",
+      "source": "src/kernels/q4SmallMV2.ts",
+      "role": "ts-entry",
+      "bytes": 1611,
+      "sha256": "1bbffd16a76eaaccabec39156ccf051b197c151c199d99700de6489dd428cc38"
+    },
+    {
+      "path": "ts/kernels/q4SmallMV2F16.ts",
+      "source": "src/kernels/q4SmallMV2F16.ts",
+      "role": "ts-entry",
+      "bytes": 8166,
+      "sha256": "b2bd1682341e9f083b8ca09cc898e6baad591642f1ad27f09f14a96a09737d13"
+    },
+    {
+      "path": "ts/kernels/reference.ts",
+      "source": "src/kernels/reference.ts",
+      "role": "ts-dependency",
+      "bytes": 8699,
+      "sha256": "3173c8f3ab87f441037259a5dd8a506d15dc9603a6c57a2aca770a54c671521c"
+    },
+    {
+      "path": "ts/rc1/rollbackScheduler.ts",
+      "source": "src/rc1/rollbackScheduler.ts",
+      "role": "ts-entry",
+      "bytes": 3439,
+      "sha256": "a04cf9e820c2b5c9bd2e93b6f23961497003bbbaf6384fed52e04619a4cfc950"
+    },
+    {
+      "path": "ts/rc1/wasmEngineAdapter.ts",
+      "source": "src/rc1/wasmEngineAdapter.ts",
+      "role": "ts-entry",
+      "bytes": 11387,
+      "sha256": "9b7d813ee22b39cbb60a8b65d89d3f7c126e888511f9badcc3c22ecb06420761"
+    },
+    {
+      "path": "ts/tsconfig.json",
+      "source": "(generated)",
+      "role": "ts-config",
+      "bytes": 305,
+      "sha256": "82ee932a7d38bb77a9808089c418793b5878094c61e8ba64b69b7eaceafa5f05"
+    },
+    {
+      "path": "ts/util/rng.ts",
+      "source": "src/util/rng.ts",
+      "role": "ts-dependency",
+      "bytes": 1878,
+      "sha256": "1374ee383e59898dda03a210ce3f98ba0f0cb8e10fc48c44c51d6eb0cb6674fd"
+    },
+    {
+      "path": "ts/verifier/distribution.ts",
+      "source": "src/verifier/distribution.ts",
+      "role": "ts-dependency",
+      "bytes": 3988,
+      "sha256": "bf4c9041dc101352775b3f8ae67d9d972f21944142bee6e35b1d14f41c6997c7"
+    },
+    {
+      "path": "ts/verifier/pathA.ts",
+      "source": "src/verifier/pathA.ts",
+      "role": "ts-entry",
+      "bytes": 2991,
+      "sha256": "c94a755a0cb5499b2c35f0f9f5549e3132e1804e98958d6d2f41fbb9972190c3"
+    },
+    {
+      "path": "ts/verifier/rejection.ts",
+      "source": "src/verifier/rejection.ts",
+      "role": "ts-dependency",
+      "bytes": 7750,
+      "sha256": "2445d7843409f0c7ef9d2d350524dd5ec7d16a3a6872b177d4730fb9270d3210"
+    },
+    {
+      "path": "ts/verifier/topKReadback.ts",
+      "source": "src/verifier/topKReadback.ts",
+      "role": "ts-dependency",
+      "bytes": 2480,
+      "sha256": "03b945b9ecd4f57d561a5bfb9ffb5bcc92b382dfe388860bf111ab3a94682379"
+    },
+    {
+      "path": "ts/wasm/specCore.ts",
+      "source": "src/wasm/specCore.ts",
+      "role": "ts-entry",
+      "bytes": 15050,
+      "sha256": "96ce10fa96878bfbffc0e12769d465cd704d066b65268289407c3763fa2ea137"
+    },
+    {
+      "path": "wasm/yours_spec_core.wasm",
+      "source": "crates/yours-spec-core/target/wasm32-unknown-unknown/release/yours_spec_core.wasm",
+      "role": "wasm",
+      "bytes": 104876,
+      "sha256": "a1cdba97dc4986f4b769ca54df0db4fcaf54abacaabe81e4d0e1d1061236b572"
+    },
+    {
+      "path": "wgsl/ACCEPT_TREE.wgsl",
+      "source": "wgsl\\ACCEPT_TREE.wgsl",
+      "role": "kernel",
+      "bytes": 687,
+      "sha256": "a3a78f62c0b56c62c810cdac4315b633df9aa6ec95e2db513bb2e972373f67c2"
+    },
+    {
+      "path": "wgsl/DN_CONV_TREE.wgsl",
+      "source": "wgsl\\DN_CONV_TREE.wgsl",
+      "role": "kernel",
+      "bytes": 2070,
+      "sha256": "5f7e776fc73c814dcee1465adbe3276a305e012482052a780394fd68f23b617c"
+    },
+    {
+      "path": "wgsl/DN_IO.wgsl",
+      "source": "wgsl\\DN_IO.wgsl",
+      "role": "kernel",
+      "bytes": 4560,
+      "sha256": "1f7978c66e126918d3ad01fefd6fb29de9581281642f751422af6f92cd1d70c6"
+    },
+    {
+      "path": "wgsl/dn_proj_stash.wgsl",
+      "source": "wgsl\\dn_proj_stash.wgsl",
+      "role": "kernel",
+      "bytes": 2025,
+      "sha256": "4c741cd5e650f637ef2f2ebe7db0a66b5e86695a3f5cea98cd5f555f03f70d94"
+    },
+    {
+      "path": "wgsl/dn_tree_v2.wgsl",
+      "source": "wgsl\\dn_tree_v2.wgsl",
+      "role": "kernel",
+      "bytes": 5322,
+      "sha256": "cc767df7c4a9c4a63c8028f7022bb5a4b541ca9ec317f2642dcd132413ee51b7"
+    },
+    {
+      "path": "wgsl/DN_TREE.wgsl",
+      "source": "wgsl\\DN_TREE.wgsl",
+      "role": "kernel",
+      "bytes": 2167,
+      "sha256": "2bb406c1ee4f7fe34fb55823e0cff1f37fa8ba7216c1a633b3c30f7ff4399fc2"
+    },
+    {
+      "path": "wgsl/gdn_eagle3_embed_indexed.wgsl",
+      "source": "wgsl\\gdn_eagle3_embed_indexed.wgsl",
+      "role": "kernel",
+      "bytes": 1760,
+      "sha256": "f62a88f484c9ecb50f70401b90b2812837e53d7b1150c7aa95f8b0944c91629c"
+    },
+    {
+      "path": "wgsl/gdn_eagle3_rms.wgsl",
+      "source": "wgsl\\gdn_eagle3_rms.wgsl",
+      "role": "kernel",
+      "bytes": 2396,
+      "sha256": "270d65a4ef1bb70991dfde37a75656e00f65e63dfee0fb670afa12f152488bd4"
+    },
+    {
+      "path": "wgsl/gdn_eagle3_select.wgsl",
+      "source": "wgsl\\gdn_eagle3_select.wgsl",
+      "role": "kernel",
+      "bytes": 2108,
+      "sha256": "f4848691d4b491e0f1bdbc3d01a6e251d864548b32ef5c4c23bbf84771b5b46f"
+    },
+    {
+      "path": "wgsl/gdn_eagle3_tied.wgsl",
+      "source": "wgsl\\gdn_eagle3_tied.wgsl",
+      "role": "kernel",
+      "bytes": 2613,
+      "sha256": "3a66a3e282c98df02786c8f350656fc3abe25d06033e8574df15b7c7e8d6c5fe"
+    },
+    {
+      "path": "wgsl/gqa_tree_v2.wgsl",
+      "source": "wgsl\\gqa_tree_v2.wgsl",
+      "role": "kernel",
+      "bytes": 7048,
+      "sha256": "24b1cb3ea8267cbb390ac85b25bbe8db778b55efbe81a428e1df76e8b3085961"
+    },
+    {
+      "path": "wgsl/KV_COMPACT.wgsl",
+      "source": "wgsl\\KV_COMPACT.wgsl",
+      "role": "kernel",
+      "bytes": 743,
+      "sha256": "538065fdae6e46c7e330ddfc8f84a7aa99f2aaf0f2eb87c3a7f57b3597a21aab"
+    },
+    {
+      "path": "wgsl/q4_gate_up_swiglu_smallm_v2_f16.wgsl",
+      "source": "wgsl\\q4_gate_up_swiglu_smallm_v2_f16.wgsl",
+      "role": "kernel",
+      "bytes": 7008,
+      "sha256": "e7db19d079c5795d3564bf3535f007cafebb4599bcf045b171b7d58117dbe92e"
+    },
+    {
+      "path": "wgsl/q4_gate_up_swiglu_smallm_v2.wgsl",
+      "source": "wgsl\\q4_gate_up_swiglu_smallm_v2.wgsl",
+      "role": "kernel",
+      "bytes": 4111,
+      "sha256": "3c8ab253355db5969bbf3b5ae00dfe198601f4e65b8315aeca092c61b22e7b54"
+    },
+    {
+      "path": "wgsl/q4_gemv_smallm_v2_f16.wgsl",
+      "source": "wgsl\\q4_gemv_smallm_v2_f16.wgsl",
+      "role": "kernel",
+      "bytes": 7349,
+      "sha256": "85a0c39377368c9c44ede72099675f9b57b8ca8ca30d02fd28fcd2c88415279c"
+    },
+    {
+      "path": "wgsl/q4_gemv_smallm_v2.wgsl",
+      "source": "wgsl\\q4_gemv_smallm_v2.wgsl",
+      "role": "kernel",
+      "bytes": 2987,
+      "sha256": "b2ab78340e511a042eb6d425cb6e4c4b67334e457f3d5aac17d5c6773304e7d4"
+    },
+    {
+      "path": "wgsl/TOPK_BATCH.wgsl",
+      "source": "wgsl\\TOPK_BATCH.wgsl",
+      "role": "kernel",
+      "bytes": 2262,
+      "sha256": "4ff1aa4732caa4f25a09b7a14a259b2c2df563fe7ee22c479830e2afdcbb74c4"
+    }
+  ],
+  "kernels": [
+    {
+      "file": "q4_gemv_smallm_v2.wgsl",
+      "role": "Q4 projection, M = 1..16, scalar-consistent",
+      "replaces": "scalar wide Q4 (22) + batch Q4 (44); new shader id",
+      "dispatch": {
+        "main": "(ceil(rows / 64), 1, 1)"
+      },
+      "verifiedBy": [
+        "tests/q4SmallMV2.test.ts",
+        "python/tests/test_q4_smallm_v2.py"
+      ],
+      "entryPoints": [
+        {
+          "name": "main",
+          "workgroupSize": "64"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "weights",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "input",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "q4_gate_up_swiglu_smallm_v2.wgsl",
+      "role": "fused Q4 gate/up + SwiGLU, M = 1..16",
+      "replaces": "gate/up (21) + batch gate/up (45); new shader id",
+      "dispatch": {
+        "main": "(ceil(rows / 64), 1, 1)"
+      },
+      "verifiedBy": [
+        "tests/q4SmallMV2.test.ts",
+        "python/tests/test_q4_smallm_v2.py"
+      ],
+      "entryPoints": [
+        {
+          "name": "main",
+          "workgroupSize": "64"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "weights",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "input",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "q4_gemv_smallm_v2_f16.wgsl",
+      "role": "Tier-1 cooperative Q4 projection (f16 dequant, fixed 32-lane xor butterfly), M = 1..16; override exact_mac (true = oracle-exact, false = fma)",
+      "replaces": "Tier-1 (tier1-f16-subgroups) Q4 path; bindings identical to q4_gemv_smallm_v2",
+      "dispatch": {
+        "main": "(ceil(rows / 16), 1, 1)"
+      },
+      "requires": [
+        "shader-f16",
+        "subgroups"
+      ],
+      "verifiedBy": [
+        "tests/q4SmallMV2F16.test.ts",
+        "python/tests/test_q4_smallm_v2_f16.py"
+      ],
+      "entryPoints": [
+        {
+          "name": "main",
+          "workgroupSize": "256"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "weights",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "input",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "q4_gate_up_swiglu_smallm_v2_f16.wgsl",
+      "role": "Tier-1 cooperative fused gate/up + SwiGLU, M = 1..16; override exact_mac",
+      "replaces": "Tier-1 fused gate/up path; bindings identical to q4_gate_up_swiglu_smallm_v2",
+      "dispatch": {
+        "main": "(ceil(rows / 8), 1, 1)"
+      },
+      "requires": [
+        "shader-f16",
+        "subgroups"
+      ],
+      "verifiedBy": [
+        "tests/q4SmallMV2F16.test.ts",
+        "python/tests/test_q4_smallm_v2_f16.py"
+      ],
+      "entryPoints": [
+        {
+          "name": "main",
+          "workgroupSize": "256"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "weights",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "input",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "dn_tree_v2.wgsl",
+      "role": "single-pass shared-ancestor DeltaNet tree verify + commit",
+      "replaces": "shader 48 (DN_TREE), binding-compatible",
+      "dispatch": {
+        "verify": "(ceil(dv / 32), dnValHeads, 1)",
+        "commit": "(ceil(dv / 32), dnValHeads, 1)"
+      },
+      "verifiedBy": [
+        "tests/dnTreeV2.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "verify",
+          "workgroupSize": "32"
+        },
+        {
+          "name": "commit",
+          "workgroupSize": "32"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "masks",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "inputs",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "state",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "out",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 5,
+          "space": "storage,read",
+          "name": "choice",
+          "type": "array<u32>"
+        }
+      ]
+    },
+    {
+      "file": "gqa_tree_v2.wgsl",
+      "role": "unified M=1 / tree GQA: logical-history partitions, in-kernel partial RoPE, masked-skip",
+      "replaces": "shader 49 (GQA_TREE) + scalar split-K attention",
+      "dispatch": {
+        "partial": "(attnQHeads, M, 16)",
+        "combine": "(attnQHeads, M, 1)"
+      },
+      "verifiedBy": [
+        "tests/gqaTreeV2.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "partial",
+          "workgroupSize": "64"
+        },
+        {
+          "name": "combine",
+          "workgroupSize": "64"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "masks",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "query",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read",
+          "name": "rope",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read",
+          "name": "cache",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 5,
+          "space": "storage,read_write",
+          "name": "partials",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 6,
+          "space": "storage,read_write",
+          "name": "out",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "gdn_eagle3_rms.wgsl",
+      "role": "Engine C (EXP-007) RMSNorm / fusion helpers",
+      "replaces": null,
+      "dispatch": {
+        "*": "see docs/EXP007_BROWSER_RUNTIME.md"
+      },
+      "verifiedBy": [
+        "tests/gdnRuntime.test.ts",
+        "tests/gdnMath.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "main",
+          "workgroupSize": "64"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "x",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "weights",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "gdn_eagle3_tied.wgsl",
+      "role": "Engine C tied-embedding subset logits",
+      "replaces": null,
+      "dispatch": {
+        "*": "see docs/EXP007_BROWSER_RUNTIME.md"
+      },
+      "verifiedBy": [
+        "tests/gdnRuntime.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "embed",
+          "workgroupSize": "64"
+        },
+        {
+          "name": "subset_logits",
+          "workgroupSize": "64"
+        },
+        {
+          "name": "subset_logits_slice",
+          "workgroupSize": "64"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "slab",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "ids",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read",
+          "name": "features",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "gdn_eagle3_embed_indexed.wgsl",
+      "role": "Engine B (EXP-007) single-submit chain: tied embedding indexed by the on-device token slot (no host round trip between draft steps)",
+      "replaces": null,
+      "dispatch": {
+        "embed": "(ceil(hidden / 64), 1, 1) once per resident tied slab"
+      },
+      "verifiedBy": [
+        "tests/gdnRuntime.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "embed",
+          "workgroupSize": "64"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "slab",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "slots",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read",
+          "name": "features",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "gdn_eagle3_select.wgsl",
+      "role": "Engine B single-submit chain: on-GPU argmax + top-1 softmax probability; writes the next token slot and an 8-byte (id, f32 prob) readback record",
+      "replaces": null,
+      "dispatch": {
+        "select_top1": "(1, 1, 1)"
+      },
+      "verifiedBy": [
+        "tests/gdnRuntime.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "select_top1",
+          "workgroupSize": "256"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "logits",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "ids",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "slots",
+          "type": "array<u32>"
+        }
+      ]
+    },
+    {
+      "file": "dn_proj_stash.wgsl",
+      "role": "P9c: stash the raw verify projections of each DeltaNet layer and restore the keep-row layout on rejection (pure copies; replaces the 72 Q4 recomputes in the rollback)",
+      "replaces": null,
+      "dispatch": {
+        "stash": "(ceil(M * w / 256), 1, 1), w = conv + val + 2 * heads",
+        "unstash": "(ceil(keep * w / 256), 1, 1)"
+      },
+      "verifiedBy": [
+        "tests/rollbackP9.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "stash",
+          "workgroupSize": "256"
+        },
+        {
+          "name": "unstash",
+          "workgroupSize": "256"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "aux",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read_write",
+          "name": "work",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "cache",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "DN_CONV_TREE.wgsl",
+      "role": "E1/E2 companion (unchanged)",
+      "replaces": "shader 46 (identical)",
+      "dispatch": {},
+      "verifiedBy": [
+        "tests/kernelParity.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "verify",
+          "workgroupSize": "64"
+        },
+        {
+          "name": "commit",
+          "workgroupSize": "64"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "masks",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "raw",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read",
+          "name": "weights",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "history",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 5,
+          "space": "storage,read_write",
+          "name": "out",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 6,
+          "space": "storage,read",
+          "name": "choice",
+          "type": "array<u32>"
+        }
+      ]
+    },
+    {
+      "file": "DN_IO.wgsl",
+      "role": "E1/E2 companion (unchanged)",
+      "replaces": "shader 47 (identical)",
+      "dispatch": {},
+      "verifiedBy": [
+        "tests/kernelParity.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "pack",
+          "workgroupSize": "128"
+        },
+        {
+          "name": "gate",
+          "workgroupSize": "128"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "qkv",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "ab",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read",
+          "name": "aux",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "rec",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 5,
+          "space": "storage,read",
+          "name": "y",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 6,
+          "space": "storage,read",
+          "name": "z",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 7,
+          "space": "storage,read_write",
+          "name": "out",
+          "type": "array<f32>"
+        }
+      ]
+    },
+    {
+      "file": "DN_TREE.wgsl",
+      "role": "EXP-007 one-slot draft recurrence and commit",
+      "replaces": null,
+      "dispatch": {
+        "verify": "(ceil(dim/32),heads,1)",
+        "commit": "(ceil(dim/32),heads,1)"
+      },
+      "verifiedBy": [
+        "tests/gdnRuntime.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "verify",
+          "workgroupSize": "32"
+        },
+        {
+          "name": "commit",
+          "workgroupSize": "32"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "masks",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "inputs",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read_write",
+          "name": "state",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "out",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 5,
+          "space": "storage,read",
+          "name": "choice",
+          "type": "array<u32>"
+        }
+      ]
+    },
+    {
+      "file": "KV_COMPACT.wgsl",
+      "role": "E1/E2 companion (unchanged)",
+      "replaces": "shader 50 (identical)",
+      "dispatch": {},
+      "verifiedBy": [
+        "tests/kernelParity.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "main",
+          "workgroupSize": "64"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "choice",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read_write",
+          "name": "cache",
+          "type": "array<u32>"
+        }
+      ]
+    },
+    {
+      "file": "TOPK_BATCH.wgsl",
+      "role": "E3 Path A top-k readback (unchanged)",
+      "replaces": null,
+      "dispatch": {},
+      "verifiedBy": [
+        "tests/kernelParity.test.ts",
+        "tests/topKReadback.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "argmax_batch",
+          "workgroupSize": "64"
+        },
+        {
+          "name": "topk_batch",
+          "workgroupSize": "64"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "p",
+          "type": "Params"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "logits",
+          "type": "array<f32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read_write",
+          "name": "output",
+          "type": "array<u32>"
+        }
+      ]
+    },
+    {
+      "file": "ACCEPT_TREE.wgsl",
+      "role": "E1/E2 companion (unchanged)",
+      "replaces": "shader 52 (identical)",
+      "dispatch": {},
+      "verifiedBy": [
+        "tests/kernelParity.test.ts"
+      ],
+      "entryPoints": [
+        {
+          "name": "main",
+          "workgroupSize": "1"
+        }
+      ],
+      "bindings": [
+        {
+          "group": 0,
+          "binding": 0,
+          "space": "uniform",
+          "name": "slots",
+          "type": "u32"
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "space": "storage,read",
+          "name": "parents",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 2,
+          "space": "storage,read",
+          "name": "tokens",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 3,
+          "space": "storage,read",
+          "name": "argmax",
+          "type": "array<u32>"
+        },
+        {
+          "group": 0,
+          "binding": 4,
+          "space": "storage,read_write",
+          "name": "choice",
+          "type": "array<u32>"
+        }
+      ]
+    }
+  ],
+  "wasm": {
+    "path": "wasm/yours_spec_core.wasm",
+    "requiredExports": [
+      "memory",
+      "yse_alloc",
+      "yse_engine_new",
+      "yse_engine_propose",
+      "yse_engine_feedback",
+      "yse_pool_plan",
+      "yse_pool_feedback",
+      "yse_patha_verify",
+      "yse_rng_seed",
+      "yse_cutoff_new",
+      "yse_cutoff_invoke",
+      "yse_cutoff_decide",
+      "yse_cutoff_commit"
+    ],
+    "imports": 0
+  },
+  "costProjection": {
+    "rc1": {
+      "source": "fixtures/cycle16-rc1-speculative-v2-report.json",
+      "commit": "61a546a29141cb9746dbce920c22e3a168a126e6",
+      "chain": {
+        "stepMs": [
+          10.33,
+          12.63,
+          15.64,
+          18.695,
+          21.75,
+          24.37333,
+          26.99667,
+          29.62
+        ],
+        "rejectPenaltyMs": 3.6700000000000017
+      },
+      "tree": {
+        "stepMs": [
+          10.33,
+          16.2,
+          19.84,
+          23.025,
+          26.21,
+          29.49333,
+          32.77667,
+          36.06,
+          40.6425,
+          45.225,
+          49.8075,
+          54.39,
+          56.9275,
+          59.465,
+          62.0025,
+          64.54
+        ],
+        "rejectPenaltyMs": 0
+      }
+    },
+    "inputs": {
+      "source": "report",
+      "report": "C:/Users/taylo/.t3/projects/tinygpt-browser/benchmarks/evals/speculative-e1-e2-tree-report.json",
+      "reportSha256": "9d0ad7e64287f4facf9ca5f066b172fc7d91dcfefdb30f3b9f220536f7bbd8e3",
+      "exp004": {
+        "modelId": "jtaylorexe/pragma-exp004-gspo-rl",
+        "t1Ms": 8.56,
+        "t2Ms": 12.95,
+        "t3Ms": 15.03,
+        "t5Ms": 21.51,
+        "t8Ms": 29.48,
+        "t5RejectMs": 25.54,
+        "tree": {
+          "t2Ms": 17.68,
+          "t3Ms": 21.75,
+          "t5Ms": 31.3,
+          "t8Ms": 48.2,
+          "t12Ms": 69.62,
+          "t16Ms": 86.14,
+          "t5RejectMs": 30.33
+        }
+      },
+      "stockQwen35": {
+        "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+        "t1Ms": 9.13,
+        "t2Ms": 13.71,
+        "t3Ms": 15.73,
+        "t5Ms": 22.64,
+        "t8Ms": 31.04,
+        "t5RejectMs": 26.64,
+        "tree": {
+          "t2Ms": 18.26,
+          "t3Ms": 22.74,
+          "t5Ms": 31.69,
+          "t8Ms": 49.75,
+          "t12Ms": 70.86,
+          "t16Ms": 89.42,
+          "t5RejectMs": 29.64
+        }
+      }
+    },
+    "steps": {
+      "exp004": {
+        "c15-chain": {
+          "description": "Cycle 15 measured chain (snapshot + replay)",
+          "rejectPenaltyMs": 4.03,
+          "stepMs": {
+            "1": 8.56,
+            "2": 12.95,
+            "3": 15.03,
+            "5": 21.51,
+            "8": 29.48,
+            "12": 40.107,
+            "16": 50.733
+          },
+          "breakEvenTokens": {
+            "2": 1.513,
+            "3": 1.756,
+            "5": 2.513,
+            "8": 3.444,
+            "12": 4.685,
+            "16": 5.927
+          },
+          "slopeMsPerSlot2to16": 2.699
+        },
+        "c15-tree": {
+          "description": "Cycle 15 measured tree (deferred commit)",
+          "rejectPenaltyMs": 0,
+          "stepMs": {
+            "1": 8.56,
+            "2": 17.68,
+            "3": 21.75,
+            "5": 31.3,
+            "8": 48.2,
+            "12": 69.62,
+            "16": 86.14
+          },
+          "breakEvenTokens": {
+            "2": 2.065,
+            "3": 2.541,
+            "5": 3.657,
+            "8": 5.631,
+            "12": 8.133,
+            "16": 10.063
+          },
+          "slopeMsPerSlot2to16": 4.89
+        },
+        "v2-tree@chain": {
+          "description": "PROJECTION: tree at measured chain cost, deferred commit",
+          "rejectPenaltyMs": 0,
+          "stepMs": {
+            "1": 8.56,
+            "2": 12.95,
+            "3": 15.03,
+            "5": 21.51,
+            "8": 29.48,
+            "12": 40.107,
+            "16": 50.733
+          },
+          "breakEvenTokens": {
+            "2": 1.513,
+            "3": 1.756,
+            "5": 2.513,
+            "8": 3.444,
+            "12": 4.685,
+            "16": 5.927
+          },
+          "slopeMsPerSlot2to16": 2.699
+        },
+        "e1v2-target": {
+          "description": "TARGET: t1 + 1.332 ms x (M - 1), deferred commit",
+          "rejectPenaltyMs": 0,
+          "stepMs": {
+            "1": 8.56,
+            "2": 9.892,
+            "3": 11.224,
+            "5": 13.888,
+            "8": 17.884,
+            "12": 23.212,
+            "16": 28.54
+          },
+          "breakEvenTokens": {
+            "2": 1.156,
+            "3": 1.311,
+            "5": 1.622,
+            "8": 2.089,
+            "12": 2.712,
+            "16": 3.334
+          },
+          "slopeMsPerSlot2to16": 1.332
+        }
+      },
+      "stockQwen35": {
+        "c15-chain": {
+          "description": "Cycle 15 measured chain (snapshot + replay)",
+          "rejectPenaltyMs": 4,
+          "stepMs": {
+            "1": 9.13,
+            "2": 13.71,
+            "3": 15.73,
+            "5": 22.64,
+            "8": 31.04,
+            "12": 42.24,
+            "16": 53.44
+          },
+          "breakEvenTokens": {
+            "2": 1.502,
+            "3": 1.723,
+            "5": 2.48,
+            "8": 3.4,
+            "12": 4.627,
+            "16": 5.853
+          },
+          "slopeMsPerSlot2to16": 2.838
+        },
+        "c15-tree": {
+          "description": "Cycle 15 measured tree (deferred commit)",
+          "rejectPenaltyMs": 0,
+          "stepMs": {
+            "1": 9.13,
+            "2": 18.26,
+            "3": 22.74,
+            "5": 31.69,
+            "8": 49.75,
+            "12": 70.86,
+            "16": 89.42
+          },
+          "breakEvenTokens": {
+            "2": 2,
+            "3": 2.491,
+            "5": 3.471,
+            "8": 5.449,
+            "12": 7.761,
+            "16": 9.794
+          },
+          "slopeMsPerSlot2to16": 5.083
+        },
+        "v2-tree@chain": {
+          "description": "PROJECTION: tree at measured chain cost, deferred commit",
+          "rejectPenaltyMs": 0,
+          "stepMs": {
+            "1": 9.13,
+            "2": 13.71,
+            "3": 15.73,
+            "5": 22.64,
+            "8": 31.04,
+            "12": 42.24,
+            "16": 53.44
+          },
+          "breakEvenTokens": {
+            "2": 1.502,
+            "3": 1.723,
+            "5": 2.48,
+            "8": 3.4,
+            "12": 4.627,
+            "16": 5.853
+          },
+          "slopeMsPerSlot2to16": 2.838
+        },
+        "e1v2-target": {
+          "description": "TARGET: t1 + 1.332 ms x (M - 1), deferred commit",
+          "rejectPenaltyMs": 0,
+          "stepMs": {
+            "1": 9.13,
+            "2": 10.462,
+            "3": 11.794,
+            "5": 14.458,
+            "8": 18.454,
+            "12": 23.782,
+            "16": 29.11
+          },
+          "breakEvenTokens": {
+            "2": 1.146,
+            "3": 1.292,
+            "5": 1.584,
+            "8": 2.021,
+            "12": 2.605,
+            "16": 3.188
+          },
+          "slopeMsPerSlot2to16": 1.332
+        }
+      }
+    },
+    "tier1SlopeModel": [
+      {
+        "kernel": "exact_mac (product + FTZ select + add)",
+        "instructionsPerWeightToken": 5.25,
+        "idealMsPerSlot": 1.115,
+        "msPerSlotAtEfficiency": {
+          "0.25": 4.46,
+          "0.5": 2.23,
+          "0.75": 1.487
+        },
+        "efficiencyNeededForTarget": 0.837
+      },
+      {
+        "kernel": "fma (exact_mac = false)",
+        "instructionsPerWeightToken": 1.25,
+        "idealMsPerSlot": 0.266,
+        "msPerSlotAtEfficiency": {
+          "0.25": 1.062,
+          "0.5": 0.531,
+          "0.75": 0.354
+        },
+        "efficiencyNeededForTarget": 0.199
+      }
+    ],
+    "replay": {
+      "traces": "exp003c-pragma-v81920 (16 authentic extension traces, cold regime)",
+      "stepCurves": "EXP-004 Cycle 15 (tinygpt-browser f1b4a2c)",
+      "drafting": "drafting cost set to 0 (Rust core propose is sub-microsecond)",
+      "plainDecodeTokPerSec": 116.82,
+      "rows": [
+        {
+          "scenario": "c15-chain",
+          "config": "A-chain",
+          "M": 5,
+          "tau": 1.3257,
+          "meanM": 1.441,
+          "tokPerSec": 128.42,
+          "speedupVsPlain": 1.099
+        },
+        {
+          "scenario": "c15-chain",
+          "config": "A-chain",
+          "M": 8,
+          "tau": 1.3257,
+          "meanM": 1.444,
+          "tokPerSec": 128.1,
+          "speedupVsPlain": 1.097
+        },
+        {
+          "scenario": "c15-tree",
+          "config": "A-tree",
+          "M": 5,
+          "tau": 1.1419,
+          "meanM": 1.175,
+          "tokPerSec": 118.66,
+          "speedupVsPlain": 1.016
+        },
+        {
+          "scenario": "c15-tree",
+          "config": "A-tree",
+          "M": 8,
+          "tau": 1.1419,
+          "meanM": 1.175,
+          "tokPerSec": 118.66,
+          "speedupVsPlain": 1.016
+        },
+        {
+          "scenario": "c15-tree",
+          "config": "A-tree",
+          "M": 16,
+          "tau": 1.1419,
+          "meanM": 1.175,
+          "tokPerSec": 118.66,
+          "speedupVsPlain": 1.016
+        },
+        {
+          "scenario": "v2-tree@chain",
+          "config": "A-tree",
+          "M": 5,
+          "tau": 1.4298,
+          "meanM": 1.698,
+          "tokPerSec": 132.03,
+          "speedupVsPlain": 1.13
+        },
+        {
+          "scenario": "v2-tree@chain",
+          "config": "A-tree",
+          "M": 8,
+          "tau": 1.4239,
+          "meanM": 1.716,
+          "tokPerSec": 130.85,
+          "speedupVsPlain": 1.12
+        },
+        {
+          "scenario": "v2-tree@chain",
+          "config": "A-tree",
+          "M": 16,
+          "tau": 1.4239,
+          "meanM": 1.716,
+          "tokPerSec": 130.85,
+          "speedupVsPlain": 1.12
+        },
+        {
+          "scenario": "e1v2-target",
+          "config": "A-tree",
+          "M": 5,
+          "tau": 1.6878,
+          "meanM": 2.537,
+          "tokPerSec": 159.13,
+          "speedupVsPlain": 1.362
+        },
+        {
+          "scenario": "e1v2-target",
+          "config": "A-tree",
+          "M": 8,
+          "tau": 1.6878,
+          "meanM": 2.561,
+          "tokPerSec": 158.64,
+          "speedupVsPlain": 1.358
+        },
+        {
+          "scenario": "e1v2-target",
+          "config": "A-tree",
+          "M": 16,
+          "tau": 1.6878,
+          "meanM": 2.561,
+          "tokPerSec": 158.64,
+          "speedupVsPlain": 1.358
+        }
+      ]
+    }
+  },
+  "patches": [
+    {
+      "id": "P1a-dn-rollback-rows",
+      "order": 1,
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/wgslRealEngine.ts",
+      "kind": "search-replace",
+      "search": "const normRows = Math.max(PREFILL_MAX_CHUNK, dnLayerAllocCount * MAX_SPEC_TOKENS);",
+      "replace": "const normRows = Math.max(PREFILL_MAX_CHUNK, (dnLayerAllocCount + 1) * MAX_SPEC_TOKENS);",
+      "occurrences": 1,
+      "appliedWhen": "\\(dnLayerAllocCount \\+ 1\\) \\* MAX_SPEC_TOKENS",
+      "rationale": "Row block 0 of normBuf is reused by later RMSNorm passes (final norm writes the LM-head input at offset 0). Allocate one extra MAX_SPEC_TOKENS block so saved DeltaNet inputs never alias it.",
+      "verify": "Graph-construction assertion (P1c) + forced-rejection replay test comparing layer-0 replay input bytes with the original pre-projection rows."
+    },
+    {
+      "id": "P1b-dn-rollback-offsets",
+      "order": 1,
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/wgslRealEngine.ts",
+      "kind": "search-replace",
+      "search": "const dnNormOff = lo.dnIdx * MAX_SPEC_TOKENS * H;",
+      "replace": "const dnNormOff = (lo.dnIdx + 1) * MAX_SPEC_TOKENS * H; // block 0 = transient verify / final-norm rows",
+      "occurrences": 2,
+      "appliedWhen": "\\(lo\\.dnIdx \\+ 1\\) \\* MAX_SPEC_TOKENS \\* H",
+      "rationale": "Both the verify graph and the rejection replay must address the same disjoint per-layer slice; layer 0 previously overlapped the final normalised hidden state (Cycle 14/15 chain-replay corruption).",
+      "verify": "Force rejection at the root and after an interior token; assert committed recurrent matrices, conv tails and the next serial token equal serial decode."
+    },
+    {
+      "id": "P1c-dn-rollback-assert",
+      "order": 1,
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/wgslRealEngine.ts",
+      "kind": "manual",
+      "instructions": "After building the verify graph, assert for every DeltaNet layer that [dnNormOff, dnNormOff + M*H) lies inside normRows*H and is disjoint from [0, MAX_SPEC_TOKENS*H) and from every other layer slice. Throw at graph build time, not at dispatch.",
+      "rationale": "Makes the alias class of bug impossible to reintroduce silently.",
+      "verify": "Unit test constructing the graph with numDnLayers in {1, 24} and MAX_SPEC_TOKENS in {5, 17}."
+    },
+    {
+      "id": "P2-golden-strict-u32",
+      "order": 2,
+      "repo": "tinygpt-browser",
+      "file": "scripts/verify-golden-e1-e2.mjs",
+      "kind": "search-replace",
+      "search": "const failed = results.filter((r) => r.exactMismatches > 0 && r.maxAbsF32Err > 1e-4);",
+      "replace": "const failed = results.filter((r) => r.exactMismatches > 0);",
+      "occurrences": 1,
+      "appliedWhen": "results\\.filter\\(\\(r\\) => r\\.exactMismatches > 0\\)",
+      "rationale": "Bit-parity vectors must fail on ANY differing u32. The joint predicate tolerated 1e-4 after reinterpreting words as f32, which can pass a wrong token id or state word. Use a separate, explicitly named comparator for approximate tests.",
+      "verify": "Corrupt one output word of one golden vector: the script must exit non-zero."
+    },
+    {
+      "id": "P3-harness-bare-json-off",
+      "order": 2,
+      "repo": "yours-harness",
+      "file": "src/engine/turnStateMachine.ts",
+      "kind": "search-replace",
+      "search": "      const parser = new StreamOutputParser({\n        stopSequences: params.stopSequences,\n        stopOnToolCall,\n      });",
+      "replace": "      const parser = new StreamOutputParser({\n        stopSequences: params.stopSequences,\n        stopOnToolCall,\n        // Tagged <tool_call> protocol only: never reinterpret plain JSON answers as calls.\n        allowBareJsonToolCall: false,\n      });",
+      "occurrences": 1,
+      "appliedWhen": "allowBareJsonToolCall:\\s*(?:false|params\\.allowBareJsonToolCall\\s*\\?\\?\\s*false)\\s*,",
+      "rationale": "The default bare-JSON recovery turns a JSON answer ({\"name\":\"Ana\",...}) into a tool call and erases the visible text (CPU reproduction in docs/CYCLE15_AUDIT_AND_E1_OPT.md).",
+      "verify": "Profile JSON (plain and fenced) yields text and zero calls; split-chunk tagged calls and native calls still yield exactly one call; unknown names do not raise an approval event."
+    },
+    {
+      "id": "P3b-browser-harness-pin",
+      "order": 2,
+      "repo": "tinygpt-browser",
+      "file": "package-lock.json",
+      "kind": "manual",
+      "instructions": "After P3 is merged in yours-harness, update the resolved commit of node_modules/@yours/harness (currently #68cd16c6b2b46965b7adad8e8dc9476a547ac5d6) with `npm install @yours/harness@git+https://github.com/yours-research/yours-harness.git#<new-commit>` and commit the lockfile.",
+      "rationale": "The browser consumes the harness by git commit; the parser fix only ships with the new pin.",
+      "verify": "Formerly excluded bare-JSON prompt completes with visible text in the live gate (P7)."
+    },
+    {
+      "id": "P4-q4-v2-routing",
+      "order": 3,
+      "repo": "tinygpt-browser",
+      "file": "crates/tinygpt-wgsl-engine/src/lib.rs + src/offscreen/wgslRealEngine.ts",
+      "kind": "manual",
+      "instructions": "Register wgsl/q4_gemv_smallm_v2.wgsl and wgsl/q4_gate_up_swiglu_smallm_v2.wgsl as new shader ids. Route scalar decode (M=1), chain verify, tree verify and rejection replay through the SAME V2 family per precision tier. Dispatch (ceil(rows/64),1,1) for every M in 1..16; bindings 0 uniform (8 words: rows, cols, weight offset u32, input offset f32, output offset f32, residual flag, M, kernel arg), 1 weights, 2 activations, 3 output. Plain: arg = output stride (0 = rows). Fused: arg = up-weight offset (u32), dense output. Use a dedicated fused descriptor (do not reuse the last uniform word trick of the old path). Remove the second weight traversal for M > 8.",
+      "rationale": "Scalar and batched Q4 used different block grouping and reduction order, so equal rows could round differently (one-block witness in the Cycle 15 audit).",
+      "verify": "Every row bit-identical at M=1..16 including LM-head shards (stride = vocab, odd row counts, non-zero offsets); the repo test tests/q4SmallMV2.test.ts encodes the same cases."
+    },
+    {
+      "id": "P5-dn-tree-v2",
+      "order": 3,
+      "repo": "tinygpt-browser",
+      "file": "crates/tinygpt-wgsl-engine/src/lib.rs + src/offscreen/wgslRealEngine.ts",
+      "kind": "manual",
+      "instructions": "Replace the body of `const WGSL_DN_TREE: &str = r#\"...\"#;` (shader id 48) with wgsl/dn_tree_v2.wgsl (identical bindings 0..5, params, input layout and commit entry). In the tree verify graph change the dnTreeVerifyPipe dispatch from `wz: M` to `wz: 1` (one lane per head/value column walks the whole tree). Commit dispatch is unchanged. Scalar decode may use the same kernel with slots = 1 to share the recurrence arithmetic.",
+      "rationale": "V1 re-reads the committed DeltaNet state once per slot (768 MiB at M=16 across 24 layers) and performs sum(depth) recurrence updates (136 for a 16-chain); V2 reads it once and performs M updates, bit-identical outputs.",
+      "verify": "tests/dnTreeV2.test.ts semantics: V2 == V1 == serial M=1 per slot, state unchanged by verify, commit == V1 commit."
+    },
+    {
+      "id": "P5b-dn-tree-v2-dispatch",
+      "order": 3,
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/wgslRealEngine.ts",
+      "kind": "search-replace",
+      "search": "            pipeline: this.dnTreeVerifyPipe,\n            bindGroup: bgDnTree,\n            uniformByteOffset: 0,\n            wx: dnColWgs,\n            wy: this.arch.dnValHeads,\n            wz: M,",
+      "replace": "            pipeline: this.dnTreeVerifyPipe,\n            bindGroup: bgDnTree,\n            uniformByteOffset: 0,\n            wx: dnColWgs,\n            wy: this.arch.dnValHeads,\n            wz: 1, // DN_TREE_V2: one pass over the tree per (head, column)",
+      "occurrences": 1,
+      "appliedWhen": "pipeline: this\\.dnTreeVerifyPipe,[\\s\\S]{0,240}?wz: 1\\b",
+      "rationale": "Required together with P5: V2 walks every slot inside one invocation.",
+      "verify": "As P5."
+    },
+    {
+      "id": "P6-gqa-tree-v2",
+      "order": 3,
+      "repo": "tinygpt-browser",
+      "file": "crates/tinygpt-wgsl-engine/src/lib.rs + src/offscreen/wgslRealEngine.ts",
+      "kind": "manual",
+      "instructions": "Replace shader id 49 (GQA_TREE) with wgsl/gqa_tree_v2.wgsl: two pipelines, `partial` dispatched (attnQHeads, M, 16) and `combine` dispatched (attnQHeads, M, 1), in the same pass sequence. New bindings: 3 = RoPE table (cos/sin per logical position and rotary pair), 5 = partial scratch ((M*q_heads*16)*(dim+2) f32). Pass RAW queries: V2 applies partial RoPE at logical position prefix + depth. Route scalar M=1 attention through the same two pipelines (slots = 1) and retire the separate scalar split-K and DP4A query-quantising paths for parity builds.",
+      "rationale": "Scalar and tree attention used different partitioning (64/32 splits vs 1/4/16 at 512/4096), exponentials and query precision; V2 selects partitions from each slot's logical history and skips masked siblings before the K/V dot.",
+      "verify": "tests/gqaTreeV2.test.ts semantics: every tree slot == M=1 decode of its logical history (fp16 and int8, L across 512 and 4096)."
+    },
+    {
+      "id": "P7-parity-gate-42",
+      "order": 4,
+      "repo": "tinygpt-browser",
+      "file": "(release gate)",
+      "kind": "manual",
+      "instructions": "Replay the 14 scored prompts x 3 repeats OFF/ON with identical tool payloads, tab ids, prompt tokens and state (harness: yours-speculative-engine benchmarks/live/run-live-ab.mjs). Require 42/42 completed bit-identical token streams and zero hangs, plus the formerly excluded bare-JSON prompt. On the first difference save prefix ids, branch parents/depths, M, precision tier, pre/post state hashes, top-2 ids + margin and logits as u32 words, then bisect embed/Q4/DN/attention/residual/final-norm/LM-head.",
+      "rationale": "Primitive-level WARP parity does not prove full-graph parity; this is the RC1 ship gate.",
+      "verify": "42/42 + JSON prompt; report wall throughput incl. slowdowns, OFF single-token throughput and tree step times vs the 1.332 ms/slot target."
+    },
+    {
+      "id": "P8-spec-core-wasm",
+      "order": 5,
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/inferenceEngine.ts (EngineASpeculator call sites)",
+      "kind": "manual",
+      "instructions": "Use ts/rc1/wasmEngineAdapter.ts with wasm/yours_spec_core.wasm. Feed the measured active-path profile from manifest.costProjection.rc1.chain or the corresponding live measurements. Use beginTurn(initialSpecSeed, promptScaffold, enableThinking) and observeEmitted in the existing emit hook.",
+      "rationale": "Bit-identical to the TS drafter, zero steady-state allocations, sub-microsecond propose; session-scoped calibration avoids the warm-regime regression found in Milestone 3.",
+      "verify": "tests/wasmCore.test.ts lockstep semantics; extension telemetry tau/alpha unchanged within noise."
+    },
+    {
+      "id": "P9-engine-c-router",
+      "order": 5,
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen (new module)",
+      "kind": "manual",
+      "instructions": "Supply the adapter engineC option with the deployed manifest URL, release SHA-256, borrowed RC1 tied slabs, shaderAssets reader and target device. At each eligible call supply taps from layers 3, 15, 31 preceding the pending token, and propose(k, anchor, false) for chain verify. Preserve EOS/tool truncation, target correction and exactly-once emitted-token observation. See docs/CYCLE17_ENGINE_B_DROPIN.md.",
+      "rationale": "Cycle 17 calls the learned EXP-007 route Engine B. The adapter keeps its original Engine C API name. Confident copy/tool spans and missing anchors use the WASM copy/grammar route.",
+      "verify": "CPU four-way single-step and depth-five parity, candidate held-out acceptance and route-specific wall-time gates, then repeat the 45-pair extension replay."
+    },
+    {
+      "id": "P9a-rollback-no-wait",
+      "order": 6,
+      "baseline": "cycle16",
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/wgslRealEngine.ts",
+      "kind": "search-replace",
+      "search": "      const tRb = performance.now();\n      device.queue.submit([rbEnc.finish()]);\n      await device.queue.onSubmittedWorkDone();\n      gpuMs += performance.now() - tRb;",
+      "replace": "      const tRb = performance.now();\n      // P9a: queue order already makes every later submit see the restored state, and\n      // writeBuffer is ordered with submits. The rollback's GPU time lands in the next map.\n      device.queue.submit([rbEnc.finish()]);\n      gpuMs += performance.now() - tRb;",
+      "occurrences": 1,
+      "appliedWhen": "P9a: queue order already makes every later submit see the restored state",
+      "rationale": "The reject branch waited for the rollback (second submit + onSubmittedWorkDone) before returning, which is the fence round trip inside the measured 3.67 ms M=5 reject surcharge. Every later GPU operation is queued behind the rollback, and every later readback (mapAsync) resolves after it, so the wait adds latency without adding ordering. Device loss surfaces at the next mapAsync, as for any step.",
+      "verify": "Forced-rejection replay (P1b verify) still equals serial decode; rc1-speculative microbench t5RejectMs - t5Ms drops; abort mid-turn and device-loss paths unchanged."
+    },
+    {
+      "id": "P9b-rollback-defer-reject",
+      "order": 7,
+      "baseline": "cycle16",
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/wgslRealEngine.ts",
+      "kind": "search-replace",
+      "search": "      device.queue.submit([rbEnc.finish()]);\n",
+      "replace": "      this.rollback.defer(rbEnc.finish()); // P9b: runs at the head of the next submission\n",
+      "occurrences": 1,
+      "appliedWhen": "this\\.rollback\\.defer\\(rbEnc\\.finish\\(\\)\\)",
+      "rationale": "Encode the rollback at reject time but submit it with the next verify step (one queue.submit with two command buffers) or at the next flush point. Requires P9b-rollback-flush-guards.",
+      "verify": "tests/rollbackP9.test.ts simulator semantics; live: 45-pair greedy parity and the forced-rejection replay test."
+    },
+    {
+      "id": "P9b-rollback-merge-verify",
+      "order": 7,
+      "baseline": "cycle16",
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/wgslRealEngine.ts",
+      "kind": "search-replace",
+      "search": "    const t0 = performance.now();\n    device.queue.submit([enc.finish()]);\n    await this.verifyStaging64B.mapAsync(GPU_MAP_READ);",
+      "replace": "    const t0 = performance.now();\n    this.rollback.submitWith([enc.finish()]); // P9b: a pending rollback runs first\n    await this.verifyStaging64B.mapAsync(GPU_MAP_READ);",
+      "occurrences": 1,
+      "appliedWhen": "this\\.rollback\\.submitWith\\(\\[enc\\.finish\\(\\)\\]\\)",
+      "rationale": "The chain-verify hot path writes only tokenIdsBuf and its per-plan uniform buffer before submitting, neither of which the rollback reads, so prepending the pending rollback preserves queue order and saves the extra submit.",
+      "verify": "As P9b-rollback-defer-reject."
+    },
+    {
+      "id": "P9b-rollback-flush-guards",
+      "order": 7,
+      "baseline": "cycle16",
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/wgslRealEngine.ts",
+      "kind": "manual",
+      "anchors": [
+        {
+          "text": "  async decodeStep(",
+          "occurrences": 1
+        },
+        {
+          "text": "  async prefill(",
+          "occurrences": 1
+        },
+        {
+          "text": "  private async prefillChunk(",
+          "occurrences": 1
+        },
+        {
+          "text": "  async saveGpuPrefixSlot(slotId: string)",
+          "occurrences": 1
+        },
+        {
+          "text": "  async restoreGpuPrefixSlot(slotId: string)",
+          "occurrences": 1
+        },
+        {
+          "text": "  async resetState(): Promise<void> {",
+          "occurrences": 1
+        },
+        {
+          "text": "  async snapshotState(): Promise<WgslCpuSnapshot> {",
+          "occurrences": 1
+        },
+        {
+          "text": "  async restoreState(snap: WgslCpuSnapshot): Promise<void> {",
+          "occurrences": 1
+        },
+        {
+          "text": "  async ensureKvCapacity(neededSeqLen: number): Promise<void> {",
+          "occurrences": 1
+        },
+        {
+          "text": "  async decodeSpeculativeTreeStep(",
+          "occurrences": 1
+        },
+        {
+          "text": "  dispose(): void {",
+          "occurrences": 1
+        }
+      ],
+      "instructions": "Copy ts/rc1/rollbackScheduler.ts into src/offscreen. Add the field `private rollback = new DeferredRollback<GPUCommandBuffer>((cbs) => this.device!.queue.submit(cbs));`. Call `this.rollback.flush(point)` as the FIRST statement (before any writeBuffer, buffer creation or readback) of: decodeStep (decode-step), prefill and prefillChunk (prefill), the background/context prefill entry (prefill-background), saveGpuPrefixSlot (slot-save), restoreGpuPrefixSlot (slot-restore), resetState (reset), snapshotState (snapshot), restoreState (restore-snapshot), decodeSpeculativeTreeStep (tree-step), and the growth branch of ensureKvCapacity before any allocation or copy (kv-grow). Call flush('end-of-turn') when a generate run completes or aborts, and `this.rollback.discard()` in dispose and on device loss. Keep the rollback's writeBuffer into prefillUniformBuf at reject time: every entry point that writes prefillUniformBuf flushes first, so that write stays ahead of the next one in queue order.",
+      "rationale": "Deferral is safe only if no GPU work or writeBuffer that touches what the rollback reads (DeltaNet state, backups, saved norm rows or stashed projections, prefillUniformBuf, workBuf) lands between the reject and the rollback, and no buffer it references is reallocated first.",
+      "verify": "tests/rollbackP9.test.ts: 400 random transition sequences through every flush point equal the blocking rollback bit-for-bit; removing a flush (prefill, reset) or merging after the next snapshot is detected."
+    },
+    {
+      "id": "P9c-stash-verify-projections",
+      "order": 8,
+      "baseline": "cycle16",
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/wgslRealEngine.ts",
+      "kind": "search-replace",
+      "search": "        pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [this.arch.dnValHeads * 2, H, wAb, dnNormOff, M * (this.dnConvDim + this.dnValDim), 0, M, 0], q4V2Wx(this.arch.dnValHeads * 2));\n\n        pushStatic(this.convPipe, vBgConv,",
+      "replace": "        pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [this.arch.dnValHeads * 2, H, wAb, dnNormOff, M * (this.dnConvDim + this.dnValDim), 0, M, 0], q4V2Wx(this.arch.dnValHeads * 2));\n        // P9c: keep this layer's raw projections before conv overwrites workBuf in place.\n        pushStatic(this.dnProjStashPipe, vBgDnProjStash, [M, 0, this.dnConvDim, this.dnValDim, this.arch.dnValHeads * 2, lo.dnIdx * MAX_SPEC_TOKENS * this.dnProjWidth, 0, 0], Math.ceil((M * this.dnProjWidth) / 256));\n\n        pushStatic(this.convPipe, vBgConv,",
+      "occurrences": 1,
+      "appliedWhen": "pushStatic\\(this\\.dnProjStashPipe, vBgDnProjStash",
+      "rationale": "The chain verify graph computes every DeltaNet layer's QKV/Z/AB rows for all M tokens, then conv overwrites them. Stashing them (one copy dispatch per layer, M x 12,352 f32) lets a rejection skip recomputing them.",
+      "verify": "tests/rollbackP9.test.ts (WARP): stash then unstash reproduces the keep-row layout; V2 Q4 rows at M=6 equal M=keep recomputes bit-for-bit."
+    },
+    {
+      "id": "P9c-unstash-rollback",
+      "order": 8,
+      "baseline": "cycle16",
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/wgslRealEngine.ts",
+      "kind": "search-replace",
+      "search": "        const [wQkv, wZ, wAb] = lo.w;\n        const dnNormOff = (lo.dnIdx + 1) * MAX_SPEC_TOKENS * H; // block 0 = transient verify / final-norm rows\n        const pBgNormToWork = this.pBgWSlabNormToWork[lo.slabIdx]!;\n\n        const qOff = pushRb([this.dnConvDim, H, wQkv, dnNormOff, 0, 0, keepTokens, 0]);\n        rPass.setPipeline(this.q4SmallMV2Pipe);\n        rPass.setBindGroup(0, pBgNormToWork, [qOff]);\n        rPass.dispatchWorkgroups(q4V2Wx(this.dnConvDim), 1, 1);\n\n        const zOff = pushRb([this.dnValDim, H, wZ, dnNormOff, keepTokens * this.dnConvDim, 0, keepTokens, 0]);\n        rPass.setPipeline(this.q4SmallMV2Pipe);\n        rPass.setBindGroup(0, pBgNormToWork, [zOff]);\n        rPass.dispatchWorkgroups(q4V2Wx(this.dnValDim), 1, 1);\n\n        const abOff = pushRb([this.arch.dnValHeads * 2, H, wAb, dnNormOff, keepTokens * (this.dnConvDim + this.dnValDim), 0, keepTokens, 0]);\n        rPass.setPipeline(this.q4SmallMV2Pipe);\n        rPass.setBindGroup(0, pBgNormToWork, [abOff]);\n        rPass.dispatchWorkgroups(q4V2Wx(this.arch.dnValHeads * 2), 1, 1);\n",
+      "replace": "        // P9c: replay conv + recurrence from the projections the verify pass stashed.\n        const sOff = pushRb([M, keepTokens, this.dnConvDim, this.dnValDim, this.arch.dnValHeads * 2, lo.dnIdx * MAX_SPEC_TOKENS * this.dnProjWidth, 0, 0]);\n        rPass.setPipeline(this.dnProjUnstashPipe);\n        rPass.setBindGroup(0, this.pBgDnProjStash, [sOff]);\n        rPass.dispatchWorkgroups(Math.ceil((keepTokens * this.dnProjWidth) / 256), 1, 1);\n",
+      "occurrences": 1,
+      "appliedWhen": "rPass\\.setPipeline\\(this\\.dnProjUnstashPipe\\)",
+      "rationale": "Removes the 72 Q4 dispatches (about 759 M weights, the largest share of the reject surcharge) from every rollback. Conv and recurrence still replay keepTokens rows from the restored state.",
+      "verify": "As P9c-stash-verify-projections, plus the forced-rejection replay test (state after rollback equals serial decode)."
+    },
+    {
+      "id": "P9c-projection-cache",
+      "order": 8,
+      "baseline": "cycle16",
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/wgslRealEngine.ts",
+      "kind": "manual",
+      "anchors": [
+        {
+          "text": "      this.dnConvBackupBuf = this.track(",
+          "occurrences": 1
+        },
+        {
+          "text": "    const vBgConv = makeDynRw(this.auxBuf, this.dnConvBuf, this.workBuf);",
+          "occurrences": 1
+        },
+        {
+          "text": "      this.pBgConv = makeDynRw(this.prefillUniformBuf, this.auxBuf, this.dnConvBuf, this.workBuf);",
+          "occurrences": 1
+        },
+        {
+          "text": "      const H = this.arch.hiddenSize;\n      const q4V2Wx = (rows: number) => Math.ceil(rows / this.q4SmallMV2RowsPerWg);\n      const rbU32 = new Uint32Array(this.rbUniformScratch);",
+          "occurrences": 1
+        },
+        {
+          "file": "crates/tinygpt-wgsl-engine/src/lib.rs",
+          "text": "        56 => set_shader_bytes(WGSL_Q4_GEMV_SMALLM_V2_F16.as_bytes()),",
+          "occurrences": 1
+        }
+      ],
+      "instructions": "Register wgsl/dn_proj_stash.wgsl as the next free shader id and create two compute pipelines, `dnProjStashPipe` (entry stash) and `dnProjUnstashPipe` (entry unstash), with the existing dynRwStorageBgl layout. Set `this.dnProjWidth = this.dnConvDim + this.dnValDim + 2 * this.arch.dnValHeads` and, next to dnConvBackupBuf, allocate `dnProjCacheBuf` of dnLayerAllocCount * MAX_SPEC_TOKENS * dnProjWidth * 4 bytes (STORAGE; 9.49 MB for 24 layers). Bind groups: in buildOrGetVerifyPlan next to vBgConv, `const vBgDnProjStash = makeDynRw(this.auxBuf, this.workBuf, this.dnProjCacheBuf);`; next to this.pBgConv, `this.pBgDnProjStash = makeDynRw(this.prefillUniformBuf, this.auxBuf, this.workBuf, this.dnProjCacheBuf);`. After P9c-unstash-rollback, delete the now-unused `const H` and `const q4V2Wx` lines at the head of the reject branch (noUnusedLocals). Free the buffer in dispose with the other tracked buffers.",
+      "rationale": "Supplies the pipelines, buffer and bind groups used by P9c-stash-verify-projections and P9c-unstash-rollback.",
+      "verify": "Typecheck; forced-rejection replay; memory stats +9.49 MB."
+    },
+    {
+      "id": "P10-phase-timers",
+      "order": 9,
+      "baseline": "cycle16",
+      "repo": "tinygpt-browser",
+      "file": "src/offscreen/inferenceEngine.ts",
+      "kind": "manual",
+      "anchors": [
+        {
+          "text": "const ttftMs = performance.now() - runStartMs;",
+          "occurrences": 1
+        },
+        {
+          "text": "        const canSpeculate =\n          this.config.enableSpeculative &&",
+          "occurrences": 1
+        },
+        {
+          "file": "src/offscreen/wgslRealEngine.ts",
+          "text": "  async decodeSpeculativeStep(",
+          "occurrences": 1
+        }
+      ],
+      "instructions": "Stamp phases with performance.timeOrigin + performance.now() and attach them once to the generation trace as `phases: { marks, info, steps, tools }` exactly as listed in docs/CYCLE17_WALLTIME_AND_ROLLBACK_AUDIT.md (marks: enqueue, dequeue, runStart, cacheResolved, ctxPrefillStart/End, prefillStart/End, firstToken, speculatorReady, decodeStart, firstDelta, decodeEnd, complete, uiSend, uiTurnComplete; per-step draftMs, planMs, encodeMs, mapMs, rollbackEncodeMs, rollbackWaitMs, emitMs, yieldMs; tools [{name, start, end}]). decodeSpeculativeStep returns a timing object. benchmarks/live/run-live-ab.mjs (this repository) already waits for backgroundPrefillState to stay non-prefilling for 300 ms, reports elapsedMs before the 250 ms settle (elapsedMsWithSettle keeps the Cycle 16 definition), records document.visibilityState and keeps every trace; summarizePhases() decomposes a trace.",
+      "rationale": "The Cycle 16 TTFT and copy-cons regressions came from an unattributed slow-turn state; same-origin phase marks decide whether it is queueing, prefill, sidepanel work or the GPU.",
+      "verify": "tests/liveAb.test.ts (summarizePhases); a live run reports a phases breakdown for every turn with unaccountedMs < 5% of wall."
+    }
+  ],
+  "gates": [
+    "All search-replace anchors match their pinned occurrence counts (rc1:check --targets).",
+    "Pack self-check passes: hashes, WARP execution of every packed kernel vs TS oracles, wasm exports + lockstep smoke, Engine C bundle validation, TS closure typechecks standalone.",
+    "42/42 bit-identical OFF/ON greedy replay + bare-JSON prompt (P7) on the RC1 (EXP-006) checkpoint."
+  ]
+}

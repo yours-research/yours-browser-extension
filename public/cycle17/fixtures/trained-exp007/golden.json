@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "headSha256": "96114e9fd170a8c8d939877fd56afee35c280d0c858b3ebe866084440316a8c5",
+  "slab2Sha256": "1615b59f8476d538c90f78a9a1ca5b890d1be3c4d9af4cb6f159f31574676eb0",
+  "tapsSha256": "f9d6b7d5c571b2697f3073c06fa13160205a293f671e9d7ed3a66bcff0e03f10",
+  "rootToken": 271,
+  "trace": "exp003c-pragma-v81920/casual/0",
+  "absoluteFeaturePosition": 708,
+  "tapLayers": [
+    3,
+    15,
+    31
+  ],
+  "tapShape": [
+    3,
+    2560
+  ],
+  "greedyTokens": [
+    760,
+    369,
+    369,
+    220,
+    16
+  ],
+  "f32BufferSha256": {
+    "fused.f32": "ce27538d26371873c181b54f2ff6a1c8c7e33056f4defaf4bdd2f3dfe87dff3f",
+    "1-feature.f32": "f47e62193e9921123544baa6ad6d4db259c53404b1cd4b4313f3a4de1c43cc74",
+    "1-logits.f32": "2d634e5c37b33f04e508203a3cb49a5d9633f89ee1010473ab1975c314c667be",
+    "1-matrix.f32": "70d168649dc314e4692f32b45d72c6aca25c7ce81cc34b585a1d8d4a737f6fdd",
+    "1-history.f32": "4a9d0a48466b6aa2ac3804b404f330c92080113c60b8575bec4e69c59c3a6a5d",
+    "2-feature.f32": "03dfeecca8f99f33b10d84b69b6a2e2e7b64b2ebf82ca56b219d44eb6b9a0b21",
+    "2-logits.f32": "c8de0dac3c256af29b0a292c31ce85265ff947fbd854762e816390c301987331",
+    "2-matrix.f32": "ab82469ea56082a8217f7b258164a46694d0fbb43c2594a28d83897413a90dbb",
+    "2-history.f32": "31f8ca83ece8106442e0a1275a036d31d4f8f6021f08e5dcf2799764c1c6682a",
+    "3-feature.f32": "8f408ea78b6f1494154eefa87dc0500a2a09c4bcee5e5ad63227b65f58180209",
+    "3-logits.f32": "b581e1e8282b10d24989f46f6410167761511be510ef27cdf614547ad6bf0a9e",
+    "3-matrix.f32": "981bc17c61c9a874b46f4b154c68eb5b2523d61243c965a3edcfdd9a57cf4213",
+    "3-history.f32": "71774f6bf1e6aa9e7eb940a90b32a21473845c2b024a065e3edd8be89f4df110",
+    "4-feature.f32": "495529cb6f974cf81520d95a02400844aced3f22d5527c149dfe3521105fd88d",
+    "4-logits.f32": "b0ac4563be9f6479b472bc13310fd89e492d8d602a56010169a1e2e31df642c6",
+    "4-matrix.f32": "3dea7d772c126f8e06d9383b8fde7cb2548361772ed0511bf165c183087c34a4",
+    "4-history.f32": "bc86693f96f75c15c7f2263bb33122187b660e859e7ddcfca0a0acaee056c086",
+    "5-feature.f32": "7ef24996dce68052bc69228eef8490142cf10efbb892e970803b83066aafbc2e",
+    "5-logits.f32": "c64d994d302e71b788ad2a011efd183a73f75b147fadfa0f1674a1f3dae08c7a",
+    "5-matrix.f32": "5b3874bbc76ec9d54e515ea117b3d44994b02625d6139b709d071e3b91ddc8fb",
+    "5-history.f32": "4ff0f56831f3a6bfe6efd6d4a968b6b909b530eb89a9d2ae640a1c7511882854"
+  }
+}

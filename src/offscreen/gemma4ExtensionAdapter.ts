@@ -73,13 +73,51 @@ export interface WgslRuntimeEngine extends GpuPrefixSlotBackend {
     tokenId: number,
     sampling: SamplingOptions,
     pacingMode?: GpuPacingMode,
-  ): Promise<{ nextToken: number; gpuMs: number; breatherMs: number }>;
+  ): Promise<{
+    nextToken: number;
+    gpuMs: number;
+    breatherMs: number;
+    encodeMs?: number;
+    mapMs?: number;
+  }>;
   decodeSpeculativeStep(
     currentTokenId: number,
     draftTokens: number[],
     sampling: SamplingOptions,
     pacingMode?: GpuPacingMode,
-  ): Promise<{ tokens: number[]; acceptedCount: number; draftedCount: number; gpuMs: number; breatherMs: number }>;
+  ): Promise<{
+    tokens: number[];
+    acceptedCount: number;
+    draftedCount: number;
+    gpuMs: number;
+    breatherMs: number;
+    planBuilt?: boolean;
+    planMs?: number;
+    encodeMs?: number;
+    mapMs?: number;
+    rollbackEncodeMs?: number;
+    rollbackWaitMs?: number;
+  }>;
+  getDevice?(): GPUDevice | null;
+  getTiedTableSlices?(): Array<{ buffer: GPUBuffer; startRow: number; endRow: number }>;
+  getDraftAnchorTaps?(): { taps: GPUBuffer; valid: boolean };
+  invalidateDraftAnchor?(): void;
+  flushPendingRollback?(
+    point:
+      | 'decode-step'
+      | 'prefill'
+      | 'prefill-background'
+      | 'slot-save'
+      | 'slot-restore'
+      | 'reset'
+      | 'snapshot'
+      | 'restore-snapshot'
+      | 'kv-grow'
+      | 'tree-step'
+      | 'end-of-turn'
+      | 'dispose',
+  ): void;
+  measureSpecStep?(M: number, reject: boolean): Promise<number>;
   isTreeSpecSupported(): boolean;
   decodeSpeculativeTreeStep?(
     currentTokenId: number,

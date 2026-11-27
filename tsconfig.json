@@ -16,7 +16,7 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "resolveJsonModule": true,
-    "types": ["chrome", "vitest/globals"]
+    "types": ["chrome", "vitest/globals", "@webgpu/types"]
   },
   "include": ["src", "tests"]
 }

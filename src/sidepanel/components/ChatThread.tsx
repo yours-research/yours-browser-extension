@@ -9,17 +9,20 @@ import type {
 } from '@yours/harness';
 import {
   ActionBar,
+  AgentHandoffCard,
+  AgentStepRow,
+  AgentStepsCard,
   AssistantMessage,
   BranchPicker,
   EmptyPanelState,
   ErrorRecoveryCard,
   InlineNotice,
   InlineToolStatus,
+  MessageSourcesPill,
   OnboardingCard,
-  AgentHandoffCard,
   PermissionCard,
   ReasoningTrace,
-  ToolTraceList,
+  StepTree,
   UserMessageBubble,
   type InlineNoticeTone,
   type PromptStarterItem,
@@ -34,14 +37,15 @@ import {
 } from '../responseSources.ts';
 import {
   buildGroupStepsFromToolNodes,
+  formatDurationMs,
   formatToolChainSummary,
   mergeActiveTurnToolSteps,
   type ActivePageHint,
+  type DescribedToolStep,
   type ToolExecutionTelemetry,
 } from '../toolPresentation.ts';
 import type { ToolTraceRecord } from '@yours/harness/storage';
 import { GenUiRenderer } from './GenUiRenderer.tsx';
-import { TurnSourcesTrigger } from './TurnSourcesTrigger.tsx';
 
 export interface ChatThreadProps {
   nodes: MessageNode[];
@@ -141,6 +145,59 @@ function openExternalSourceUrl(rawUrl: string): void {
   if (typeof window !== 'undefined' && typeof window.open === 'function') {
     window.open(rawUrl, '_blank', 'noopener,noreferrer');
   }
+}
+
+function renderTurnAgentSteps(params: {
+  key?: string;
+  steps: readonly DescribedToolStep[];
+  isActiveTurn: boolean;
+  hasFinal: boolean;
+}) {
+  const { steps, isActiveTurn, hasFinal } = params;
+  const totalDurationMs = steps.reduce(
+    (sum, s) => (typeof s.durationMs === 'number' && Number.isFinite(s.durationMs) ? sum + s.durationMs : sum),
+    0,
+  );
+  const hasDuration = steps.some(
+    (s) => typeof s.durationMs === 'number' && Number.isFinite(s.durationMs) && s.durationMs > 0,
+  );
+  const durationText = hasDuration ? formatDurationMs(totalDurationMs) : undefined;
+  const runningStep = steps.find((s) => s.status === 'running');
+  const leadStep = runningStep ?? steps[steps.length - 1];
+  const { title } = formatToolChainSummary(steps, isActiveTurn && !hasFinal);
+
+  return (
+    <AgentStepsCard
+      key={params.key}
+      hasFinal={hasFinal}
+      active={isActiveTurn && !hasFinal}
+      activityLabel={runningStep ? runningStep.tool : leadStep ? title : 'Working'}
+      activityDetail={runningStep?.detail}
+      durationText={durationText}
+      summaryLabel={
+        durationText
+          ? 'Worked'
+          : `Used ${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`
+      }
+      timer={isActiveTurn && !hasFinal}
+    >
+      <StepTree>
+        {steps.map((step) => (
+          <AgentStepRow
+            key={step.id}
+            icon={step.statusKind}
+            iconUrl={typeof step.favicon === 'string' ? step.favicon : undefined}
+            title={step.actionLabel ?? step.label ?? step.tool}
+            detail={step.detail}
+            status={step.status === 'done' ? 'success' : step.status}
+            statusText={step.latencyLabel}
+            input={step.input}
+            output={step.output}
+          />
+        ))}
+      </StepTree>
+    </AgentStepsCard>
+  );
 }
 
 function renderBranchPicker(
@@ -368,16 +425,20 @@ export function ChatThread({
             if (isTrailingActiveToolGroup) {
               activeTurnCompletedSteps.push(...groupSteps);
             } else {
-              const { title, summary } = formatToolChainSummary(groupSteps, false);
+              const hasFinalAfterGroup = visibleNodes
+                .slice(j)
+                .some(
+                  (later) =>
+                    later.message.role === 'assistant' &&
+                    Boolean(extractReasoningAndBody(later.message.content).body),
+                );
               rendered.push(
-                <ToolTraceList
-                  key={`trace-${node.id}`}
-                  variant="inline"
-                  title={title}
-                  summary={summary}
-                  steps={groupSteps}
-                  defaultCollapsed={true}
-                />,
+                renderTurnAgentSteps({
+                  key: `trace-${node.id}`,
+                  steps: groupSteps,
+                  isActiveTurn: false,
+                  hasFinal: hasFinalAfterGroup || !isGenerating,
+                }),
               );
             }
             i = j - 1;
@@ -422,14 +483,18 @@ export function ChatThread({
                 : undefined;
             const speedMetrics =
               isLastAssistant && (turnTelemetry || engineTelemetry.tokensPerSec !== null)
-                ? {
-                    tokensPerSec:
-                      turnTelemetry?.tokensPerSec ?? engineTelemetry.tokensPerSec ?? undefined,
-                    ttftMs: turnTelemetry?.ttftMs ?? engineTelemetry.ttftMs ?? undefined,
-                    speedupMultiplier: engineTelemetry.speculativeStats?.speedupMultiplier,
-                    acceptedTokPerStep: engineTelemetry.speculativeStats?.tau,
-                    vramDeltaLabel,
-                  }
+                  ? {
+                      tokensPerSec:
+                        turnTelemetry?.tokensPerSec ?? engineTelemetry.tokensPerSec ?? undefined,
+                      ttftMs: turnTelemetry?.ttftMs ?? engineTelemetry.ttftMs ?? undefined,
+                      speedupMultiplier: engineTelemetry.speculativeStats?.speedupMultiplier,
+                      acceptedTokPerStep: engineTelemetry.speculativeStats?.tau,
+                      specModeLabel: engineTelemetry.speculativeStats?.draftRoute,
+                      draftEngineLabel: engineTelemetry.speculativeStats?.learnedSteps
+                        ? 'EXP-007b'
+                        : undefined,
+                      vramDeltaLabel,
+                    }
                 : undefined;
 
             const picker = renderBranchPicker(siblingInfo, onSwitchBranch);
@@ -438,35 +503,43 @@ export function ChatThread({
               <AssistantMessage
                 key={node.id}
                 footer={
-                  <div className="ext-assistant-footer-row">
-                    {turnSources.length > 0 ? (
-                      <TurnSourcesTrigger
-                        sources={turnSources}
-                        onOpenUrl={openExternalSourceUrl}
-                      />
-                    ) : null}
-                    <ActionBar
-                      onCopy={() => onCopyText(body)}
-                      onRegenerate={() => onRegenerate(node.id)}
-                      onSpeak={() => onSpeakText(body)}
-                      onSave={() => onSaveMemory(body)}
-                      onThumbUp={() =>
-                        setFeedbackByNode((prev) => ({
-                          ...prev,
-                          [node.id]: prev[node.id] === 'up' ? null : 'up',
-                        }))
-                      }
-                      onThumbDown={() =>
-                        setFeedbackByNode((prev) => ({
-                          ...prev,
-                          [node.id]: prev[node.id] === 'down' ? null : 'down',
-                        }))
-                      }
-                      feedback={feedbackByNode[node.id] ?? null}
-                      speedMetrics={speedMetrics}
-                      rightSlot={picker}
-                    />
-                  </div>
+                  <ActionBar
+                    leftSlot={
+                      turnSources.length > 0 ? (
+                        <MessageSourcesPill
+                          sources={turnSources.map((src) => ({
+                            id: src.id,
+                            title: src.title,
+                            domain: src.domain,
+                            url: src.url,
+                            snippet: src.snippet,
+                          }))}
+                          onSelectSource={(src) => {
+                            if (src.url) openExternalSourceUrl(src.url);
+                          }}
+                        />
+                      ) : undefined
+                    }
+                    onCopy={() => onCopyText(body)}
+                    onRegenerate={() => onRegenerate(node.id)}
+                    onSpeak={() => onSpeakText(body)}
+                    onSave={() => onSaveMemory(body)}
+                    onThumbUp={() =>
+                      setFeedbackByNode((prev) => ({
+                        ...prev,
+                        [node.id]: prev[node.id] === 'up' ? null : 'up',
+                      }))
+                    }
+                    onThumbDown={() =>
+                      setFeedbackByNode((prev) => ({
+                        ...prev,
+                        [node.id]: prev[node.id] === 'down' ? null : 'down',
+                      }))
+                    }
+                    feedback={feedbackByNode[node.id] ?? null}
+                    speedMetrics={speedMetrics}
+                    rightSlot={picker}
+                  />
                 }
               >
                 {combinedReasoning ? <ReasoningTrace status="done" content={combinedReasoning} /> : null}
@@ -476,6 +549,7 @@ export function ChatThread({
                   sources={turnSources}
                   onCopyText={onCopyText}
                   onSaveText={onSaveMemory}
+                  onOpenSource={openExternalSourceUrl}
                   onSelectChoice={onSelectChoice}
                 />
               </AssistantMessage>,
@@ -535,23 +609,16 @@ export function ChatThread({
           isGenerating &&
           (streamingReasoning || streamingText || unifiedActiveToolSteps.length > 0 || showPrefillStatus);
         if (!hasLiveBlock) return null;
-        const activeChainSummary =
-          unifiedActiveToolSteps.length > 0
-            ? formatToolChainSummary(unifiedActiveToolSteps, true)
-            : null;
         const hasRunningToolStep = unifiedActiveToolSteps.some((step) => step.status === 'running');
         return (
           <div className="ext-tool-group">
-            {unifiedActiveToolSteps.length > 0 && activeChainSummary ? (
-              <ToolTraceList
-                variant="inline"
-                timer={hasRunningToolStep}
-                title={activeChainSummary.title}
-                summary={activeChainSummary.summary}
-                defaultCollapsed={false}
-                steps={unifiedActiveToolSteps}
-              />
-            ) : null}
+            {unifiedActiveToolSteps.length > 0
+              ? renderTurnAgentSteps({
+                  steps: unifiedActiveToolSteps,
+                  isActiveTurn: true,
+                  hasFinal: Boolean(liveBody),
+                })
+              : null}
             {showPrefillStatus ? (
               <InlineToolStatus
                 state={turnState === 'compacting' ? 'analyzing' : 'thinking'}
@@ -598,6 +665,7 @@ export function ChatThread({
                     sources={liveSources}
                     onCopyText={onCopyText}
                     onSaveText={onSaveMemory}
+                    onOpenSource={openExternalSourceUrl}
                     onSelectChoice={onSelectChoice}
                   />
                 </AssistantMessage>

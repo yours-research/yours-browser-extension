@@ -1,0 +1,209 @@
+{
+  "format": "gdn-eagle3-draft",
+  "format_version": 1,
+  "file": "draft_head.bin",
+  "total_bytes": 35397184,
+  "sha256": "b456e39bb8e541809971527ea01092ba6f3f76efba47bc9e75b8b3612dbef3e1",
+  "byte_order": "little",
+  "config": {
+    "hidden": 2560,
+    "heads": 8,
+    "dim": 128,
+    "intermediate": 3072,
+    "vocab": 81920,
+    "subset": 16384,
+    "taps": 4
+  },
+  "layer_taps": [
+    3,
+    15,
+    31
+  ],
+  "tap_convention": "0-based decoder layer output (post residual, pre final norm); features concatenated in listed order",
+  "subset_size": 16384,
+  "q4_layout": "row-major blocks of 32 weights; 20 bytes = 4 x u32 nibbles (low first), f16 scale, f16 low; w = q*scale + low; padding columns are discarded",
+  "shared_weights": "token embeddings and draft lm_head rows come from the target's tied table, gathered by subset_ids",
+  "tensors": [
+    {
+      "name": "log_rate",
+      "offset": 0,
+      "byte_length": 32,
+      "kind": "f32",
+      "shape": [
+        8
+      ]
+    },
+    {
+      "name": "dt_bias",
+      "offset": 32,
+      "byte_length": 32,
+      "kind": "f32",
+      "shape": [
+        8
+      ]
+    },
+    {
+      "name": "conv",
+      "offset": 64,
+      "byte_length": 49152,
+      "kind": "f32",
+      "shape": [
+        3072,
+        4
+      ]
+    },
+    {
+      "name": "fusion.weight",
+      "offset": 49216,
+      "byte_length": 12288000,
+      "kind": "q4",
+      "shape": [
+        2560,
+        7680
+      ],
+      "blocks_per_row": 240,
+      "padded_cols": 7680
+    },
+    {
+      "name": "input_norm.weight",
+      "offset": 12337216,
+      "byte_length": 10240,
+      "kind": "f32",
+      "shape": [
+        2560
+      ]
+    },
+    {
+      "name": "qkv.weight",
+      "offset": 12347456,
+      "byte_length": 4915200,
+      "kind": "q4",
+      "shape": [
+        3072,
+        2560
+      ],
+      "blocks_per_row": 80,
+      "padded_cols": 2560
+    },
+    {
+      "name": "z.weight",
+      "offset": 17262656,
+      "byte_length": 1638400,
+      "kind": "q4",
+      "shape": [
+        1024,
+        2560
+      ],
+      "blocks_per_row": 80,
+      "padded_cols": 2560
+    },
+    {
+      "name": "ab.weight",
+      "offset": 18901056,
+      "byte_length": 25600,
+      "kind": "q4",
+      "shape": [
+        16,
+        2560
+      ],
+      "blocks_per_row": 80,
+      "padded_cols": 2560
+    },
+    {
+      "name": "head_norm.weight",
+      "offset": 18926656,
+      "byte_length": 512,
+      "kind": "f32",
+      "shape": [
+        128
+      ]
+    },
+    {
+      "name": "out.weight",
+      "offset": 18927168,
+      "byte_length": 1638400,
+      "kind": "q4",
+      "shape": [
+        2560,
+        1024
+      ],
+      "blocks_per_row": 32,
+      "padded_cols": 1024
+    },
+    {
+      "name": "ff_norm.weight",
+      "offset": 20565568,
+      "byte_length": 10240,
+      "kind": "f32",
+      "shape": [
+        2560
+      ]
+    },
+    {
+      "name": "gate.weight",
+      "offset": 20575808,
+      "byte_length": 4915200,
+      "kind": "q4",
+      "shape": [
+        3072,
+        2560
+      ],
+      "blocks_per_row": 80,
+      "padded_cols": 2560
+    },
+    {
+      "name": "up.weight",
+      "offset": 25491008,
+      "byte_length": 4915200,
+      "kind": "q4",
+      "shape": [
+        3072,
+        2560
+      ],
+      "blocks_per_row": 80,
+      "padded_cols": 2560
+    },
+    {
+      "name": "down.weight",
+      "offset": 30406208,
+      "byte_length": 4915200,
+      "kind": "q4",
+      "shape": [
+        2560,
+        3072
+      ],
+      "blocks_per_row": 96,
+      "padded_cols": 3072
+    },
+    {
+      "name": "final_norm.weight",
+      "offset": 35321408,
+      "byte_length": 10240,
+      "kind": "f32",
+      "shape": [
+        2560
+      ]
+    },
+    {
+      "name": "subset_ids",
+      "offset": 35331648,
+      "byte_length": 65536,
+      "kind": "u32",
+      "shape": [
+        16384
+      ]
+    }
+  ],
+  "metadata": {
+    "run_id": "EXP-007b",
+    "step": 6000,
+    "warm_start": "EXP-007",
+    "q4_ste_trained": true,
+    "target": "jtaylorexe/pragma-exp006-rc1",
+    "target_q4_sim": true,
+    "subset_coverage": 0.994578,
+    "eval_exp006_q4_tau": 2.61,
+    "eval_exp006_fp32_tau": 2.6252,
+    "eval_exp004_transfer_q4_tau": 2.6022
+  }
+}

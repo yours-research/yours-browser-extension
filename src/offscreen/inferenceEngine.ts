@@ -12,6 +12,8 @@ import {
   type ChatMessage,
   type EngineConfig,
   type ExecutionHost,
+  type GenerationPhaseStep,
+  type GenerationPhaseTrace,
   type GenerationTokenTrace,
   type LogEntry,
   type NiahResult,
@@ -37,13 +39,24 @@ import {
   AdaptiveVerifyCostModel,
   EngineASpeculator,
   type ScoredDraftChain,
-  type ScoredDraftTree,
   type ToolSchema,
   type ParamType,
 } from './adaptiveSpeculator.ts';
 import { computeBandwidthStats, isMessagePrefix, type SamplingOptions } from './sampling.ts';
 import { installWebGpuLimitPatch, probeWebGpu } from './webgpuLimits.ts';
 import { WgslQwen35Engine, MAX_SPEC_DRAFT, MAX_TREE_DRAFT } from './wgslRealEngine.ts';
+import { OffscreenSpecAdapter } from './cycle17/rc1/wasmEngineAdapter.ts';
+import { GdnDraftRuntime, shaderAssets } from './cycle17/draft/gdnEagle3Runtime.ts';
+import { loadGdnBundle } from './cycle17/draft/gdnEagle3Loader.ts';
+import {
+  runEngineBBench,
+  toAdapterOptions,
+  type EngineBBenchReport,
+} from './cycle17/bench/engineBHeadBench.ts';
+
+const EXP007B_DRAFT_HEAD_SHA256 =
+  'b456e39bb8e541809971527ea01092ba6f3f76efba47bc9e75b8b3612dbef3e1';
+const RC1_CHAIN_STEP_MS = [10.33, 12.63, 15.64, 18.695, 21.75, 24.37333, 26.99667, 29.62];
 
 const CONTROL_TOKENS_TO_STRIP_RE =
   /<\|im_end\|>|<\|endoftext\|>|<end_of_turn>|<turn\|>|<\|turn>model\r?\n?|<\|im_start\|>assistant\r?\n?|<eos>|<bos>|<pad>/g;
@@ -127,53 +140,6 @@ export interface EngineCallbacks {
 let yieldChannel: MessageChannel | null = null;
 const yieldWaiters: Array<() => void> = [];
 
-function pruneDraftTree(
-  tree: ScoredDraftTree,
-  eosTokenIds: ReadonlySet<number>,
-  tokenizer?: PreTrainedTokenizer | null,
-  emittedTextPrefix = '',
-  stopOnToolCall = false,
-): ScoredDraftTree {
-  const slotMap = new Map<number, number>([[0, 0]]);
-  const slotClosed = new Set<number>();
-  const slotText = new Map<number, string>([[0, stopOnToolCall ? emittedTextPrefix.slice(-64) : '']]);
-  const draftTokens: number[] = [];
-  const draftParents: number[] = [];
-  const ancestorMasks: number[] = [1];
-  const depths: number[] = [0];
-  const probs: number[] = [];
-  const keys: string[] = [];
-
-  for (let i = 0; i < tree.draftTokens.length; i++) {
-    const oldSlot = i + 1;
-    const oldParent = tree.draftParents[i]!;
-    const tok = tree.draftTokens[i]!;
-    const mappedParent = slotMap.get(oldParent);
-    if (mappedParent === undefined || slotClosed.has(oldParent) || eosTokenIds.has(tok)) {
-      continue;
-    }
-    const newSlot = draftTokens.length + 1;
-    slotMap.set(oldSlot, newSlot);
-    draftTokens.push(tok);
-    draftParents.push(mappedParent);
-    depths.push(depths[mappedParent]! + 1);
-    ancestorMasks.push(ancestorMasks[mappedParent]! | (1 << newSlot));
-    probs.push(tree.probs[i]!);
-    keys.push(tree.keys[i]!);
-    if (stopOnToolCall && tokenizer) {
-      const nextText =
-        (slotText.get(oldParent) ?? '') +
-        tokenizer.decode([tok], { skip_special_tokens: false });
-      slotText.set(oldSlot, nextText.slice(-64));
-      if (nextText.includes('</tool_call>') || nextText.includes('<tool_call|>')) {
-        slotClosed.add(oldSlot);
-      }
-    }
-  }
-
-  return { draftTokens, draftParents, ancestorMasks, depths, probs, keys };
-}
-
 function yieldFast(mode: YieldMode): Promise<void> {
   if (mode === 'none') {
     return Promise.resolve();
@@ -239,6 +205,16 @@ export class InferenceEngine {
   private bgPrefillSeq = 0;
   private engineASpeculator: EngineASpeculator | null = null;
   private engineATokenizerRef: PreTrainedTokenizer | null = null;
+  private offscreenSpecAdapter: OffscreenSpecAdapter | null = null;
+  private offscreenSpecAdapterPromise: Promise<OffscreenSpecAdapter | null> | null = null;
+  private offscreenSpecTokenizerRef: PreTrainedTokenizer | null = null;
+  private offscreenSpecDeviceRef: GPUDevice | null = null;
+  private measuredChainStepMs: number[] | null = null;
+  private measuredEngineBReport: EngineBBenchReport | null = null;
+  private pendingPhaseEnqueue = new Map<
+    string,
+    { enqueue: number; bgPrefillActiveAtEnqueue: boolean }
+  >();
   private engineACostModel = new AdaptiveVerifyCostModel({
     maxM: 1 + MAX_SPEC_DRAFT,
     initialT1Ms: 9.1,
@@ -735,6 +711,13 @@ export class InferenceEngine {
     this.prefixCache = null;
     this.wgslSnapshot = null;
     this.wgslSnapshotMeta = null;
+    if (this.offscreenSpecAdapter) {
+      this.offscreenSpecAdapter.dispose();
+      this.offscreenSpecAdapter = null;
+    }
+    this.offscreenSpecAdapterPromise = null;
+    this.offscreenSpecTokenizerRef = null;
+    this.offscreenSpecDeviceRef = null;
     if (this.wgslEngine) {
       this.wgslEngine.dispose();
       this.wgslEngine = null;
@@ -1270,12 +1253,17 @@ export class InferenceEngine {
     groundingText?: string,
     stopOnToolCall = false,
   ): void {
+    this.pendingPhaseEnqueue.set(requestId, {
+      enqueue: performance.timeOrigin + performance.now(),
+      bgPrefillActiveAtEnqueue: this.bgAbortController !== null,
+    });
     this.abortBackgroundPrefill();
     this.taskQueue = this.taskQueue
       .then(() =>
         this.runGenerate(requestId, messages, overrideConfig, groundingText, stopOnToolCall),
       )
       .catch((err) => {
+        this.pendingPhaseEnqueue.delete(requestId);
         const msg = err instanceof Error ? err.message : String(err);
         this.callbacks.onGenerationError(requestId, msg);
       });
@@ -1418,6 +1406,8 @@ export class InferenceEngine {
     logitsMs: number;
     sampleMs: number;
     breatherMs: number;
+    encodeMs?: number;
+    mapMs?: number;
   }> {
     if (!this.wgslEngine) {
       throw new Error('Model is not loaded.');
@@ -1433,7 +1423,104 @@ export class InferenceEngine {
       logitsMs: 0,
       sampleMs: 0,
       breatherMs: res.breatherMs,
+      encodeMs: res.encodeMs,
+      mapMs: res.mapMs,
     };
+  }
+
+  private async getOrCreateOffscreenSpecAdapter(): Promise<OffscreenSpecAdapter | null> {
+    const tok = this.tokenizer;
+    const engine = this.wgslEngine;
+    const device = engine?.getDevice?.() ?? null;
+    if (!tok || !engine || !device || typeof fetch !== 'function') {
+      return null;
+    }
+    const slices = engine.getTiedTableSlices?.() ?? [];
+    const totalVocab = slices.reduce((acc, s) => Math.max(acc, s.endRow), 0);
+    // Certified EXP-007b draft head targets EXP-006 / Pragma-1-4B RC1 (81,920 tied vocab rows)
+    if (slices.length === 0 || totalVocab !== 81920) {
+      return null;
+    }
+    if (
+      this.offscreenSpecAdapter &&
+      this.offscreenSpecTokenizerRef === tok &&
+      this.offscreenSpecDeviceRef === device
+    ) {
+      return this.offscreenSpecAdapter;
+    }
+    if (this.offscreenSpecAdapterPromise) {
+      return this.offscreenSpecAdapterPromise;
+    }
+    this.offscreenSpecAdapterPromise = (async () => {
+      try {
+        const baseStr = resolveExtensionAssetUrl('cycle17/', this.assetBaseUrl);
+        const originFallback =
+          typeof globalThis.location?.href === 'string'
+            ? globalThis.location.href
+            : 'https://extension.invalid/';
+        const cycle17Base = new URL(
+          baseStr.endsWith('/') ? baseStr : `${baseStr}/`,
+          originFallback,
+        );
+        const wasmResp = await fetch(new URL('wasm/yours_spec_core.wasm', cycle17Base));
+        if (!wasmResp.ok) {
+          return null;
+        }
+        const wasmBytes = await wasmResp.arrayBuffer();
+        if (this.offscreenSpecAdapter) {
+          this.offscreenSpecAdapter.dispose();
+        }
+        const measuredOpts = this.measuredEngineBReport
+          ? (() => {
+              const base = toAdapterOptions(
+                this.measuredEngineBReport,
+                this.measuredChainStepMs ?? RC1_CHAIN_STEP_MS,
+                this.engineACostModel.rejectPenaltyMs,
+              );
+              return {
+                profile: base.profile,
+                cutoff: { ...base.cutoff, valueGate: true },
+              };
+            })()
+          : {
+              profile: {
+                stepMs: this.measuredChainStepMs ?? RC1_CHAIN_STEP_MS,
+                rejectPenaltyMs: this.engineACostModel.rejectPenaltyMs,
+              },
+            };
+        const adapter = await OffscreenSpecAdapter.create({
+          wasm: wasmBytes,
+          tokenizer: {
+            encode: (text: string) => tok.encode(text, { add_special_tokens: false }),
+            decode: (tokens: readonly number[]) =>
+              tokens.length === 0
+                ? ''
+                : tok.decode(Array.from(tokens, (t) => Number(t)), {
+                    skip_special_tokens: false,
+                  }),
+          },
+          ...measuredOpts,
+          engineC: {
+            manifestUrl: new URL('assets/exp007/manifest.json', cycle17Base),
+            expectedSha256: EXP007B_DRAFT_HEAD_SHA256,
+            device,
+            table: { slices },
+            readShader: shaderAssets(new URL('wgsl/', cycle17Base)),
+          },
+        });
+        this.offscreenSpecAdapter = adapter;
+        this.offscreenSpecTokenizerRef = tok;
+        this.offscreenSpecDeviceRef = device;
+        return adapter;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log('warn', 'offscreen', `OffscreenSpecAdapter unavailable (falling back to Engine A): ${msg}`);
+        return null;
+      } finally {
+        this.offscreenSpecAdapterPromise = null;
+      }
+    })();
+    return this.offscreenSpecAdapterPromise;
   }
 
   private getOrCreateEngineASpeculator(): EngineASpeculator {
@@ -1459,7 +1546,10 @@ export class InferenceEngine {
     this.engineASpeculator = new EngineASpeculator({
       tokenizer: {
         encode: (text: string) => tok.encode(text, { add_special_tokens: false }),
-        decode: (tokens: readonly number[]) => tok.decode([...tokens], { skip_special_tokens: false }),
+        decode: (tokens: readonly number[]) =>
+          tokens.length === 0
+            ? ''
+            : tok.decode(Array.from(tokens, (t) => Number(t)), { skip_special_tokens: false }),
       },
       extraTools,
       adaptiveProfile: this.engineACostModel,
@@ -1498,8 +1588,18 @@ export class InferenceEngine {
       throw new Error('Model failed to initialize.');
     }
 
+    const epochNow = () => performance.timeOrigin + performance.now();
+    const enqueueMeta = this.pendingPhaseEnqueue.get(requestId);
+    this.pendingPhaseEnqueue.delete(requestId);
+    const phaseMarks: Record<string, number> = {
+      ...(enqueueMeta ? { enqueue: enqueueMeta.enqueue } : {}),
+      dequeue: epochNow(),
+    };
+    const phaseSteps: GenerationPhaseStep[] = [];
+
     this.activeRequestId = requestId;
     const runStartMs = performance.now();
+    phaseMarks.runStart = performance.timeOrigin + runStartMs;
 
     try {
       this.wgslEngine?.resetDecodeBurst();
@@ -1603,6 +1703,8 @@ export class InferenceEngine {
         activePrefixSlot: restoredSlotId,
         ...(lastSlotRestoreMs !== null ? { lastSlotRestoreMs } : {}),
       });
+      phaseMarks.cacheResolved = epochNow();
+      let ctxPrefillTokens = 0;
       this.log(
         'info',
         'offscreen',
@@ -1637,6 +1739,8 @@ export class InferenceEngine {
         ) {
           const contextDelta = promptTokenIds.slice(0, contextDeltaLen);
           const remainingPrompt = promptTokenIds.slice(contextDeltaLen);
+          ctxPrefillTokens = contextDelta.length;
+          phaseMarks.ctxPrefillStart = epochNow();
           const ctxRes = await this.prefillAndPickFirstToken(
             contextDelta,
             this.config.chunkSize,
@@ -1644,6 +1748,7 @@ export class InferenceEngine {
             requestId,
             true,
           );
+          phaseMarks.ctxPrefillEnd = epochNow();
           totalPrefillMs += ctxRes.prefillMs;
           if (this.abortedRequests.has(requestId)) {
             throw new Error('__ABORTED__');
@@ -1657,60 +1762,86 @@ export class InferenceEngine {
           } catch {
             // Ignore checkpoint failures when volatile prefix VRAM budget is full
           }
+          phaseMarks.ctxCheckpointEnd = epochNow();
           prefixTokenIds = [...contextTokenIds];
           promptTokenIds = remainingPrompt;
         }
       }
 
+      phaseMarks.prefillStart = epochNow();
       const { nextToken: firstToken, prefillMs } = await this.prefillAndPickFirstToken(
         promptTokenIds,
         this.config.chunkSize,
         sampleOpts,
         requestId,
       );
+      phaseMarks.prefillEnd = epochNow();
       totalPrefillMs += prefillMs;
 
       const prefillTokPerSec = totalPromptTokenCount / (Math.max(0.1, totalPrefillMs) / 1000);
       const ttftMs = performance.now() - runStartMs;
+      phaseMarks.firstToken = performance.timeOrigin + runStartMs + ttftMs;
       this.updateTelemetry({ ttftMs, prefillTokPerSec });
 
       let nextToken = firstToken;
 
       const generatedIds: number[] = [];
       const sessionTokenIds = [...prefixTokenIds, ...promptTokenIds];
+      const useSpeculative = this.config.enableSpeculative && sampleOpts.temperature <= 0;
       const groundingTokens =
-        groundingText && groundingText.trim().length > 0
+        useSpeculative && groundingText && groundingText.trim().length > 0
           ? this.tokenizer.encode(groundingText, { add_special_tokens: false })
           : [];
-      const speculator = this.getOrCreateEngineASpeculator();
       const promptScaffold = messages
         .filter((m) => m.role === 'system' || m.role === 'user')
         .map((m) => m.content)
         .join('\n')
         .slice(-12000);
-      speculator.beginSample(promptScaffold, this.config.enableThinking);
-      const seedIds = [...groundingTokens, ...sessionTokenIds];
-      // Cap initial SAM ingest at trailing 8192 tokens so turn startup stays <3ms on 32K+ prompts
-      const initialSpecSeed = seedIds.length > 8192 ? seedIds.slice(-8192) : seedIds;
-      speculator.observe(initialSpecSeed, false);
+      const specAdapter = useSpeculative ? await this.getOrCreateOffscreenSpecAdapter() : null;
+      const speculator =
+        useSpeculative && !specAdapter ? this.getOrCreateEngineASpeculator() : null;
+      if (useSpeculative) {
+        const seedIds = [...groundingTokens, ...sessionTokenIds];
+        // Cap initial SAM ingest at trailing 8192 tokens so turn startup stays <3ms on 32K+ prompts
+        const initialSpecSeed = seedIds.length > 8192 ? seedIds.slice(-8192) : seedIds;
+        if (specAdapter) {
+          specAdapter.beginTurn(initialSpecSeed, promptScaffold, this.config.enableThinking);
+        } else if (speculator) {
+          speculator.beginSample(promptScaffold, this.config.enableThinking);
+          speculator.observe(initialSpecSeed, false);
+        }
+      }
+      phaseMarks.speculatorReady = epochNow();
 
       let specDrafted = 0;
       let specAccepted = 0;
       let specSteps = 0;
       let specSkippedSteps = 0;
+      let learnedSteps = 0;
+      let headInvocations = 0;
       let totalSpecGpuMs = 0;
 
       let emittedText = '';
       let finishReason: 'stop' | 'length' | 'abort' = 'length';
       const decodeStartMs = performance.now();
+      phaseMarks.decodeStart = performance.timeOrigin + decodeStartMs;
 
-      const buildSpecStats = () => {
+      const buildSpecStats = (): TelemetryState['speculativeStats'] => {
         if (specSteps === 0 && specSkippedSteps === 0) return null;
         const tau = specSteps > 0 ? 1 + specAccepted / specSteps : 1;
         const meanSpecStepMs = specSteps > 0 && totalSpecGpuMs > 0 ? totalSpecGpuMs / specSteps : 0;
         const speedupMultiplier =
           specSteps > 0 && meanSpecStepMs > 0
             ? Math.max(1, Number(((tau * this.engineACostModel.t1Ms) / meanSpecStepMs).toFixed(2)))
+            : undefined;
+        const draftRoute: 'learned' | 'copy-grammar' | 'hybrid' | undefined = specAdapter
+          ? learnedSteps > 0
+            ? learnedSteps === specSteps
+              ? 'learned'
+              : 'hybrid'
+            : 'copy-grammar'
+          : specSteps > 0
+            ? 'copy-grammar'
             : undefined;
         return {
           drafted: specDrafted,
@@ -1722,6 +1853,9 @@ export class InferenceEngine {
           avgDraftLen: specSteps > 0 ? specDrafted / specSteps : 0,
           skippedSteps: specSkippedSteps,
           speedupMultiplier,
+          draftRoute,
+          learnedSteps,
+          headInvocations,
         };
       };
 
@@ -1736,7 +1870,11 @@ export class InferenceEngine {
         }
         generatedIds.push(tok);
         sessionTokenIds.push(tok);
-        speculator.observe([tok], true);
+        if (specAdapter) {
+          specAdapter.observeEmitted([tok]);
+        } else if (speculator) {
+          speculator.observe([tok], true);
+        }
 
         const decodedFull = decodeGeneratedText(this.tokenizer!, generatedIds, {
           preOpenedThink: promptOpensThink,
@@ -1746,6 +1884,9 @@ export class InferenceEngine {
         if (safeEnd > emittedText.length) {
           const delta = decodedFull.slice(emittedText.length, safeEnd);
           emittedText = decodedFull.slice(0, safeEnd);
+          if (phaseMarks.firstDelta === undefined) {
+            phaseMarks.firstDelta = epochNow();
+          }
           this.callbacks.onTokenDelta(requestId, delta, generatedIds.length);
         }
 
@@ -1782,11 +1923,13 @@ export class InferenceEngine {
           });
         }
 
+        const tYield0 = performance.now();
         if (this.config.yieldMode !== 'none') {
           await yieldFast(this.config.yieldMode);
         } else if (iter % 8 === 7) {
           await yieldFast('message-channel');
         }
+        const yieldMs = performance.now() - tYield0;
         if (this.abortedRequests.has(requestId)) {
           finishReason = 'abort';
           break;
@@ -1794,104 +1937,69 @@ export class InferenceEngine {
 
         const remainingToMax = this.config.maxNewTokens - generatedIds.length;
         const canSpeculate =
-          this.config.enableSpeculative &&
-          sampleOpts.temperature <= 0 &&
+          useSpeculative &&
           this.wgslEngine !== null &&
           remainingToMax > 1;
 
+        let stepDraftMs = 0;
         if (canSpeculate) {
           const inToolCallBlock =
             stopOnToolCall && (emittedText.includes('<tool_call') || emittedText.includes('<|call>'));
           const supressNearClose =
             inToolCallBlock && (emittedText.endsWith('</tool_call') || emittedText.endsWith('<tool_call|'));
 
-          const maxDraftChain = Math.min(MAX_SPEC_DRAFT, remainingToMax - 1);
-          const proposedChain: ScoredDraftChain = supressNearClose
-            ? { tokens: [], parents: [], probs: [], keys: [] }
-            : speculator.proposeChain(maxDraftChain);
+          const tDraft0 = performance.now();
+          let cleanDraft: number[] = [];
+          let routedProposal: Awaited<ReturnType<OffscreenSpecAdapter['propose']>> | null = null;
+          let fallbackChain: ScoredDraftChain | null = null;
 
-          // Adaptive chain verify (gdnRecPipe) outperforms tree verify on RTX 3090 (19.1ms vs 26.5ms at M=5)
-          // and keeps M=2..8 DeltaNet math bit-identical to M=1 scalar decode; keep tree ready when enabled.
-          const preferChainForParityAndSpeed = true;
-          const canTryTree =
-            !preferChainForParityAndSpeed && this.wgslEngine!.isTreeSpecSupported() && !supressNearClose;
-          const rawTree = canTryTree
-            ? speculator.proposeTree(
-                Math.min(MAX_TREE_DRAFT, remainingToMax - 1),
-                3,
-                this.engineATreeCostModel,
-              )
-            : null;
-          const treeIsBranched =
-            rawTree !== null &&
-            rawTree.draftTokens.length > 0 &&
-            (rawTree.draftTokens.length > MAX_SPEC_DRAFT ||
-              rawTree.draftParents.some((p, idx) => p !== idx));
-
-          const prunedTree =
-            treeIsBranched && rawTree
-              ? pruneDraftTree(rawTree, this.eosTokenIds, this.tokenizer, emittedText, stopOnToolCall)
-              : null;
-          const chainExpGain = proposedChain.probs.reduce((s, p) => s + p, 0);
-          const treeExpGain = prunedTree ? prunedTree.probs.reduce((s, p) => s + p, 0) : 0;
-          const useTreeThisStep =
-            prunedTree !== null &&
-            prunedTree.draftTokens.length > 0 &&
-            this.wgslEngine!.activeSeqPos + 1 + prunedTree.draftTokens.length <=
-              this.wgslEngine!.maxContextTokens &&
-            (proposedChain.tokens.length === 0 ||
-              treeExpGain / Math.max(1, this.engineATreeCostModel.stepMs(1 + prunedTree.draftTokens.length)) >
-                chainExpGain / Math.max(1, this.engineACostModel.stepMs(1 + proposedChain.tokens.length)));
-
-          if (useTreeThisStep && prunedTree) {
-            const treeRes = await this.wgslEngine!.decodeSpeculativeTreeStep!(
-              nextToken,
-              prunedTree,
-              sampleOpts,
-              this.config.gpuPacingMode,
-            );
-            this.engineATreeCostModel.recordStepTiming(
-              1 + prunedTree.draftTokens.length,
-              treeRes.gpuMs,
-              false,
-            );
-            speculator.feedbackTree(prunedTree, treeRes.acceptedSlotIds);
-            this.cachedTokenCount = this.wgslEngine!.activeSeqPos;
-            specDrafted += treeRes.draftedCount;
-            specAccepted += treeRes.acceptedCount;
-            specSteps += 1;
-            totalSpecGpuMs += treeRes.gpuMs;
-            if (!this.config.fastDecodePath || iter % 4 === 0) {
-              this.refreshCacheTelemetry();
-            }
-
-            let stoppedMidBatch = false;
-            for (let i = 0; i < treeRes.acceptedCount; i++) {
-              if (emitTokenAndCheckDone(treeRes.tokens[i]!)) {
-                stoppedMidBatch = true;
-                break;
+          if (specAdapter) {
+            const tapInfo = this.wgslEngine!.getDraftAnchorTaps?.() ?? { taps: undefined, valid: false };
+            const budget = Math.min(5, MAX_SPEC_DRAFT, remainingToMax - 1);
+            const anchor =
+              tapInfo.valid && tapInfo.taps ? { taps: tapInfo.taps, rootToken: nextToken } : undefined;
+            if (budget >= 1 && !supressNearClose) {
+              routedProposal = await specAdapter.propose(budget, anchor, false);
+              if (routedProposal.headInvoked) {
+                headInvocations += 1;
+              }
+              let draftSuffixText = emittedText;
+              for (const dt of routedProposal.tree.tokens) {
+                if (this.eosTokenIds.has(dt)) break;
+                cleanDraft.push(dt);
+                if (stopOnToolCall) {
+                  draftSuffixText += this.tokenizer.decode([dt], { skip_special_tokens: false });
+                  if (
+                    draftSuffixText.includes('</tool_call>') ||
+                    draftSuffixText.includes('<tool_call|>')
+                  ) {
+                    break;
+                  }
+                }
               }
             }
-            if (stoppedMidBatch) {
-              break;
-            }
-            nextToken = treeRes.tokens[treeRes.acceptedCount]!;
-            iter++;
-            continue;
-          }
-
-          const cleanDraft: number[] = [];
-          let draftSuffixText = emittedText;
-          for (const dt of proposedChain.tokens) {
-            if (this.eosTokenIds.has(dt)) break;
-            cleanDraft.push(dt);
-            if (stopOnToolCall) {
-              draftSuffixText += this.tokenizer.decode([dt], { skip_special_tokens: false });
-              if (draftSuffixText.includes('</tool_call>') || draftSuffixText.includes('<tool_call|>')) {
-                break;
+          } else if (speculator) {
+            const maxDraftChain = Math.min(MAX_SPEC_DRAFT, remainingToMax - 1);
+            fallbackChain = supressNearClose
+              ? { tokens: [], parents: [], probs: [], keys: [] }
+              : speculator.proposeChain(maxDraftChain);
+            let draftSuffixText = emittedText;
+            for (const dt of fallbackChain.tokens) {
+              if (this.eosTokenIds.has(dt)) break;
+              cleanDraft.push(dt);
+              if (stopOnToolCall) {
+                draftSuffixText += this.tokenizer.decode([dt], { skip_special_tokens: false });
+                if (
+                  draftSuffixText.includes('</tool_call>') ||
+                  draftSuffixText.includes('<tool_call|>')
+                ) {
+                  break;
+                }
               }
             }
           }
+          const draftMs = performance.now() - tDraft0;
+          stepDraftMs = draftMs;
 
           if (cleanDraft.length === 0) {
             specSkippedSteps += 1;
@@ -1909,13 +2017,24 @@ export class InferenceEngine {
               specRes.gpuMs,
               specRes.acceptedCount < specRes.draftedCount,
             );
-            const verifiedSlice: ScoredDraftChain = {
-              tokens: proposedChain.tokens.slice(0, cleanDraft.length),
-              parents: proposedChain.parents.slice(0, cleanDraft.length),
-              probs: proposedChain.probs.slice(0, cleanDraft.length),
-              keys: proposedChain.keys.slice(0, cleanDraft.length),
-            };
-            speculator.feedback(verifiedSlice, specRes.acceptedCount);
+            if (specAdapter && routedProposal) {
+              if (routedProposal.source === 'C') {
+                learnedSteps += 1;
+              }
+              const acceptedIndices = Array.from(
+                { length: specRes.acceptedCount },
+                (_, idx) => idx,
+              );
+              specAdapter.commit(routedProposal, acceptedIndices, []);
+            } else if (speculator && fallbackChain) {
+              const verifiedSlice: ScoredDraftChain = {
+                tokens: fallbackChain.tokens.slice(0, cleanDraft.length),
+                parents: fallbackChain.parents.slice(0, cleanDraft.length),
+                probs: fallbackChain.probs.slice(0, cleanDraft.length),
+                keys: fallbackChain.keys.slice(0, cleanDraft.length),
+              };
+              speculator.feedback(verifiedSlice, specRes.acceptedCount);
+            }
             this.cachedTokenCount = this.wgslEngine!.activeSeqPos;
             specDrafted += specRes.draftedCount;
             specAccepted += specRes.acceptedCount;
@@ -1925,6 +2044,7 @@ export class InferenceEngine {
               this.refreshCacheTelemetry();
             }
 
+            const tEmit0 = performance.now();
             let stoppedMidBatch = false;
             for (let i = 0; i < specRes.acceptedCount; i++) {
               if (emitTokenAndCheckDone(specRes.tokens[i]!)) {
@@ -1932,6 +2052,21 @@ export class InferenceEngine {
                 break;
               }
             }
+            const emitMs = performance.now() - tEmit0;
+            phaseSteps.push({
+              kind: 'chain',
+              M: 1 + cleanDraft.length,
+              kept: 1 + specRes.acceptedCount,
+              draftMs,
+              planMs: specRes.planMs ?? 0,
+              encodeMs: specRes.encodeMs ?? 0,
+              mapMs: specRes.mapMs ?? specRes.gpuMs,
+              rollbackEncodeMs: specRes.rollbackEncodeMs ?? 0,
+              rollbackWaitMs: specRes.rollbackWaitMs ?? 0,
+              emitMs,
+              yieldMs,
+              planBuilt: specRes.planBuilt ?? false,
+            });
             if (stoppedMidBatch) {
               break;
             }
@@ -1943,11 +2078,31 @@ export class InferenceEngine {
 
         const stepRes = await this.decodeNextToken(nextToken, sampleOpts, iter);
         this.engineACostModel.recordStepTiming(1, stepRes.forwardMs, false);
+        phaseSteps.push({
+          kind: 'scalar',
+          M: 1,
+          kept: 1,
+          draftMs: stepDraftMs,
+          planMs: 0,
+          encodeMs: stepRes.encodeMs ?? 0,
+          mapMs: stepRes.mapMs ?? stepRes.forwardMs,
+          rollbackEncodeMs: 0,
+          rollbackWaitMs: 0,
+          emitMs: 0,
+          yieldMs,
+          planBuilt: false,
+        });
         nextToken = stepRes.nextToken;
         iter++;
       }
 
-      speculator.endSample();
+      phaseMarks.decodeEnd = epochNow();
+      this.wgslEngine?.flushPendingRollback?.('end-of-turn');
+      if (specAdapter) {
+        specAdapter.endTurn();
+      } else if (speculator) {
+        speculator.endSample();
+      }
 
       if (generatedIds.length > 0) {
         const totalDecodeSec = Math.max(0.001, (performance.now() - decodeStartMs) / 1000);
@@ -1983,6 +2138,20 @@ export class InferenceEngine {
         await this.resetContext(this.prefixCache?.hasBasePrompt() ?? false);
       }
 
+      phaseMarks.complete = epochNow();
+      const phases: GenerationPhaseTrace = {
+        marks: phaseMarks,
+        info: {
+          promptTokens: totalPromptTokenCount,
+          ctxPrefillTokens,
+          prefixReused: reusedPrefix,
+          slot: restoredSlotId,
+          slotRestoreMs: lastSlotRestoreMs,
+          bgPrefillActiveAtEnqueue: enqueueMeta?.bgPrefillActiveAtEnqueue ?? false,
+        },
+        steps: phaseSteps,
+        tools: [],
+      };
       this.updateTelemetry({ status: 'ready', prefillChunkProgress: null });
       const trace: GenerationTokenTrace = {
         modelId: this.config.modelId,
@@ -1991,9 +2160,12 @@ export class InferenceEngine {
         promptText: promptScaffold,
         generatedText: emittedText,
         speculativeStats: buildSpecStats(),
+        phases,
       };
       this.callbacks.onGenerationComplete(requestId, finishReason, trace);
     } catch (err) {
+      this.wgslEngine?.flushPendingRollback?.('end-of-turn');
+      this.wgslEngine?.invalidateDraftAnchor?.();
       const msg = err instanceof Error ? err.message : String(err);
       if (msg === '__ABORTED__' || msg === 'Generation aborted') {
         await this.resetContext();
@@ -2305,10 +2477,10 @@ export class InferenceEngine {
         yieldFn: async () => {},
       });
 
-      // Generate 8 exact greedy reference tokens from seqPos=96
+      // Generate 12 exact greedy reference tokens from seqPos=96
       const refTokens: number[] = [pref.nextTokenId];
       let cur = pref.nextTokenId;
-      for (let i = 0; i < 8; i++) {
+      for (let i = 0; i < 12; i++) {
         const d = await engine.decodeStep(cur, greedy, 'max-speed');
         cur = d.nextToken;
         refTokens.push(cur);
@@ -2337,19 +2509,26 @@ export class InferenceEngine {
 
       const measureM = async (M: number, acceptAll: boolean): Promise<number> => {
         const draftLen = M - 1;
-        const draft = acceptAll
-          ? refTokens.slice(1, 1 + draftLen)
-          : new Array<number>(draftLen).fill((refTokens[1]! + 17) % 1000);
+        const acceptDraft = refTokens.slice(1, 1 + draftLen);
+        const wrongDraft = new Array<number>(draftLen).fill((refTokens[1]! + 17) % 1000);
+        const step2Draft = refTokens.slice(2, 2 + draftLen);
         // Warmup builds cached VerifyGraphPlan for this M
         await engine.restoreGpuPrefixSlot(slotId);
-        await engine.decodeSpeculativeStep(refTokens[0]!, draft, greedy, 'max-speed');
+        await engine.decodeSpeculativeStep(refTokens[0]!, acceptDraft, greedy, 'max-speed');
 
         let sum = 0;
         const iters = 10;
         for (let i = 0; i < iters; i++) {
           await engine.restoreGpuPrefixSlot(slotId);
-          const r = await engine.decodeSpeculativeStep(refTokens[0]!, draft, greedy, 'max-speed');
-          sum += r.gpuMs;
+          if (acceptAll) {
+            const r = await engine.decodeSpeculativeStep(refTokens[0]!, acceptDraft, greedy, 'max-speed');
+            sum += r.gpuMs;
+          } else {
+            // Pair reject step (defers rollback) with next verify step (merges rollback via P9b submitWith)
+            await engine.decodeSpeculativeStep(refTokens[0]!, wrongDraft, greedy, 'max-speed');
+            const r2 = await engine.decodeSpeculativeStep(refTokens[1]!, step2Draft, greedy, 'max-speed');
+            sum += r2.gpuMs;
+          }
         }
         return sum / iters;
       };
@@ -2514,14 +2693,113 @@ export class InferenceEngine {
         };
       }
 
+      let engineB: SpecMicrobenchResult['engineB'];
+      let measuredEbReport: EngineBBenchReport | null = null;
+      const ebDevice = engine.getDevice?.() ?? null;
+      const ebSlices = engine.getTiedTableSlices?.() ?? [];
+      const ebVocab = ebSlices.reduce((acc, s) => Math.max(acc, s.endRow), 0);
+      if (
+        ebDevice &&
+        ebSlices.length > 0 &&
+        ebVocab === 81920 &&
+        typeof engine.measureSpecStep === 'function' &&
+        typeof fetch === 'function'
+      ) {
+        try {
+          const baseStr = resolveExtensionAssetUrl('cycle17/', this.assetBaseUrl);
+          const originFallback =
+            typeof globalThis.location?.href === 'string'
+              ? globalThis.location.href
+              : 'https://extension.invalid/';
+          const cycle17Base = new URL(
+            baseStr.endsWith('/') ? baseStr : `${baseStr}/`,
+            originFallback,
+          );
+          const bundle = await loadGdnBundle(new URL('assets/exp007/manifest.json', cycle17Base));
+          const tapsResp = await fetch(new URL('fixtures/trained-exp007/taps.f32', cycle17Base));
+          if (bundle && tapsResp.ok) {
+            const taps = new Float32Array(await tapsResp.arrayBuffer());
+            const runtime = await GdnDraftRuntime.create(
+              ebDevice,
+              bundle,
+              { slices: ebSlices },
+              shaderAssets(new URL('wgsl/', cycle17Base)),
+            );
+            try {
+              const ebReport = await runEngineBBench(
+                runtime,
+                { taps, rootToken: 271 },
+                { measure: (M, reject) => engine.measureSpecStep!(M, reject) },
+                { budgetMs: 10_000 },
+              );
+              measuredEbReport = ebReport;
+              engineB = {
+                headSha256: bundle.sha256,
+                headMs: Number(ebReport.headMs.toFixed(3)),
+                head: ebReport.head.map((h) => ({
+                  ...h,
+                  medianMs: Number(h.medianMs.toFixed(3)),
+                  p10Ms: Number(h.p10Ms.toFixed(3)),
+                  p90Ms: Number(h.p90Ms.toFixed(3)),
+                })),
+                ...(ebReport.reject
+                  ? {
+                      reject: {
+                        M: ebReport.reject.M,
+                        acceptMs: Number(ebReport.reject.acceptMs.toFixed(3)),
+                        rejectMs: Number(ebReport.reject.rejectMs.toFixed(3)),
+                        rejectPenaltyMs: Number(ebReport.reject.rejectPenaltyMs.toFixed(3)),
+                        samples: ebReport.reject.samples,
+                      },
+                    }
+                  : {}),
+                elapsedMs: Number(ebReport.elapsedMs.toFixed(1)),
+              };
+            } finally {
+              runtime.dispose();
+            }
+          }
+        } catch (err) {
+          engineB = {
+            headSha256: EXP007B_DRAFT_HEAD_SHA256,
+            headMs: 0,
+            head: [],
+            elapsedMs: 0,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+
       engine.deleteGpuPrefixSlot(slotId);
+      engine.deleteGpuPrefixSlot('__eb_probe__');
       await this.resetContext(this.prefixCache?.hasBasePrompt() ?? false);
 
       const ratioT5ToT1 = Number((t5Ms / Math.max(0.01, t1Ms)).toFixed(3));
       const ratioT8ToT1 = Number((t8Ms / Math.max(0.01, t1Ms)).toFixed(3));
       this.engineACostModel.t1Ms = t1Ms;
       this.engineACostModel.slopePerTokenMs = Math.max(0.15 * t1Ms, (t5Ms - t1Ms) / 4);
-      this.engineACostModel.rejectPenaltyMs = Math.max(0.25, t5RejectMs - t5Ms);
+      this.engineACostModel.rejectPenaltyMs = Math.max(
+        0.2,
+        measuredEbReport?.reject?.rejectPenaltyMs ?? t5RejectMs - t5Ms,
+      );
+      this.measuredChainStepMs = [
+        t1Ms,
+        t2Ms,
+        t3Ms,
+        (t3Ms + t5Ms) / 2,
+        t5Ms,
+        t5Ms + (t8Ms - t5Ms) / 3,
+        t5Ms + (2 * (t8Ms - t5Ms)) / 3,
+        t8Ms,
+      ];
+      if (measuredEbReport) {
+        this.measuredEngineBReport = measuredEbReport;
+      }
+      if (this.offscreenSpecAdapter) {
+        this.offscreenSpecAdapter.dispose();
+        this.offscreenSpecAdapter = null;
+      }
+      this.offscreenSpecAdapterPromise = null;
       if (tree) {
         const treeSlope = Math.max(0.15 * t1Ms, (tree.t5Ms - tree.t2Ms) / 3);
         this.engineATreeCostModel.t1Ms = Math.max(t1Ms, tree.t2Ms - treeSlope);
@@ -2540,6 +2818,7 @@ export class InferenceEngine {
         ratioT8ToT1,
         gatePass: ratioT5ToT1 <= 2.7,
         ...(tree ? { tree } : {}),
+        ...(engineB ? { engineB } : {}),
       };
       this.callbacks.onSpecMicrobenchResult?.(result);
     } catch (err) {

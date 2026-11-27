@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
+  CitationChip,
   CodeBlockCard,
   StreamingResponse,
   type StreamingResponseStatus,
@@ -33,6 +34,7 @@ export interface GenUiRendererProps {
   sources?: readonly TurnResponseSource[];
   onCopyText?: (text: string) => void;
   onSaveText?: (text: string) => void;
+  onOpenSource?: (url: string) => void;
   onSelectChoice?: (question: string, choiceId: string) => void;
   onConfirmAction?: (title: string) => void;
 }
@@ -402,10 +404,338 @@ function renderGenUiCard(
   }
 }
 
+const STANDALONE_CITATION_RE = /\[(\d+(?:\s*,\s*\d+)*)\](?!\()/g;
+const SAFE_HREF_RE = /^(https?:|mailto:|\/|#)/i;
+
+function hasNumericCitationForSources(
+  markdown: string,
+  sources: readonly TurnResponseSource[],
+): boolean {
+  if (sources.length === 0) return false;
+  STANDALONE_CITATION_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = STANDALONE_CITATION_RE.exec(markdown)) !== null) {
+    const nums = m[1].split(',').map((s) => Number.parseInt(s.trim(), 10));
+    if (nums.some((n) => Number.isFinite(n) && n >= 1 && n <= sources.length)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function renderTextWithCitationChips(
+  text: string,
+  sources: readonly TurnResponseSource[],
+  keyPrefix: string,
+  onOpenSource?: (url: string) => void,
+): ReactNode[] {
+  const out: ReactNode[] = [];
+  let cursor = 0;
+  let seq = 0;
+  STANDALONE_CITATION_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = STANDALONE_CITATION_RE.exec(text)) !== null) {
+    const nums = m[1].split(',').map((s) => Number.parseInt(s.trim(), 10));
+    const validNums = nums.filter((n) => Number.isFinite(n) && n >= 1 && n <= sources.length);
+    if (validNums.length === 0) continue;
+
+    if (m.index > cursor) {
+      out.push(text.slice(cursor, m.index));
+    }
+    validNums.forEach((n, idx) => {
+      const src = sources[n - 1]!;
+      out.push(
+        <CitationChip
+          key={`${keyPrefix}-c${seq}-${idx}`}
+          index={n - 1}
+          label={n}
+          source={{
+            id: src.id,
+            title: src.title,
+            domain: src.domain,
+            url: src.url,
+            snippet: src.snippet,
+          }}
+          onSelectSource={(picked) => {
+            if (picked.url) onOpenSource?.(picked.url);
+          }}
+        />,
+      );
+    });
+    seq += 1;
+    cursor = m.index + m[0].length;
+  }
+  if (cursor < text.length) {
+    out.push(text.slice(cursor));
+  }
+  return out;
+}
+
+function renderInlineCitedMarkdown(
+  src: string,
+  sources: readonly TurnResponseSource[],
+  keyPrefix: string,
+  onOpenSource?: (url: string) => void,
+  depth = 0,
+): ReactNode[] {
+  if (depth > 6 || !src) {
+    return src ? renderTextWithCitationChips(src, sources, keyPrefix, onOpenSource) : [];
+  }
+  const out: ReactNode[] = [];
+  let i = 0;
+  let seq = 0;
+  const pushPlain = (chunk: string) => {
+    if (!chunk) return;
+    out.push(...renderTextWithCitationChips(chunk, sources, `${keyPrefix}-t${seq++}`, onOpenSource));
+  };
+
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === '`') {
+      const close = src.indexOf('`', i + 1);
+      if (close !== -1) {
+        out.push(
+          <code key={`${keyPrefix}-code-${seq++}`} className="yui-sr-inline-code">
+            {src.slice(i + 1, close)}
+          </code>,
+        );
+        i = close + 1;
+        continue;
+      }
+    }
+    if (ch === '*' && src[i + 1] === '*') {
+      const close = src.indexOf('**', i + 2);
+      if (close !== -1 && close > i + 2) {
+        out.push(
+          <strong key={`${keyPrefix}-b-${seq++}`} className="yui-sr-strong">
+            {renderInlineCitedMarkdown(
+              src.slice(i + 2, close),
+              sources,
+              `${keyPrefix}-bi-${seq}`,
+              onOpenSource,
+              depth + 1,
+            )}
+          </strong>,
+        );
+        i = close + 2;
+        continue;
+      }
+    }
+    if (ch === '[' && !/^\[\d+(?:\s*,\s*\d+)*\](?!\()/.test(src.slice(i))) {
+      const closeBracket = src.indexOf(']', i + 1);
+      if (closeBracket !== -1 && src[closeBracket + 1] === '(') {
+        const closeParen = src.indexOf(')', closeBracket + 2);
+        if (closeParen !== -1) {
+          const label = src.slice(i + 1, closeBracket);
+          const href = src.slice(closeBracket + 2, closeParen).trim();
+          if (SAFE_HREF_RE.test(href)) {
+            const external = /^https?:/i.test(href);
+            out.push(
+              <a
+                key={`${keyPrefix}-a-${seq++}`}
+                className="yui-sr-link"
+                href={href}
+                target={external ? '_blank' : undefined}
+                rel={external ? 'noopener noreferrer' : undefined}
+              >
+                {label}
+              </a>,
+            );
+          } else {
+            pushPlain(label);
+          }
+          i = closeParen + 1;
+          continue;
+        }
+      }
+    }
+    let next = i + 1;
+    while (next < src.length) {
+      const c = src[next];
+      if (c === '`' || (c === '*' && src[next + 1] === '*') || c === '[') break;
+      next += 1;
+    }
+    pushPlain(src.slice(i, next));
+    i = next;
+  }
+  return out;
+}
+
+function CitedMarkdownView({
+  text,
+  sources,
+  onOpenSource,
+}: {
+  text: string;
+  sources: readonly TurnResponseSource[];
+  onOpenSource?: (url: string) => void;
+}) {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const blocks: ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i]!;
+    if (!line.trim()) {
+      i += 1;
+      continue;
+    }
+    const hm = line.match(/^\s*(#{1,6})\s+(.*)$/);
+    if (hm) {
+      const lvl = Math.min(hm[1].length, 3);
+      const cls = `yui-sr-h yui-sr-h${lvl}`;
+      const body = renderInlineCitedMarkdown(hm[2].trim(), sources, `h-${i}`, onOpenSource);
+      blocks.push(
+        lvl === 1 ? (
+          <h3 key={`b-${i}`} className={cls}>
+            {body}
+          </h3>
+        ) : lvl === 2 ? (
+          <h4 key={`b-${i}`} className={cls}>
+            {body}
+          </h4>
+        ) : (
+          <h5 key={`b-${i}`} className={cls}>
+            {body}
+          </h5>
+        ),
+      );
+      i += 1;
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      const q: string[] = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i]!)) {
+        q.push(lines[i]!.replace(/^\s*>\s?/, ''));
+        i += 1;
+      }
+      blocks.push(
+        <blockquote key={`b-${i}`} className="yui-sr-quote">
+          {renderInlineCitedMarkdown(q.join(' '), sources, `q-${i}`, onOpenSource)}
+        </blockquote>,
+      );
+      continue;
+    }
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const items: string[] = [];
+      const start = i;
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i]!)) {
+        items.push(lines[i]!.replace(/^\s*[-*+]\s+/, ''));
+        i += 1;
+      }
+      blocks.push(
+        <ul key={`b-${start}`} className="yui-sr-ul">
+          {items.map((it, idx) => (
+            <li key={`ul-${start}-${idx}`} className="yui-sr-li">
+              {renderInlineCitedMarkdown(it, sources, `ul-${start}-${idx}`, onOpenSource)}
+            </li>
+          ))}
+        </ul>,
+      );
+      continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const firstNum = Number.parseInt(line.match(/^\s*(\d+)\./)?.[1] ?? '1', 10);
+      const items: string[] = [];
+      const start = i;
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i]!)) {
+        items.push(lines[i]!.replace(/^\s*\d+\.\s+/, ''));
+        i += 1;
+      }
+      blocks.push(
+        <ol key={`b-${start}`} className="yui-sr-ol" start={firstNum !== 1 ? firstNum : undefined}>
+          {items.map((it, idx) => (
+            <li key={`ol-${start}-${idx}`} className="yui-sr-li">
+              {renderInlineCitedMarkdown(it, sources, `ol-${start}-${idx}`, onOpenSource)}
+            </li>
+          ))}
+        </ol>,
+      );
+      continue;
+    }
+    if (
+      i + 1 < lines.length &&
+      line.includes('|') &&
+      /^\s*\|?(?:\s*:?-{1,}:?\s*\|)+\s*:?-{1,}:?\s*\|?\s*$/.test(lines[i + 1]!)
+    ) {
+      const parseCells = (row: string) =>
+        row
+          .trim()
+          .replace(/^\|/, '')
+          .replace(/\|$/, '')
+          .split('|')
+          .map((c) => c.trim());
+      const headers = parseCells(line);
+      const rows: string[][] = [];
+      const start = i;
+      i += 2;
+      while (i < lines.length && lines[i]!.trim() && lines[i]!.includes('|')) {
+        rows.push(parseCells(lines[i]!));
+        i += 1;
+      }
+      blocks.push(
+        <div key={`b-${start}`} className="yui-sr-table-card" data-slot="streaming-response-table">
+          <table className="yui-sr-table">
+            <thead>
+              <tr>
+                {headers.map((h, hIdx) => (
+                  <th key={`th-${start}-${hIdx}`} className="yui-sr-th is-left">
+                    {renderInlineCitedMarkdown(h, sources, `th-${start}-${hIdx}`, onOpenSource)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rIdx) => (
+                <tr key={`tr-${start}-${rIdx}`} className="yui-sr-tr">
+                  {headers.map((_, cIdx) => (
+                    <td key={`td-${start}-${rIdx}-${cIdx}`} className="yui-sr-td is-left">
+                      {renderInlineCitedMarkdown(
+                        row[cIdx] ?? '',
+                        sources,
+                        `td-${start}-${rIdx}-${cIdx}`,
+                        onOpenSource,
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
+
+    const pLines: string[] = [];
+    const start = i;
+    while (
+      i < lines.length &&
+      lines[i]!.trim() !== '' &&
+      !/^\s*(?:#{1,6}\s|>\s?|[-*+]\s|\d+\.\s)/.test(lines[i]!)
+    ) {
+      pLines.push(lines[i]!);
+      i += 1;
+    }
+    blocks.push(
+      <p key={`b-${start}`} className="yui-sr-p">
+        {renderInlineCitedMarkdown(pLines.join(' '), sources, `p-${start}`, onOpenSource)}
+      </p>,
+    );
+  }
+
+  return (
+    <div className="yui-sr">
+      <div className="yui-col-8">{blocks}</div>
+    </div>
+  );
+}
+
 /**
  * Renders assistant markdown responses safely in Chrome MV3:
  * - Dispatches ` ```genui ` JSON payloads to `@yours/ui/genui` cards.
  * - Renders settled fenced code blocks via `@yours/ui` `CodeBlockCard` (zero inline styles).
+ * - Renders inline `[1]`, `[2]` citations with `@yours/ui` `CitationChip` popovers when settled.
  * - Uses `@yours/ui` `StreamingResponse` for progressive optical sharpen/develop reveal,
  *   gliding caret, and native GFM pipe tables.
  * - Zero raw HTML string injection, zero inline CSS style objects.
@@ -434,6 +764,21 @@ export function GenUiRenderer(props: GenUiRendererProps) {
           );
         }
         const isLast = idx === segments.length - 1;
+        if (
+          props.status !== 'streaming' &&
+          props.sources &&
+          props.sources.length > 0 &&
+          hasNumericCitationForSources(seg.value, props.sources)
+        ) {
+          return (
+            <CitedMarkdownView
+              key={`cm-${idx}`}
+              text={seg.value}
+              sources={props.sources}
+              onOpenSource={props.onOpenSource}
+            />
+          );
+        }
         const textWithCitations =
           props.sources && props.sources.length > 0
             ? linkifyInlineCitations(seg.value, props.sources)

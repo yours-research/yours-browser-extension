@@ -1,5 +1,6 @@
 import { selectComputeTier } from '@yours/models/hardware';
 import type { GpuPacingMode, LoadSource, WgslKvMode } from '../shared/protocol.ts';
+import { DeferredRollback, type RollbackFlushPoint } from './cycle17/rc1/rollbackScheduler.ts';
 import {
   calibratePacingForHardware,
   computeDecodeBurstBreatherMs,
@@ -215,6 +216,7 @@ interface VerifyGraphPlan {
   dynU32: Uint32Array;
   dynByteStart: number;
   steps: DispatchStep[];
+  tapAfterStepIndices: [number, number, number];
   faPatches: VerifyFaPatchTarget[];
   bgArgBatch1: unknown;
   bgArgBatch2: unknown;
@@ -377,6 +379,11 @@ export class WgslQwen35Engine {
   private prefillUniformBuf!: GpuBufferLike;
   private dnStateBackupBuf!: GpuBufferLike;
   private dnConvBackupBuf!: GpuBufferLike;
+  private dnProjCacheBuf!: GpuBufferLike;
+  private draftTapBuf!: GpuBufferLike;
+  private verifyTapScratchBuf!: GpuBufferLike;
+  private draftTapValid = false;
+  private rollback = new DeferredRollback<unknown>((cbs) => this.device!.queue.submit(cbs));
   private verifyLogitsBuf!: GpuBufferLike;
   private verifyTokOutBuf!: GpuBufferLike;
   private verifyAcceptOutBuf!: GpuBufferLike;
@@ -410,6 +417,8 @@ export class WgslQwen35Engine {
   private q4SwigluSmallMV2Pipe!: unknown;
   private q4SmallMV2RowsPerWg = 64;
   private q4SwigluSmallMV2RowsPerWg = 64;
+  private dnProjStashPipe!: unknown;
+  private dnProjUnstashPipe!: unknown;
   private gqaTreePartialPipe!: unknown;
   private gqaTreeCombinePipe!: unknown;
   private usingDp4a = false;
@@ -480,6 +489,7 @@ export class WgslQwen35Engine {
   private pBgWSlabNormToWork: unknown[] = [];
   private pBgWSlabAttnToHidden: unknown[] = [];
   private pBgConv!: unknown;
+  private pBgDnProjStash!: unknown;
   private pBgGdnRec!: unknown;
   private pBgGdnChunkPrep!: unknown;
   private pBgGdnChunkApply!: unknown;
@@ -517,6 +527,7 @@ export class WgslQwen35Engine {
   private dnConvDim = 8192;
   private dnValDim = 4096;
   private dnQkvzAbRows = 12352;
+  private dnProjWidth = 12352;
   private attnQkvRows = 10240;
   private dnConvPerLayerF32s = 8192 * 3;
   private dnStatePerLayerF32s = 32 * 128 * 128;
@@ -1020,6 +1031,7 @@ export class WgslQwen35Engine {
           const ids = getTierShaderIds(tier, this.kvMode);
           const useTier1Q4V2 = tier === 'tier1-f16-subgroups';
           const gqaTreeV2Src = getWgslShaderSource(wasm, useTier1Q4V2 ? 58 : 49);
+          const dnProjStashSrc = getWgslShaderSource(wasm, 59);
           this.q4SmallMV2RowsPerWg = useTier1Q4V2 ? 16 : 64;
           this.q4SwigluSmallMV2RowsPerWg = useTier1Q4V2 ? 16 : 64;
           [
@@ -1046,6 +1058,8 @@ export class WgslQwen35Engine {
             this.specAcceptPipe,
             this.q4SmallMV2Pipe,
             this.q4SwigluSmallMV2Pipe,
+            this.dnProjStashPipe,
+            this.dnProjUnstashPipe,
             this.gqaTreePartialPipe,
             this.gqaTreeCombinePipe,
           ] = await Promise.all([
@@ -1072,6 +1086,8 @@ export class WgslQwen35Engine {
             createValidatedPipeline(device, `${tier}-spec-accept-greedy`, getWgslShaderSource(wasm, 43), staticArg2Layout),
             createValidatedPipeline(device, `${tier}-q4-gemv-smallm-v2`, getWgslShaderSource(wasm, useTier1Q4V2 ? 56 : 54), dyn4Layout),
             createValidatedPipeline(device, `${tier}-q4-gate-up-swiglu-smallm-v2`, getWgslShaderSource(wasm, useTier1Q4V2 ? 57 : 55), dyn4Layout),
+            createValidatedPipeline(device, `${tier}-dn-proj-stash`, dnProjStashSrc, dynRwLayout, 'stash'),
+            createValidatedPipeline(device, `${tier}-dn-proj-unstash`, dnProjStashSrc, dynRwLayout, 'unstash'),
             createValidatedPipeline(device, `${tier}-gqa-tree-v2-partial`, gqaTreeV2Src, gqaTreeLayout, 'partial'),
             createValidatedPipeline(device, `${tier}-gqa-tree-v2-combine`, gqaTreeV2Src, gqaTreeLayout, 'combine'),
           ]);
@@ -1168,7 +1184,10 @@ export class WgslQwen35Engine {
         device.createBuffer({ size: PREFILL_MAX_CHUNK * 4, usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST }),
       );
       this.hiddenBuf = this.track(
-        device.createBuffer({ size: PREFILL_MAX_CHUNK * H * 4, usage: GPU_USAGE.STORAGE }),
+        device.createBuffer({
+          size: PREFILL_MAX_CHUNK * H * 4,
+          usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC,
+        }),
       );
       const normRows = Math.max(PREFILL_MAX_CHUNK, (dnLayerAllocCount + 1) * MAX_SPEC_TOKENS);
       this.normBufRows = normRows;
@@ -1234,6 +1253,25 @@ export class WgslQwen35Engine {
       this.dnConvBackupBuf = this.track(
         device.createBuffer({
           size: dnLayerAllocCount * this.dnConvSingleBytes,
+          usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC | GPU_USAGE.COPY_DST,
+        }),
+      );
+      this.dnProjWidth = this.dnConvDim + this.dnValDim + 2 * this.arch.dnValHeads;
+      this.dnProjCacheBuf = this.track(
+        device.createBuffer({
+          size: dnLayerAllocCount * MAX_SPEC_TOKENS * this.dnProjWidth * 4,
+          usage: GPU_USAGE.STORAGE,
+        }),
+      );
+      this.draftTapBuf = this.track(
+        device.createBuffer({
+          size: 3 * H * 4,
+          usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC | GPU_USAGE.COPY_DST,
+        }),
+      );
+      this.verifyTapScratchBuf = this.track(
+        device.createBuffer({
+          size: 3 * MAX_SPEC_TOKENS * H * 4,
           usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC | GPU_USAGE.COPY_DST,
         }),
       );
@@ -1386,6 +1424,12 @@ export class WgslQwen35Engine {
         makeDyn4(this.prefillUniformBuf, slab, this.normBuf, this.logitsBuf),
       );
       this.pBgConv = makeDynRw(this.prefillUniformBuf, this.auxBuf, this.dnConvBuf, this.workBuf);
+      this.pBgDnProjStash = makeDynRw(
+        this.prefillUniformBuf,
+        this.auxBuf,
+        this.workBuf,
+        this.dnProjCacheBuf,
+      );
       this.pBgGqaReduce = makeDyn4(this.prefillUniformBuf, this.workBuf, this.gqaSplitBuf, this.attnOutBuf);
       this.pBgGdnRec = device.createBindGroup({
         layout: gdnRecBgl,
@@ -1547,6 +1591,76 @@ export class WgslQwen35Engine {
     this.treeVerifyPlans.clear();
   }
 
+  getDevice(): GPUDevice | null {
+    return this.device as unknown as GPUDevice | null;
+  }
+
+  getTiedTableSlices(): Array<{ buffer: GPUBuffer; startRow: number; endRow: number }> {
+    return this.lmHeadSlabs.map((slab, idx) => ({
+      buffer: slab as unknown as GPUBuffer,
+      startRow: this.vocabSlices[idx]!.startRow,
+      endRow: this.vocabSlices[idx]!.endRow,
+    }));
+  }
+
+  getDraftAnchorTaps(): { taps: GPUBuffer; valid: boolean } {
+    return {
+      taps: this.draftTapBuf as unknown as GPUBuffer,
+      valid: this.draftTapValid && Boolean(this.draftTapBuf),
+    };
+  }
+
+  invalidateDraftAnchor(): void {
+    this.draftTapValid = false;
+  }
+
+  flushPendingRollback(point: RollbackFlushPoint): void {
+    if (this.device) {
+      this.rollback.flush(point);
+    }
+  }
+
+  getRollbackStats() {
+    return { ...this.rollback.stats, isPending: this.rollback.isPending };
+  }
+
+  /**
+   * Measures one chain verify step (`M = 2..8`) for Engine B bench P probing under P9a-P9c.
+   * Alternates paired accept vs deferred-reject steps inside the next verify submission.
+   */
+  async measureSpecStep(M: number, reject: boolean): Promise<number> {
+    const greedy: SamplingOptions = { temperature: 0, topK: 1, topP: 1 };
+    const slotId = '__eb_probe__';
+    if (!this.hasGpuPrefixSlot(slotId)) {
+      await this.resetState();
+      await this.prefill([1, 2, 3, 4], {
+        chunkSize: 64,
+        sampling: greedy,
+        pacingMode: 'max-speed',
+        yieldFn: async () => {},
+      });
+      await this.saveGpuPrefixSlot(slotId);
+    }
+    await this.restoreGpuPrefixSlot(slotId);
+    const probeDraft: number[] = [];
+    let tok = 1;
+    for (let i = 0; i < M; i++) {
+      const r = await this.decodeStep(tok, greedy, 'max-speed');
+      probeDraft.push(r.nextToken);
+      tok = r.nextToken;
+    }
+    await this.restoreGpuPrefixSlot(slotId);
+    const rootTok = 1;
+    const step1Draft = reject
+      ? probeDraft.slice(0, M - 1).map((t) => (t + 17) % Math.max(100, this.arch.vocabSize))
+      : probeDraft.slice(0, M - 1);
+    await this.decodeSpeculativeStep(rootTok, step1Draft, greedy, 'max-speed');
+    const step2Draft = probeDraft.slice(0, M - 1);
+    const step2 = await this.decodeSpeculativeStep(rootTok, step2Draft, greedy, 'max-speed');
+    this.flushPendingRollback('end-of-turn');
+    return step2.gpuMs;
+  }
+
   private ensureRopeTable(device: GpuDeviceLike, capacity: number): void {
     const half = Math.floor(this.arch.ropeDim / 2);
     if (this.ropeTableBuf && capacity <= this.ropeTableCapacity) {
@@ -1687,6 +1801,7 @@ export class WgslQwen35Engine {
       return;
     }
 
+    this.rollback.flush('kv-grow');
     const device = this.device;
     const oldCap = this.allocatedKvCapacity;
     const oldKvSlab0 = this.kvSlab0;
@@ -2023,6 +2138,8 @@ export class WgslQwen35Engine {
   }
 
   async resetState(): Promise<void> {
+    this.rollback.flush('reset');
+    this.draftTapValid = false;
     this.lastDecodeGpuMs = 0;
     this.emaDecodeStepMs = 0;
     this.decodeBurstMs = 0;
@@ -2077,6 +2194,7 @@ export class WgslQwen35Engine {
     if (!this.device) {
       throw new Error('WGSL engine not loaded.');
     }
+    this.rollback.flush('slot-save');
     const existing = this.gpuPrefixSlots.get(slotId);
     if (existing) {
       this.destroyPrefixSlotBuffers(existing);
@@ -2207,6 +2325,8 @@ export class WgslQwen35Engine {
     if (!this.device) {
       throw new Error('WGSL engine not loaded.');
     }
+    this.rollback.flush('slot-restore');
+    this.draftTapValid = false;
     const slot = this.gpuPrefixSlots.get(slotId);
     if (!slot) {
       throw new Error(`GPU prefix slot "${slotId}" not found.`);
@@ -2290,6 +2410,7 @@ export class WgslQwen35Engine {
     if (!this.device) {
       throw new Error('WGSL engine not loaded.');
     }
+    this.rollback.flush('snapshot');
     const rowBytes = this.kvRowU32s * 4;
     const perSeqKvBytes = this.numFaLayers * 2 * this.arch.attnKvHeads * this.seqPos * rowBytes;
     const dnCount = Math.max(1, this.numDnLayers);
@@ -2343,6 +2464,8 @@ export class WgslQwen35Engine {
     if (!this.device || snap.kvMode !== this.kvMode) {
       throw new Error('Incompatible WGSL state snapshot.');
     }
+    this.rollback.flush('restore-snapshot');
+    this.draftTapValid = false;
     await this.ensureKvCapacity(snap.seqPos + 64);
     await this.resetState();
     this.device.queue.writeBuffer(this.dnStateBuf, 0, snap.dnState as BufferSource);
@@ -2392,6 +2515,7 @@ export class WgslQwen35Engine {
       deferSync?: boolean;
     },
   ): Promise<number | null> {
+    this.rollback.flush('prefill');
     const device = this.device!;
     const M = chunkTokens.length;
     if (M === 0) return null;
@@ -2416,6 +2540,7 @@ export class WgslQwen35Engine {
     const f32View = new Float32Array(uniformTable);
     const steps: DispatchStep[] = [];
     const layerSplitEnds: number[] = [];
+    const prefillTapBoundaries = new Map<number, number>();
     let nextSlot = 0;
 
     const push = (
@@ -2588,6 +2713,12 @@ export class WgslQwen35Engine {
         push(this.swigluPipe, this.pBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
         push(this.gemmPipe, bgAttnToHidden, [M, H, I, wDown, 0, 0, 1, 0], Math.ceil(H / 64), mTiles);
       }
+      if (computeLogits && L > 31 && (l === 3 || l === 15 || l === 31)) {
+        prefillTapBoundaries.set(steps.length, l === 3 ? 0 : l === 15 ? 1 : 2);
+      }
+      if (computeLogits && L > 31 && (l === 3 || l === 15 || l === 31)) {
+        prefillTapBoundaries.set(steps.length, l === 3 ? 0 : l === 15 ? 1 : 2);
+      }
       if ((l + 1) % layersPerSlice === 0 || l === L - 1) {
         layerSplitEnds.push(steps.length);
       }
@@ -2626,19 +2757,31 @@ export class WgslQwen35Engine {
       const endIdx = layerSplitEnds[sIdx]!;
       const isLastSlice = sIdx === layerSplitEnds.length - 1;
       const enc = device.createCommandEncoder();
-      const pass = enc.beginComputePass();
-      for (; stepCursor < endIdx; stepCursor++) {
-        const st = steps[stepCursor]!;
+      let pass = enc.beginComputePass();
+      const dispatchPrefillStep = (idx: number) => {
+        const st = steps[idx]!;
         pass.setPipeline(st.pipeline);
         pass.setBindGroup(0, st.bindGroup, [st.uniformByteOffset]);
         pass.dispatchWorkgroups(st.wx, st.wy, st.wz);
+        const tapSlot = prefillTapBoundaries.get(idx + 1);
+        if (tapSlot !== undefined && this.draftTapBuf) {
+          pass.end();
+          enc.copyBufferToBuffer(
+            this.hiddenBuf,
+            (M - 1) * H * 4,
+            this.draftTapBuf,
+            tapSlot * H * 4,
+            H * 4,
+          );
+          pass = enc.beginComputePass();
+        }
+      };
+      for (; stepCursor < endIdx; stepCursor++) {
+        dispatchPrefillStep(stepCursor);
       }
       if (isLastSlice) {
         for (; stepCursor < steps.length; stepCursor++) {
-          const st = steps[stepCursor]!;
-          pass.setPipeline(st.pipeline);
-          pass.setBindGroup(0, st.bindGroup, [st.uniformByteOffset]);
-          pass.dispatchWorkgroups(st.wx, st.wy, st.wz);
+          dispatchPrefillStep(stepCursor);
         }
         if (computeLogits && greedy) {
           pass.setPipeline(this.arg1Pipe);
@@ -2659,6 +2802,7 @@ export class WgslQwen35Engine {
         const tokId = new Uint32Array(this.staging4B.getMappedRange())[0];
         this.staging4B.unmap();
         this.seqPos += M;
+        this.draftTapValid = L > 31 && Boolean(this.draftTapBuf);
         return tokId;
       }
       const tSlice = performance.now();
@@ -2684,6 +2828,7 @@ export class WgslQwen35Engine {
     if (!computeLogits) {
       return null;
     }
+    this.draftTapValid = L > 31 && Boolean(this.draftTapBuf);
     const logits = await this.readFullLogits();
     return sampleNextToken(logits, sampling);
   }
@@ -2700,6 +2845,7 @@ export class WgslQwen35Engine {
       skipFinalLogits?: boolean;
     },
   ): Promise<{ nextTokenId: number; prefillMs: number }> {
+    this.rollback.flush('prefill');
     const startMs = performance.now();
     await this.ensureKvCapacity(this.seqPos + tokenIds.length);
     const pacingMode = options.pacingMode ?? 'balanced';
@@ -2772,12 +2918,15 @@ export class WgslQwen35Engine {
     tokenId: number,
     sampling: SamplingOptions,
     pacingMode: GpuPacingMode = 'balanced',
-  ): Promise<{ nextToken: number; gpuMs: number; breatherMs: number }> {
+  ): Promise<{ nextToken: number; gpuMs: number; breatherMs: number; encodeMs: number; mapMs: number }> {
+    this.rollback.flush('decode-step');
     await this.ensureKvCapacity(this.seqPos + 1);
     const device = this.device!;
     if (this.seqPos + 1 > this.maxSeqCapacity) {
       throw new Error(`Context overflow at seqPos=${this.seqPos} (maxSeqCapacity=${this.maxSeqCapacity})`);
     }
+    const H = this.arch.hiddenSize;
+    const tEnc0 = performance.now();
     device.queue.writeBuffer(this.tokenIdsBuf, 0, new Uint32Array([tokenId, this.seqPos]));
     const maxParts = partitionCountGqa(this.seqPos + 1);
     for (const fp of this.decodeFaPatches) {
@@ -2799,6 +2948,14 @@ export class WgslQwen35Engine {
     if (bounds.length === 0) {
       throw new Error('Decode dispatch plan is empty.');
     }
+    const tapStepEnds = new Map<number, number>();
+    if (this.arch.numLayers > 31 && this.draftTapBuf) {
+      tapStepEnds.set(this.decodeLayerEndStepIndices[3]!, 0);
+      tapStepEnds.set(this.decodeLayerEndStepIndices[15]!, 1);
+      tapStepEnds.set(this.decodeLayerEndStepIndices[31]!, 2);
+    }
+    let encodeMs = performance.now() - tEnc0;
+    let mapMs = 0;
     let gpuMs = 0;
     let breatherMs = 0;
     let greedyTokId: number | null = null;
@@ -2807,13 +2964,20 @@ export class WgslQwen35Engine {
     for (let s = 0; s < bounds.length; s++) {
       const slice = bounds[s]!;
       const isLastSlice = s === bounds.length - 1;
+      const tSliceEnc0 = performance.now();
       const enc = device.createCommandEncoder();
-      const pass = enc.beginComputePass();
+      let pass = enc.beginComputePass();
       for (let stepIdx = slice.start; stepIdx < slice.end; stepIdx++) {
         const st = this.decodeSteps[stepIdx]!;
         pass.setPipeline(st.pipeline);
         pass.setBindGroup(0, st.bindGroup, [st.uniformByteOffset]);
         pass.dispatchWorkgroups(st.wx, st.wy, st.wz);
+        const tapSlot = tapStepEnds.get(stepIdx + 1);
+        if (tapSlot !== undefined) {
+          pass.end();
+          enc.copyBufferToBuffer(this.hiddenBuf, 0, this.draftTapBuf, tapSlot * H * 4, H * 4);
+          pass = enc.beginComputePass();
+        }
       }
       if (isLastSlice && greedy) {
         pass.setPipeline(this.arg1Pipe);
@@ -2827,17 +2991,25 @@ export class WgslQwen35Engine {
 
       if (isLastSlice && greedy) {
         enc.copyBufferToBuffer(this.tokOutBuf, 0, this.staging4B, 0, 4);
+        const cmd = enc.finish();
+        encodeMs += performance.now() - tSliceEnc0;
         const t0 = performance.now();
-        device.queue.submit([enc.finish()]);
+        device.queue.submit([cmd]);
         await this.staging4B.mapAsync(GPU_MAP_READ);
-        gpuMs += performance.now() - t0;
+        const mDt = performance.now() - t0;
+        mapMs += mDt;
+        gpuMs += mDt;
         greedyTokId = new Uint32Array(this.staging4B.getMappedRange())[0];
         this.staging4B.unmap();
       } else {
+        const cmd = enc.finish();
+        encodeMs += performance.now() - tSliceEnc0;
         const t0 = performance.now();
-        device.queue.submit([enc.finish()]);
+        device.queue.submit([cmd]);
         await device.queue.onSubmittedWorkDone();
-        gpuMs += performance.now() - t0;
+        const mDt = performance.now() - t0;
+        mapMs += mDt;
+        gpuMs += mDt;
       }
 
       if (s < bounds.length - 1 && policy.decodeSliceBreatherMs > 0) {
@@ -2848,6 +3020,7 @@ export class WgslQwen35Engine {
     }
 
     this.seqPos += 1;
+    this.draftTapValid = this.arch.numLayers > 31 && Boolean(this.draftTapBuf);
     this.recordDecodeGpuStepMs(gpuMs);
 
     const nextToken =
@@ -2861,7 +3034,7 @@ export class WgslQwen35Engine {
       breatherMs += performance.now() - b0;
     }
 
-    return { nextToken, gpuMs, breatherMs };
+    return { nextToken, gpuMs, breatherMs, encodeMs, mapMs };
   }
 
   private buildOrGetVerifyPlan(M: number): VerifyGraphPlan {
@@ -2951,6 +3124,7 @@ export class WgslQwen35Engine {
     const vBgWSlabAttnToHidden = this.wSlabs.map((slab) => makeDyn4(slab, this.attnOutBuf, this.hiddenBuf));
     const vBgLmHead = this.lmHeadSlabs.map((slab) => makeDyn4(slab, this.normBuf, this.verifyLogitsBuf));
     const vBgConv = makeDynRw(this.auxBuf, this.dnConvBuf, this.workBuf);
+    const vBgDnProjStash = makeDynRw(this.auxBuf, this.workBuf, this.dnProjCacheBuf);
     const vBgGqaReduce = makeDyn4(this.workBuf, this.gqaOutBuf, this.attnOutBuf);
     const vBgGdnRec = device.createBindGroup({
       layout: this.gdnRecBgl,
@@ -3040,6 +3214,7 @@ export class WgslQwen35Engine {
 
     const steps: DispatchStep[] = [];
     const faPatches: VerifyFaPatchTarget[] = [];
+    const tapAfterStepIndices: [number, number, number] = [-1, -1, -1];
 
     const pushStatic = (
       pipeline: unknown,
@@ -3079,6 +3254,13 @@ export class WgslQwen35Engine {
         pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [this.dnConvDim, H, wQkv, dnNormOff, 0, 0, M, 0], q4V2Wx(this.dnConvDim));
         pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [this.dnValDim, H, wZ, dnNormOff, M * this.dnConvDim, 0, M, 0], q4V2Wx(this.dnValDim));
         pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [this.arch.dnValHeads * 2, H, wAb, dnNormOff, M * (this.dnConvDim + this.dnValDim), 0, M, 0], q4V2Wx(this.arch.dnValHeads * 2));
+        // P9c: keep this layer's raw projections before conv overwrites workBuf in place.
+        pushStatic(
+          this.dnProjStashPipe,
+          vBgDnProjStash,
+          [M, 0, this.dnConvDim, this.dnValDim, this.arch.dnValHeads * 2, lo.dnIdx * MAX_SPEC_TOKENS * this.dnProjWidth, 0, 0],
+          Math.ceil((M * this.dnProjWidth) / 256),
+        );
 
         pushStatic(this.convPipe, vBgConv, [M, la.convWOff, lo.dnIdx * this.dnConvPerLayerF32s, 0, this.dnConvDim, 0, 0, 0], convWgs);
         pushStatic(
@@ -3184,6 +3366,9 @@ export class WgslQwen35Engine {
         );
         pushStatic(this.q4SmallMV2Pipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, M, 0], q4V2Wx(H));
       }
+      if (l === 3) tapAfterStepIndices[0] = steps.length;
+      else if (l === 15) tapAfterStepIndices[1] = steps.length;
+      else if (l === 31) tapAfterStepIndices[2] = steps.length;
     }
 
     pushStatic(this.rmsNormPipe, vBgRmsNorm, [M, H, this.auxLayout.finalNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
@@ -3208,6 +3393,7 @@ export class WgslQwen35Engine {
       dynU32,
       dynByteStart,
       steps,
+      tapAfterStepIndices,
       faPatches,
       bgArgBatch1,
       bgArgBatch2,
@@ -3239,6 +3425,12 @@ export class WgslQwen35Engine {
     draftedCount: number;
     gpuMs: number;
     breatherMs: number;
+    planBuilt: boolean;
+    planMs: number;
+    encodeMs: number;
+    mapMs: number;
+    rollbackEncodeMs: number;
+    rollbackWaitMs: number;
   }> {
     if (sampling.temperature > 0 && sampling.topK !== 1) {
       throw new Error('decodeSpeculativeStep requires greedy sampling.');
@@ -3255,6 +3447,7 @@ export class WgslQwen35Engine {
     }
 
     const startPos = this.seqPos;
+    const H = this.arch.hiddenSize;
     const V = this.arch.vocabSize;
     const L = this.arch.numLayers;
     const argmaxWgCount = Math.ceil(V / 256);
@@ -3263,7 +3456,12 @@ export class WgslQwen35Engine {
     const convWgs = Math.ceil(this.dnConvDim / 128);
     const dnCount = Math.max(1, this.numDnLayers);
 
+    const planBuilt = !this.verifyPlans.has(M);
+    const tPlan0 = performance.now();
     const plan = this.buildOrGetVerifyPlan(M);
+    const planMs = performance.now() - tPlan0;
+
+    const tEnc0 = performance.now();
     for (const fp of plan.faPatches) {
       plan.dynU32[fp.qkUIdx + 1] = startPos;
       plan.dynU32[fp.gqa0UIdx + 3] = startPos;
@@ -3282,12 +3480,34 @@ export class WgslQwen35Engine {
     enc.copyBufferToBuffer(this.dnStateBuf, 0, this.dnStateBackupBuf, 0, dnCount * this.dnSingleBytes);
     enc.copyBufferToBuffer(this.dnConvBuf, 0, this.dnConvBackupBuf, 0, dnCount * this.dnConvSingleBytes);
 
-    const pass = enc.beginComputePass();
+    let pass = enc.beginComputePass();
+    const captureTaps = L > 31 && Boolean(this.verifyTapScratchBuf);
     for (let i = 0; i < plan.steps.length; i++) {
       const st = plan.steps[i]!;
       pass.setPipeline(st.pipeline);
       pass.setBindGroup(0, st.bindGroup, [st.uniformByteOffset]);
       pass.dispatchWorkgroups(st.wx, st.wy, st.wz);
+      if (captureTaps) {
+        const tapSlot =
+          i + 1 === plan.tapAfterStepIndices[0]
+            ? 0
+            : i + 1 === plan.tapAfterStepIndices[1]
+              ? 1
+              : i + 1 === plan.tapAfterStepIndices[2]
+                ? 2
+                : -1;
+        if (tapSlot >= 0) {
+          pass.end();
+          enc.copyBufferToBuffer(
+            this.hiddenBuf,
+            0,
+            this.verifyTapScratchBuf,
+            tapSlot * MAX_SPEC_TOKENS * H * 4,
+            M * H * 4,
+          );
+          pass = enc.beginComputePass();
+        }
+      }
     }
     pass.setPipeline(this.argmaxBatch1Pipe);
     pass.setBindGroup(0, plan.bgArgBatch1);
@@ -3300,20 +3520,40 @@ export class WgslQwen35Engine {
     pass.dispatchWorkgroups(1, 1, 1);
     pass.end();
     enc.copyBufferToBuffer(this.verifyAcceptOutBuf, 0, this.verifyStaging64B, 0, 64);
+    const verifyCmd = enc.finish();
+    const encodeMs = performance.now() - tEnc0;
 
     const t0 = performance.now();
-    device.queue.submit([enc.finish()]);
+    this.rollback.submitWith([verifyCmd]); // P9b: a pending rollback runs first
     await this.verifyStaging64B.mapAsync(GPU_MAP_READ);
-    let gpuMs = performance.now() - t0;
+    const mapMs = performance.now() - t0;
+    const gpuMs = mapMs;
     const acceptView = new Uint32Array(this.verifyStaging64B.getMappedRange());
     const acceptedCount = Math.min(draftTokens.length, acceptView[0]!);
     const predicted = Array.from(acceptView.subarray(2, 2 + M));
     this.verifyStaging64B.unmap();
 
+    // Update packed layers [3, 15, 31] anchor taps from the last committed accepted row BEFORE any rollback
+    if (L > 31 && this.draftTapBuf && this.verifyTapScratchBuf) {
+      const tapEnc = device.createCommandEncoder();
+      for (let tapSlot = 0; tapSlot < 3; tapSlot++) {
+        tapEnc.copyBufferToBuffer(
+          this.verifyTapScratchBuf,
+          (tapSlot * MAX_SPEC_TOKENS + acceptedCount) * H * 4,
+          this.draftTapBuf,
+          tapSlot * H * 4,
+          H * 4,
+        );
+      }
+      device.queue.submit([tapEnc.finish()]);
+      this.draftTapValid = true;
+    }
+
+    let rollbackEncodeMs = 0;
+    const rollbackWaitMs = 0;
     if (acceptedCount < draftTokens.length) {
+      const tRbEnc0 = performance.now();
       const keepTokens = acceptedCount + 1;
-      const H = this.arch.hiddenSize;
-      const q4V2Wx = (rows: number) => Math.ceil(rows / this.q4SmallMV2RowsPerWg);
       const rbU32 = new Uint32Array(this.rbUniformScratch);
       let rbSlot = 0;
       const pushRb = (vals: [number, number, number, number, number, number, number, number]) => {
@@ -3332,24 +3572,11 @@ export class WgslQwen35Engine {
         const lo = this.layerOffsets[l]!;
         if (lo.isFullAttn) continue;
         const la = this.auxLayout.layers[l]!;
-        const [wQkv, wZ, wAb] = lo.w;
-        const dnNormOff = (lo.dnIdx + 1) * MAX_SPEC_TOKENS * H; // block 0 = transient verify / final-norm rows
-        const pBgNormToWork = this.pBgWSlabNormToWork[lo.slabIdx]!;
-
-        const qOff = pushRb([this.dnConvDim, H, wQkv, dnNormOff, 0, 0, keepTokens, 0]);
-        rPass.setPipeline(this.q4SmallMV2Pipe);
-        rPass.setBindGroup(0, pBgNormToWork, [qOff]);
-        rPass.dispatchWorkgroups(q4V2Wx(this.dnConvDim), 1, 1);
-
-        const zOff = pushRb([this.dnValDim, H, wZ, dnNormOff, keepTokens * this.dnConvDim, 0, keepTokens, 0]);
-        rPass.setPipeline(this.q4SmallMV2Pipe);
-        rPass.setBindGroup(0, pBgNormToWork, [zOff]);
-        rPass.dispatchWorkgroups(q4V2Wx(this.dnValDim), 1, 1);
-
-        const abOff = pushRb([this.arch.dnValHeads * 2, H, wAb, dnNormOff, keepTokens * (this.dnConvDim + this.dnValDim), 0, keepTokens, 0]);
-        rPass.setPipeline(this.q4SmallMV2Pipe);
-        rPass.setBindGroup(0, pBgNormToWork, [abOff]);
-        rPass.dispatchWorkgroups(q4V2Wx(this.arch.dnValHeads * 2), 1, 1);
+        // P9c: replay conv + recurrence from the projections the verify pass stashed.
+        const sOff = pushRb([M, keepTokens, this.dnConvDim, this.dnValDim, this.arch.dnValHeads * 2, lo.dnIdx * MAX_SPEC_TOKENS * this.dnProjWidth, 0, 0]);
+        rPass.setPipeline(this.dnProjUnstashPipe);
+        rPass.setBindGroup(0, this.pBgDnProjStash, [sOff]);
+        rPass.dispatchWorkgroups(Math.ceil((keepTokens * this.dnProjWidth) / 256), 1, 1);
 
         const cOff = pushRb([keepTokens, la.convWOff, lo.dnIdx * this.dnConvPerLayerF32s, 0, this.dnConvDim, 0, 0, 0]);
         rPass.setPipeline(this.convPipe);
@@ -3373,10 +3600,10 @@ export class WgslQwen35Engine {
       rPass.end();
 
       device.queue.writeBuffer(this.prefillUniformBuf, 0, this.rbUniformScratch, 0, rbSlot * 256);
-      const tRb = performance.now();
-      device.queue.submit([rbEnc.finish()]);
-      await device.queue.onSubmittedWorkDone();
-      gpuMs += performance.now() - tRb;
+      // P9a + P9b: queue order already makes every later work item see restored state;
+      // defer submit into the next verify pass or flush point with zero wait here.
+      this.rollback.defer(rbEnc.finish());
+      rollbackEncodeMs = performance.now() - tRbEnc0;
     }
 
     this.seqPos = startPos + acceptedCount + 1;
@@ -3398,6 +3625,12 @@ export class WgslQwen35Engine {
       draftedCount: draftTokens.length,
       gpuMs,
       breatherMs,
+      planBuilt,
+      planMs,
+      encodeMs,
+      mapMs,
+      rollbackEncodeMs,
+      rollbackWaitMs,
     };
   }
 
@@ -4166,6 +4399,8 @@ export class WgslQwen35Engine {
     gpuMs: number;
     breatherMs: number;
   }> {
+    this.rollback.flush('tree-step');
+    this.draftTapValid = false;
     if (!this.treeVerifySupported) {
       throw new Error('E1/E2 tree verification pipelines are not initialized.');
     }
@@ -5167,6 +5402,8 @@ export class WgslQwen35Engine {
   }
 
   dispose(): void {
+    this.rollback.discard();
+    this.draftTapValid = false;
     this.invalidateVerifyPlans();
     this.clearGpuPrefixSlots();
     for (const buf of this.allocatedBuffers) {
