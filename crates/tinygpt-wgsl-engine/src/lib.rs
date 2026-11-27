@@ -150,6 +150,14 @@ pub extern "C" fn full_attn_layer_kv_bytes(max_seq: u32, int8_kv: u32) -> u64 {
 /// 43 = spec_accept_greedy
 /// 44 = q4_gemv_batch_wide
 /// 45 = q4_gate_up_swiglu_batch_v2
+/// 46 = dn_conv_tree (E1/E2)
+/// 47 = dn_io (E1/E2)
+/// 48 = dn_tree (E1/E2)
+/// 49 = gqa_tree (E1/E2)
+/// 50 = kv_compact (E1/E2)
+/// 51 = topk_batch (E1/E2)
+/// 52 = accept_tree (E1/E2)
+/// 53 = q4_gemv_smallm (E1/E2 universal fallback)
 #[no_mangle]
 pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
     match shader_id {
@@ -199,6 +207,14 @@ pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
         43 => set_shader_bytes(WGSL_SPEC_ACCEPT.as_bytes()),
         44 => set_shader_bytes(WGSL_Q4_GEMV_BATCH_WIDE.as_bytes()),
         45 => set_shader_bytes(WGSL_Q4_GATE_UP_SWIGLU_BATCH_V2.as_bytes()),
+        46 => set_shader_bytes(WGSL_DN_CONV_TREE.as_bytes()),
+        47 => set_shader_bytes(WGSL_DN_IO.as_bytes()),
+        48 => set_shader_bytes(WGSL_DN_TREE.as_bytes()),
+        49 => set_shader_bytes(WGSL_GQA_TREE.as_bytes()),
+        50 => set_shader_bytes(WGSL_KV_COMPACT.as_bytes()),
+        51 => set_shader_bytes(WGSL_TOPK_BATCH.as_bytes()),
+        52 => set_shader_bytes(WGSL_ACCEPT_TREE.as_bytes()),
+        53 => set_shader_bytes(WGSL_Q4_GEMV_SMALLM.as_bytes()),
         100..=199 => match gemma4::get_shader(shader_id) {
             Some(bytes) => set_shader_bytes(bytes),
             None => 0,
@@ -910,35 +926,45 @@ fn main(
   let tid = lid.x;
   let d = tid * 4u;
 
-  var m_global: f32 = -1e30;
-  for (var s: u32 = 0u; s < params.num_splits; s = s + 1u) {
-    let base = (head_slot * params.num_splits + s) * 260u;
-    let ls = split_out[base + 257u];
-    if (ls > 0.0) {
-      m_global = max(m_global, split_out[base + 256u]);
+  var out_vec = vec4<f32>(0.0);
+  if (params.num_splits == 0u) {
+    let tree_base = head_slot * 256u + d;
+    out_vec = vec4<f32>(
+      split_out[tree_base + 0u],
+      split_out[tree_base + 1u],
+      split_out[tree_base + 2u],
+      split_out[tree_base + 3u],
+    );
+  } else {
+    var m_global: f32 = -1e30;
+    for (var s: u32 = 0u; s < params.num_splits; s = s + 1u) {
+      let base = (head_slot * params.num_splits + s) * 260u;
+      let ls = split_out[base + 257u];
+      if (ls > 0.0) {
+        m_global = max(m_global, split_out[base + 256u]);
+      }
     }
-  }
 
-  var l_global: f32 = 0.0;
-  var acc_v = vec4<f32>(0.0);
-  for (var s: u32 = 0u; s < params.num_splits; s = s + 1u) {
-    let base = (head_slot * params.num_splits + s) * 260u;
-    let ls = split_out[base + 257u];
-    if (ls > 0.0) {
-      let ms = split_out[base + 256u];
-      let w = exp(ms - m_global);
-      l_global += ls * w;
-      let v = vec4<f32>(
-        split_out[base + d],
-        split_out[base + d + 1u],
-        split_out[base + d + 2u],
-        split_out[base + d + 3u],
-      );
-      acc_v += v * w;
+    var l_global: f32 = 0.0;
+    var acc_v = vec4<f32>(0.0);
+    for (var s: u32 = 0u; s < params.num_splits; s = s + 1u) {
+      let base = (head_slot * params.num_splits + s) * 260u;
+      let ls = split_out[base + 257u];
+      if (ls > 0.0) {
+        let ms = split_out[base + 256u];
+        let w = exp(ms - m_global);
+        l_global += ls * w;
+        let v = vec4<f32>(
+          split_out[base + d],
+          split_out[base + d + 1u],
+          split_out[base + d + 2u],
+          split_out[base + d + 3u],
+        );
+        acc_v += v * w;
+      }
     }
+    out_vec = acc_v / max(l_global, 1e-6);
   }
-
-  let out_vec = acc_v / max(l_global, 1e-6);
   let g_stride = select(params.g_head_stride, 256u, params.g_head_stride == 0u);
   let g_base = params.gate_offset + tok * (q_heads * g_stride) + q_head * g_stride + d;
   let out_base = params.out_offset + tok * (q_heads * 256u) + q_head * 256u + d;
@@ -1582,8 +1608,12 @@ fn main(
   sh_head[d] = val * inv_rms * nw;
   workgroupBarrier();
 
-  let start_pos_u32 = select(params.start_pos, pos_buf[1], params.start_pos == 0xFFFFFFFFu);
-  let pos = f32(start_pos_u32 + tok);
+  let pos_u32 = select(
+    select(params.start_pos, pos_buf[1], params.start_pos == 0xFFFFFFFFu) + tok,
+    pos_buf[16u + tok],
+    params.start_pos == 0xFFFFFFFEu,
+  );
+  let pos = f32(pos_u32);
   var out_val = sh_head[d];
   if (d < rope_half) {
     let ang = pos * aux[params.inv_freq_offset + d];
@@ -6574,6 +6604,426 @@ pub unsafe extern "C" fn repack_q4_rows(
         }
     }
 }
+
+// ============================================================================
+// Phase E1 + E2 Drop-In Tree Verification & Compaction Kernels (Shaders 46..53)
+// ============================================================================
+
+const WGSL_DN_CONV_TREE: &str = r#"
+// Depthwise conv4 and SiLU. Committed history is [channel, oldest..newest].
+struct Params { channels: u32, slots: u32, reserved0: u32, reserved1: u32 }
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage,read> masks: array<u32>;
+@group(0) @binding(2) var<storage,read> raw: array<f32>;
+@group(0) @binding(3) var<storage,read> weights: array<f32>;
+@group(0) @binding(4) var<storage,read_write> history: array<f32>;
+@group(0) @binding(5) var<storage,read_write> out: array<f32>;
+@group(0) @binding(6) var<storage,read> choice: array<u32>;
+fn exp_neg(x: f32) -> f32 {
+  if (x <= -87.33654) { return 0.0; }
+  let n = i32(round(x * 1.4426950408889634));
+  let r = (x - f32(n) * 0.693359375) - f32(n) * -0.00021219444005469058;
+  var y = r * 0.0013888889 + 0.0083333338;
+  y = r * y + 0.0416666679;
+  y = r * y + 0.1666666716;
+  y = r * y + 0.5;
+  y = r * y + 1.0;
+  y = r * y + 1.0;
+  return bitcast<f32>(u32(n+127)<<23u)*y;
+}
+fn scan(c: u32, leaf: u32, committing: bool) {
+  if (c >= p.channels) { return; }
+  let h = c * 3u;
+  var taps = vec3<f32>(history[h], history[h+1u], history[h+2u]);
+  for (var slot = 0u; slot <= leaf; slot++) {
+    if ((masks[leaf] & (1u << slot)) == 0u) { continue; }
+    let x = raw[slot*p.channels+c];
+    if (slot == leaf && !committing) {
+      let w = c * 4u;
+      let u = taps.x*weights[w] + taps.y*weights[w+1u] + taps.z*weights[w+2u] + x*weights[w+3u];
+      let e = exp_neg(-abs(u));
+      out[slot*p.channels+c] = select(u, u*e, u < 0.0) * (1.0 / (1.0+e));
+    }
+    taps = vec3<f32>(taps.y, taps.z, x);
+  }
+  if (committing) { history[h] = taps.x; history[h+1u] = taps.y; history[h+2u] = taps.z; }
+}
+@compute @workgroup_size(64)
+fn verify(@builtin(global_invocation_id) id: vec3<u32>) { scan(id.x, id.y, false); }
+@compute @workgroup_size(64)
+fn commit(@builtin(global_invocation_id) id: vec3<u32>) { scan(id.x, choice[2u+choice[0]], true); }
+"#;
+
+const WGSL_DN_IO: &str = r#"
+// Layout of raw tensors and auxiliary arrays matches the browser GDN layer.
+// pack and gate both dispatch (value_heads, slots, 1), with dk = dv = dim.
+struct Params { heads: u32, key_heads: u32, dim: u32, slots: u32 }
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage,read> qkv: array<f32>;
+@group(0) @binding(2) var<storage,read> ab: array<f32>;
+@group(0) @binding(3) var<storage,read> aux: array<f32>;
+@group(0) @binding(4) var<storage,read_write> rec: array<f32>;
+@group(0) @binding(5) var<storage,read> y: array<f32>;
+@group(0) @binding(6) var<storage,read> z: array<f32>;
+@group(0) @binding(7) var<storage,read_write> out: array<f32>;
+var<workgroup> norms: array<vec2<f32>,128>;
+fn exp_neg(x: f32) -> f32 {
+  if (x <= -87.33654) { return 0.0; }
+  let n = i32(round(x * 1.4426950408889634));
+  let r = (x - f32(n) * 0.693359375) - f32(n) * -0.00021219444005469058;
+  var y = r * 0.0013888889 + 0.0083333338;
+  y = r * y + 0.0416666679;
+  y = r * y + 0.1666666716;
+  y = r * y + 0.5;
+  y = r * y + 1.0;
+  y = r * y + 1.0;
+  return bitcast<f32>(u32(n+127)<<23u)*y;
+}
+fn inv_sqrt(x: f32) -> f32 {
+  let bits = bitcast<u32>(x);
+  let exponent = i32(bits >> 23u)-127;
+  let significand = ((bits & 0x7fffffu) | 0x800000u) << (u32(exponent) & 1u);
+  let high = significand >> 9u;
+  let low = significand << 23u;
+  var root = 0u;
+  var rem = 0u;
+  for (var pair = 23i; pair >= 0; pair--) {
+    let shift = 2u*u32(pair);
+    let digit = (select(low,high,shift >= 32u) >> (shift & 31u)) & 3u;
+    rem = (rem << 2u) | digit;
+    let trial = (root << 2u) + 1u;
+    root <<= 1u;
+    if (rem >= trial) { rem -= trial; root++; }
+  }
+  if (rem > root) { root++; }
+  let result = (u32((exponent >> 1u)+127) << 23u) + (root-0x800000u);
+  return 1.0 / bitcast<f32>(result);
+}
+fn log_one_plus(x: f32) -> f32 {
+  let v = x/(2.0+x);
+  let square = v*v;
+  var poly = 1.0/17.0;
+  for (var i = 15; i >= 1; i -= 2) { poly = (1.0/f32(i)) + square*poly; }
+  return (2.0*v)*poly;
+}
+fn stage(x: f32) -> f32 {
+  let b = bitcast<u32>(x);
+  return bitcast<f32>(select(b, b & 0x80000000u, (b & 0x7f800000u) == 0u));
+}
+fn sigmoid(x: f32) -> f32 {
+  let e = exp_neg(-abs(x));
+  return select(1.0,e,x < 0.0) * (1.0/(1.0+e));
+}
+fn sum_norms(lane: u32, x: vec2<f32>) -> vec2<f32> {
+  norms[lane] = x*x;
+  workgroupBarrier();
+  for (var span = 64u; span > 0u; span /= 2u) {
+    if (lane < span) { norms[lane] += norms[lane+span]; }
+    workgroupBarrier();
+  }
+  return norms[0];
+}
+@compute @workgroup_size(128)
+fn pack(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+  let keys = p.key_heads*p.dim;
+  let base = wg.y*(2u*keys+p.heads*p.dim);
+  let pos = base+(wg.x/(p.heads/p.key_heads))*p.dim+lane;
+  var x = vec2<f32>(0.0);
+  if (lane < p.dim) { x = vec2<f32>(qkv[pos],qkv[pos+keys]); }
+  let sq = sum_norms(lane,x);
+  let dst = (wg.y*p.heads+wg.x)*(3u*p.dim+2u);
+  if (lane < p.dim) {
+    let q_scale = stage(stage(inv_sqrt(sq.x+1e-6))*stage(inv_sqrt(f32(p.dim))));
+    rec[dst+lane] = x.x * q_scale;
+    rec[dst+p.dim+lane] = x.y * stage(inv_sqrt(sq.y+1e-6));
+    rec[dst+2u*p.dim+lane] = qkv[base+2u*keys+wg.x*p.dim+lane];
+  }
+  if (lane == 0u) {
+    let b = wg.y*2u*p.heads+wg.x;
+    let u = ab[b+p.heads]+aux[p.heads+wg.x];
+    let softplus = max(u,0.0)+log_one_plus(exp_neg(-abs(u)));
+    rec[dst+3u*p.dim] = exp_neg(aux[wg.x]*softplus);
+    rec[dst+3u*p.dim+1u] = sigmoid(ab[b]);
+  }
+}
+@compute @workgroup_size(128)
+fn gate(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+  let pos = (wg.y*p.heads+wg.x)*p.dim+lane;
+  var x = 0.0;
+  if (lane < p.dim) { x = y[pos]; }
+  let sq = sum_norms(lane,vec2<f32>(x,0.0));
+  if (lane < p.dim) {
+    let normalized = x * stage(inv_sqrt(sq.x/f32(p.dim)+1e-6));
+    let silu = stage(z[pos]*stage(sigmoid(z[pos])));
+    out[pos] = stage(stage(normalized)*silu) * aux[2u*p.heads+lane];
+  }
+}
+"#;
+
+const WGSL_DN_TREE: &str = r#"
+// Post-normalization recurrence. Each lane owns one value column. Slot 0 is
+// the pending root. The inclusive mask selects exactly one topological path.
+struct Params { slots: u32, heads: u32, dk: u32, dv: u32 }
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage,read> masks: array<u32>;
+@group(0) @binding(2) var<storage,read> inputs: array<f32>;
+@group(0) @binding(3) var<storage,read_write> state: array<f32>;
+@group(0) @binding(4) var<storage,read_write> out: array<f32>;
+@group(0) @binding(5) var<storage,read> choice: array<u32>;
+
+fn scan(column: u32, head: u32, leaf: u32, committing: bool) {
+  if (column >= p.dv) { return; }
+  let state_base = head * p.dk * p.dv + column;
+  var s: array<f32,128>;
+  for (var i = 0u; i < p.dk; i++) { s[i] = state[state_base + i * p.dv]; }
+  let path = masks[leaf];
+  let stride = 2u * p.dk + p.dv + 2u;
+  for (var slot = 0u; slot <= leaf; slot++) {
+    if ((path & (1u << slot)) == 0u) { continue; }
+    let base = (slot * p.heads + head) * stride;
+    let key = base + p.dk;
+    let value = key + p.dk;
+    let decay = inputs[value + p.dv];
+    var prediction = 0.0;
+    for (var i = 0u; i < p.dk; i++) {
+      s[i] *= decay;
+      prediction += s[i] * inputs[key + i];
+    }
+    let error = (inputs[value + column] - prediction) * inputs[value + p.dv + 1u];
+    var y = 0.0;
+    for (var i = 0u; i < p.dk; i++) {
+      s[i] += inputs[key + i] * error;
+      y += s[i] * inputs[base + i];
+    }
+    if (slot == leaf && !committing) { out[(slot * p.heads + head) * p.dv + column] = y; }
+  }
+  if (committing) {
+    for (var i = 0u; i < p.dk; i++) { state[state_base + i * p.dv] = s[i]; }
+  }
+}
+@compute @workgroup_size(32)
+fn verify(@builtin(global_invocation_id) id: vec3<u32>) { scan(id.x, id.y, id.z, false); }
+@compute @workgroup_size(32)
+fn commit(@builtin(global_invocation_id) id: vec3<u32>) {
+  scan(id.x, id.y, choice[2u + choice[0]], true);
+}
+"#;
+
+const WGSL_GQA_TREE: &str = r#"
+// Dispatch (query_heads, slots, 1). Use the existing append pass before this
+// dispatch. K and Q already have RoPE applied at prefix + popcount(mask) - 1.
+struct Params {
+  prefix: u32, capacity: u32, q_heads: u32, kv_heads: u32,
+  dim: u32, int8: u32, base: u32, q_stride: u32,
+}
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage,read> masks: array<u32>;
+@group(0) @binding(2) var<storage,read> query: array<f32>;
+@group(0) @binding(3) var<storage,read> cache: array<u32>;
+@group(0) @binding(4) var<storage,read_write> out: array<f32>;
+var<workgroup> partial: array<f32,64>;
+fn exp_neg(x: f32) -> f32 {
+  if (x <= -87.33654) { return 0.0; }
+  let n = i32(round(x * 1.4426950408889634));
+  let r = (x - f32(n) * 0.693359375) - f32(n) * -0.00021219444005469058;
+  var y = r * 0.0013888889 + 0.0083333338;
+  y = r * y + 0.0416666679;
+  y = r * y + 0.1666666716;
+  y = r * y + 0.5;
+  y = r * y + 1.0;
+  y = r * y + 1.0;
+  return bitcast<f32>(u32(n+127)<<23u)*y;
+}
+fn channel(base: u32, d: u32, scale: f32) -> f32 {
+  if (p.int8 == 0u) { return unpack2x16float(cache[base+d/2u])[d%2u]; }
+  return f32(extractBits(bitcast<i32>(cache[base+d/4u]), (d%4u)*8u, 8u)) * scale;
+}
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+  let row = wg.y*p.q_heads + wg.x;
+  let words = select(p.dim/2u, p.dim/4u + 1u, p.int8 != 0u);
+  let head = wg.x / (p.q_heads/p.kv_heads);
+  var acc = vec4<f32>(0.0);
+  var peak = -3.40282346e38;
+  var mass = 0.0;
+  for (var t = 0u; t <= p.prefix + wg.y; t++) {
+    let visible = t < p.prefix || (masks[wg.y] & (1u << (t-p.prefix))) != 0u;
+    let kb = p.base + (head*p.capacity + t)*words;
+    let vb = kb + p.kv_heads*p.capacity*words;
+    var scales = vec2<f32>(1.0);
+    if (p.int8 != 0u) { scales = unpack2x16float(cache[kb+words-1u]); }
+    var dot_product = 0.0;
+    for (var d = lane; d < p.dim; d += 64u) {
+      dot_product += query[row*p.q_stride+d] * channel(kb, d, scales.x);
+    }
+    partial[lane] = dot_product;
+    workgroupBarrier();
+    for (var span = 32u; span != 0u; span /= 2u) {
+      if (lane < span) { partial[lane] += partial[lane+span]; }
+      workgroupBarrier();
+    }
+    let score = partial[0] * inverseSqrt(f32(p.dim));
+    if (visible) {
+      let high = max(peak, score);
+      let a = exp_neg(peak-high);
+      let b = exp_neg(score-high);
+      mass = mass*a + b;
+      for (var d = lane; d < p.dim; d += 64u) {
+        acc[d/64u] = acc[d/64u]*a + channel(vb, d, scales.y)*b;
+      }
+      peak = high;
+    }
+    workgroupBarrier();
+  }
+  for (var d = lane; d < p.dim; d += 64u) { out[row*p.dim+d] = acc[d/64u]*(1.0/mass); }
+}
+"#;
+
+const WGSL_KV_COMPACT: &str = r#"
+struct Params { prefix: u32, capacity: u32, words: u32, base: u32 }
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage,read> choice: array<u32>;
+@group(0) @binding(2) var<storage,read_write> cache: array<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+  if (id.x >= p.words) { return; }
+  let base = p.base + (id.y*p.capacity + p.prefix)*p.words + id.x;
+  for (var dst = 1u; dst <= choice[0]; dst++) {
+    let src = choice[2u+dst];
+    if (dst != src) { cache[base + dst*p.words] = cache[base + src*p.words]; }
+  }
+}
+"#;
+
+const WGSL_TOPK_BATCH: &str = r#"
+struct Params { vocab: u32, stride: u32, k: u32, offset: u32 }
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage,read> logits: array<f32>;
+@group(0) @binding(2) var<storage,read_write> output: array<u32>;
+var<workgroup> best: array<u32,64>;
+const END = 0xffffffffu;
+fn better(row: u32, a: u32, b: u32) -> bool {
+  if (a == END) { return false; }
+  if (b == END) { return true; }
+  let x = logits[row+a];
+  let y = logits[row+b];
+  return x > y || (x == y && a < b);
+}
+fn winner(row: u32, id: u32, lane: u32) -> u32 {
+  best[lane] = id;
+  workgroupBarrier();
+  for (var span = 32u; span > 0u; span /= 2u) {
+    if (lane < span && better(row, best[lane+span], best[lane])) { best[lane] = best[lane+span]; }
+    workgroupBarrier();
+  }
+  let result = workgroupUniformLoad(&best[0]);
+  return result;
+}
+@compute @workgroup_size(64)
+fn argmax_batch(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+  let row = p.offset + wg.x*p.stride;
+  var first = END;
+  for (var id = lane; id < p.vocab; id += 64u) {
+    if (better(row, id, first)) { first = id; }
+  }
+  let selected = winner(row, first, lane);
+  if (lane == 0u) { output[wg.x] = selected; }
+}
+@compute @workgroup_size(64)
+fn topk_batch(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+  let row = p.offset + wg.x*p.stride;
+  var ids: array<u32,64>;
+  var count = 0u;
+  for (var id = lane; id < p.vocab; id += 64u) {
+    if (count == p.k && !better(row, id, ids[count-1u])) { continue; }
+    var at = min(count, p.k-1u);
+    while (at > 0u) {
+      if (!better(row, id, ids[at-1u])) { break; }
+      ids[at] = ids[at-1u];
+      at--;
+    }
+    ids[at] = id;
+    count = min(p.k, count+1u);
+  }
+  var cursor = 0u;
+  for (var rank = 0u; rank < p.k; rank++) {
+    var front = END;
+    if (cursor < count) { front = ids[cursor]; }
+    let selected = winner(row, front, lane);
+    if (lane == 0u) {
+      let dst = 2u*(wg.x*p.k+rank);
+      output[dst] = selected;
+      output[dst+1u] = bitcast<u32>(logits[row+selected]);
+    }
+    if (front == selected) { cursor++; }
+  }
+}
+"#;
+
+const WGSL_ACCEPT_TREE: &str = r#"
+@group(0) @binding(0) var<uniform> slots: u32;
+@group(0) @binding(1) var<storage,read> parents: array<u32>;
+@group(0) @binding(2) var<storage,read> tokens: array<u32>;
+@group(0) @binding(3) var<storage,read> argmax: array<u32>;
+@group(0) @binding(4) var<storage,read_write> choice: array<u32>;
+@compute @workgroup_size(1)
+fn main() {
+  var leaf = 0u;
+  var accepted = 0u;
+  choice[2] = 0u;
+  for (var i = 1u; i < slots; i++) {
+    if (parents[i] == leaf && tokens[i] == argmax[leaf]) {
+      leaf = i;
+      accepted++;
+      choice[2u + accepted] = i;
+    }
+  }
+  choice[0] = accepted;
+  choice[1] = argmax[leaf];
+}
+"#;
+
+const WGSL_Q4_GEMV_SMALLM: &str = r#"
+struct Params {
+  rows: u32, cols: u32, weight_offset: u32, input_offset: u32,
+  output_offset: u32, residual: u32, tokens: u32, reserved: u32,
+}
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage,read> weights: array<u32>;
+@group(0) @binding(2) var<storage,read> input: array<f32>;
+@group(0) @binding(3) var<storage,read_write> output: array<f32>;
+var<workgroup> tile: array<u32,20>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+  let first = wg.x * 4u;
+  let row = first + lane / 16u;
+  let token = lane % 16u;
+  let blocks = p.cols / 32u;
+  var sum = 0.0;
+  for (var b = 0u; b < blocks; b++) {
+    if (lane < 20u && first + lane / 5u < p.rows) {
+      tile[lane] = weights[p.weight_offset + ((first + lane / 5u) * blocks + b) * 5u + lane % 5u];
+    }
+    workgroupBarrier();
+    if (row < p.rows && token < p.tokens) {
+      let base = (lane / 16u) * 5u;
+      let affine = unpack2x16float(tile[base + 4u]);
+      for (var c = 0u; c < 32u; c++) {
+        let nibble = extractBits(tile[base + c / 8u], (c % 8u) * 4u, 4u);
+        let w = f32(nibble) * affine.x + affine.y;
+        sum += w * input[p.input_offset + token * p.cols + b * 32u + c];
+      }
+    }
+    workgroupBarrier();
+  }
+  if (row < p.rows && token < p.tokens) {
+    let dst = p.output_offset + token * p.rows + row;
+    if (p.residual != 0u) { sum += output[dst]; }
+    output[dst] = sum;
+  }
+}
+"#;
 
 // ============================================================================
 // Exact CPU Reference Implementations (Compiled into WASM for Browser Verification)

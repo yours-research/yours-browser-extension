@@ -26,6 +26,18 @@ export const MODEL_PRESETS: ModelPreset[] = [
     notes: 'Primary Qwen3.5 hybrid baseline. 24 Gated DeltaNet + 8 Full Attention layers.',
   },
   {
+    id: 'jtaylorexe/pragma-exp004-gspo-rl',
+    label: 'Pragma EXP-004 GSPO-RL (v81920, -254 MiB)',
+    defaultDtype: 'q4f16',
+    supportedDtypes: ['q4f16', 'q4'],
+    estimatedWeightGB: {
+      q4f16: 2.2,
+      q4: 2.4,
+      fp16: 7.5,
+    },
+    notes: 'Promoted Qwen3.5-4B GSPO-RL bundle with pruned 81,920-token vocab (-254 MiB LM head VRAM vs stock).',
+  },
+  {
     id: 'onnx-community/gemma-4-E4B-it-qat-mobile-ONNX',
     label: 'Gemma 4 E4B QAT (Custom WGSL)',
     defaultDtype: 'q4f16',
@@ -275,7 +287,10 @@ export interface TelemetryState {
     alpha?: number;
     avgDraftLen?: number;
     skippedSteps?: number;
+    speedupMultiplier?: number;
   } | null;
+  baselineDecodeTokPerSec: number | null;
+  vramDeltaMb: number | null;
   computeTier: WgslComputeTier | null;
   allocatedKvCapacity: number;
   maxKvCapacity: number;
@@ -313,6 +328,8 @@ export const INITIAL_TELEMETRY_STATE: TelemetryState = {
   deviceLostReason: null,
   maxContextReached: 0,
   speculativeStats: null,
+  baselineDecodeTokPerSec: null,
+  vramDeltaMb: null,
   computeTier: null,
   allocatedKvCapacity: 0,
   maxKvCapacity: 0,
@@ -594,6 +611,20 @@ export interface SpecMicrobenchResult {
   ratioT5ToT1: number;
   ratioT8ToT1: number;
   gatePass: boolean;
+  tree?: {
+    t2Ms: number;
+    t3Ms: number;
+    t5Ms: number;
+    t8Ms: number;
+    t12Ms: number;
+    t16Ms: number;
+    t5RejectMs: number;
+    ratioT5ToT1: number;
+    ratioT8ToT1: number;
+    ratioT16ToT1: number;
+    rejectOverheadMs: number;
+    chainRejectOverheadMs: number;
+  };
   error?: string;
 }
 

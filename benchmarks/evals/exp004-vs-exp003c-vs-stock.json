@@ -1,0 +1,141 @@
+{
+  "timestampIso": "2026-11-26T23:28:40.081Z",
+  "runtimeErrors": [],
+  "bundleComparison": {
+    "stockVocab": 248320,
+    "exp003cVocab": 81920,
+    "exp004Vocab": 81920,
+    "stockSlab2Bytes": 397312000,
+    "exp003cSlab2Bytes": 131072000,
+    "exp004Slab2Bytes": 131072000,
+    "exp004VsStockSlab2MiB": -253.91,
+    "exp004VsStockDecodePct": 2.45,
+    "exp004VsExp003cDecodePct": -15.51
+  },
+  "stock": {
+    "label": "Stock Qwen3.5-4B (v248320)",
+    "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+    "computeTier": "tier1-f16-subgroups",
+    "coldLoadMs": 10106.2,
+    "estVramMb": 2567.36,
+    "vramDeltaMb": 0,
+    "allocatedKvCapacity": 33280,
+    "meanDecodeTokPerSec": 82.19,
+    "meanTtftMs": 138.1,
+    "direct": {
+      "passed": true,
+      "ttftMs": 246.5,
+      "decodeTokPerSec": 79.29,
+      "tau": 1.7692307692307692,
+      "speedupMultiplier": 1,
+      "avgFps": 144.05,
+      "jankPct": 0,
+      "leaks": 0
+    },
+    "thinking": {
+      "passed": true,
+      "ttftMs": 81.9,
+      "decodeTokPerSec": 83.78,
+      "reasoningChars": 411,
+      "tau": 1.75,
+      "avgFps": 144,
+      "jankPct": 0,
+      "leaks": 0
+    },
+    "tools": {
+      "passed": true,
+      "toolSteps": 4,
+      "ttftMs": 85.9,
+      "decodeTokPerSec": 83.51,
+      "tau": 1,
+      "avgFps": 144.13,
+      "jankPct": 0,
+      "leaks": 0,
+      "answerSample": "1050"
+    }
+  },
+  "exp003c": {
+    "label": "EXP-003c Tool-QAD (v81920)",
+    "modelId": "jtaylorexe/pragma-exp003c-tool-qad",
+    "computeTier": "tier1-f16-subgroups",
+    "coldLoadMs": 8474.6,
+    "estVramMb": 2313.47,
+    "vramDeltaMb": -254,
+    "allocatedKvCapacity": 33280,
+    "meanDecodeTokPerSec": 99.66,
+    "meanTtftMs": 85,
+    "direct": {
+      "passed": true,
+      "ttftMs": 89.8,
+      "decodeTokPerSec": 109.2,
+      "tau": 1,
+      "speedupMultiplier": null,
+      "avgFps": 144.01,
+      "jankPct": 0,
+      "leaks": 0
+    },
+    "thinking": {
+      "passed": true,
+      "ttftMs": 79.7,
+      "decodeTokPerSec": 109.99,
+      "reasoningChars": 217,
+      "tau": 2,
+      "avgFps": 144,
+      "jankPct": 0,
+      "leaks": 0
+    },
+    "tools": {
+      "passed": true,
+      "toolSteps": 4,
+      "ttftMs": 85.5,
+      "decodeTokPerSec": 79.78,
+      "tau": 1,
+      "avgFps": 144.06,
+      "jankPct": 0,
+      "leaks": 0,
+      "answerSample": "Alpha (415 req/s) + Beta (635 req/s) = 1050 req/s."
+    }
+  },
+  "exp004": {
+    "label": "EXP-004 GSPO-RL (v81920)",
+    "modelId": "jtaylorexe/pragma-exp004-gspo-rl",
+    "computeTier": "tier1-f16-subgroups",
+    "coldLoadMs": 13625.2,
+    "estVramMb": 2313.47,
+    "vramDeltaMb": -254,
+    "allocatedKvCapacity": 33280,
+    "meanDecodeTokPerSec": 84.2,
+    "meanTtftMs": 88.2,
+    "direct": {
+      "passed": true,
+      "ttftMs": 94,
+      "decodeTokPerSec": 80.74,
+      "tau": 1,
+      "speedupMultiplier": null,
+      "avgFps": 144.14,
+      "jankPct": 0,
+      "leaks": 0
+    },
+    "thinking": {
+      "passed": true,
+      "ttftMs": 84.7,
+      "decodeTokPerSec": 89.11,
+      "reasoningChars": 87,
+      "tau": 2,
+      "avgFps": 144.09,
+      "jankPct": 0,
+      "leaks": 0
+    },
+    "tools": {
+      "passed": true,
+      "toolSteps": 4,
+      "ttftMs": 86,
+      "decodeTokPerSec": 82.76,
+      "tau": 1,
+      "avgFps": 144,
+      "jankPct": 0,
+      "leaks": 0,
+      "answerSample": "1050 req/s"
+    }
+  }
+}

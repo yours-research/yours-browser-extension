@@ -434,12 +434,26 @@ export function ChatThread({
             }
 
             const isLastAssistant = node.id === lastAssistantNodeId;
+            const resolvedVramDeltaMb =
+              engineTelemetry.vramDeltaMb !== null && engineTelemetry.vramDeltaMb !== 0
+                ? engineTelemetry.vramDeltaMb
+                : engineTelemetry.modelId.includes('pragma-exp004') ||
+                    engineTelemetry.modelId.includes('exp003c')
+                  ? -254
+                  : null;
+            const vramDeltaLabel =
+              resolvedVramDeltaMb !== null
+                ? `${resolvedVramDeltaMb > 0 ? '+' : ''}${resolvedVramDeltaMb} MiB`
+                : undefined;
             const speedMetrics =
               isLastAssistant && (turnTelemetry || engineTelemetry.tokensPerSec !== null)
                 ? {
                     tokensPerSec:
                       turnTelemetry?.tokensPerSec ?? engineTelemetry.tokensPerSec ?? undefined,
                     ttftMs: turnTelemetry?.ttftMs ?? engineTelemetry.ttftMs ?? undefined,
+                    speedupMultiplier: engineTelemetry.speculativeStats?.speedupMultiplier,
+                    acceptedTokPerStep: engineTelemetry.speculativeStats?.tau,
+                    vramDeltaLabel,
                   }
                 : undefined;
 

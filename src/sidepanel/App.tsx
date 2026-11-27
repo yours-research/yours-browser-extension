@@ -2680,6 +2680,8 @@ export function App() {
           ttftMs: snap.telemetry.ttftMs,
           prefillTokPerSec: snap.telemetry.prefillTokPerSec,
           tokensPerSec: snap.telemetry.tokensPerSec,
+          baselineDecodeTokPerSec: snap.telemetry.baselineDecodeTokPerSec,
+          vramDeltaMb: snap.telemetry.vramDeltaMb,
           speculativeStats: snap.telemetry.speculativeStats,
           activeContextTokens: snap.telemetry.activeContextTokens,
           prefixReused: snap.telemetry.prefixReused,
@@ -3414,6 +3416,19 @@ export function App() {
                 ? `${engineSnapshot.telemetry.activeContextTokens}/${engineSnapshot.telemetry.allocatedKvCapacity} KV`
                 : undefined
             }
+            speedupLabel={engineSnapshot.telemetry.speculativeStats?.speedupMultiplier}
+            acceptedTokLabel={engineSnapshot.telemetry.speculativeStats?.tau}
+            vramDeltaLabel={(() => {
+              const delta =
+                engineSnapshot.telemetry.vramDeltaMb !== null &&
+                engineSnapshot.telemetry.vramDeltaMb !== 0
+                  ? engineSnapshot.telemetry.vramDeltaMb
+                  : engineSnapshot.telemetry.modelId.includes('pragma-exp004') ||
+                      engineSnapshot.telemetry.modelId.includes('exp003c')
+                    ? -254
+                    : null;
+              return delta !== null ? `${delta > 0 ? '+' : ''}${delta} MiB` : undefined;
+            })()}
             status={
               engineSnapshot.telemetry.status === 'error'
                 ? 'unsupported'

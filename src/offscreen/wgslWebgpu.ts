@@ -232,6 +232,7 @@ export async function createValidatedPipeline(
   label: string,
   code: string,
   layout: unknown,
+  entryPoint = 'main',
 ): Promise<unknown> {
   const mod = device.createShaderModule({ label, code });
   if (typeof mod.getCompilationInfo === 'function') {
@@ -247,7 +248,7 @@ export async function createValidatedPipeline(
     const pipeline = await device.createComputePipelineAsync({
       label,
       layout,
-      compute: { module: mod, entryPoint: 'main' },
+      compute: { module: mod, entryPoint },
     });
     const scopeErr = await device.popErrorScope?.();
     if (scopeErr) {

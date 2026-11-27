@@ -45,7 +45,13 @@ export interface WgslRuntimeEngine extends GpuPrefixSlotBackend {
   getComputeTier(): WgslComputeTier;
   getAllocatedKvCapacity(): number;
   getMaxSafeKvCapacity(): number;
-  getMemoryStats(): { estVramMb: number; kvCacheMb: number; deltaNetStateMb: number; weightMb: number };
+  getMemoryStats(): {
+    estVramMb: number;
+    kvCacheMb: number;
+    deltaNetStateMb: number;
+    weightMb: number;
+    vramDeltaMb?: number | null;
+  };
   setDisplayHz(hz: number): void;
   resetDecodeBurst(): void;
   resetState(): Promise<void>;
@@ -74,6 +80,20 @@ export interface WgslRuntimeEngine extends GpuPrefixSlotBackend {
     sampling: SamplingOptions,
     pacingMode?: GpuPacingMode,
   ): Promise<{ tokens: number[]; acceptedCount: number; draftedCount: number; gpuMs: number; breatherMs: number }>;
+  isTreeSpecSupported(): boolean;
+  decodeSpeculativeTreeStep?(
+    currentTokenId: number,
+    tree: { draftTokens: number[]; draftParents: number[]; ancestorMasks: number[]; depths: number[] },
+    sampling: SamplingOptions,
+    pacingMode?: GpuPacingMode,
+  ): Promise<{
+    tokens: number[];
+    acceptedSlotIds: number[];
+    acceptedCount: number;
+    draftedCount: number;
+    gpuMs: number;
+    breatherMs: number;
+  }>;
   dispose(): void;
 }
 
@@ -214,6 +234,10 @@ export class Gemma4ExtensionAdapter implements WgslRuntimeEngine {
 
   getMaxSafeKvCapacity(): number {
     return this.engine.getMaxContext();
+  }
+
+  isTreeSpecSupported(): boolean {
+    return false;
   }
 
   getMemoryStats(): { estVramMb: number; kvCacheMb: number; deltaNetStateMb: number; weightMb: number } {

@@ -24,6 +24,7 @@ import {
   getFullAttnQkvRows,
   partitionVocabRowsIntoSlabs,
   partitionWeightLayersIntoSlabs,
+  q4MatrixBytes,
   resolveModelArch,
   type ModelArchConfig,
   type TieredKvPlan,
@@ -62,9 +63,15 @@ const PREFILL_NUM_SPLITS = 16;
 const PREFILL_MAX_CHUNK = 128;
 export const MAX_SPEC_DRAFT = 7;
 const MAX_SPEC_TOKENS = 1 + MAX_SPEC_DRAFT;
+export const MAX_TREE_DRAFT = 15;
+export const MAX_TREE_TOKENS = 1 + MAX_TREE_DRAFT;
 const UNIFORM_MAX_SLOTS = 1024;
 const MAX_SNAPSHOT_BYTES = 512 * 1024 * 1024;
 const MAX_GPU_PREFIX_VRAM_BYTES = 512 * 1024 * 1024;
+
+function alignUp(value: number, alignment = 256): number {
+  return Math.ceil(value / alignment) * alignment;
+}
 const BUNDLED_MODEL_MISSING_MSG =
   'Bundled model files missing in models/qwen35-4b/. Run npm run bundle:model.';
 
@@ -113,6 +120,36 @@ interface DispatchStep {
   wx: number;
   wy: number;
   wz: number;
+  isStaticBindGroup?: boolean;
+}
+
+export interface TreeVerifyInput {
+  draftTokens: number[];
+  draftParents: number[];
+  ancestorMasks: number[];
+  depths: number[];
+}
+
+interface TreeVerifyFaPatchTarget {
+  qkUIdx: number;
+  gqa0UIdx: number;
+  gqaTreeUIdx: number;
+  kvCompactUIdx: number;
+}
+
+interface TreeVerifyGraphPlan {
+  M: number;
+  uniformBuf: GpuBufferLike;
+  dynCpu: ArrayBuffer;
+  dynU32: Uint32Array;
+  dynByteStart: number;
+  steps: DispatchStep[];
+  commitSteps: DispatchStep[];
+  faPatches: TreeVerifyFaPatchTarget[];
+  bgArgBatch1: unknown;
+  bgArgBatch2: unknown;
+  bgAcceptTree: unknown;
+  ownedBuffers: GpuBufferLike[];
 }
 
 interface VerifyFaPatchTarget {
@@ -257,6 +294,7 @@ export class WgslQwen35Engine {
   private allocatedKvCapacity = 33280;
   private maxSafeKvCapacity = 131584;
   private maxSeqCapacity = 33280;
+  private vramDeltaMb: number | null = null;
   private maxBufferSize = 0;
   private seqPos = 0;
   private auxLayout!: AuxLayout;
@@ -316,6 +354,39 @@ export class WgslQwen35Engine {
   private gemvBatchWidePipe: unknown = null;
   private gateUpSwigluBatchPipe: unknown = null;
   private usingDp4a = false;
+
+  // Phase E1 + E2 Deferred-Commit Tree Verification state
+  private treeVerifySupported = false;
+  private dnConvTreeBgl: unknown = null;
+  private dnIoBgl: unknown = null;
+  private dnTreeBgl: unknown = null;
+  private gqaTreeBgl: unknown = null;
+  private kvCompactBgl: unknown = null;
+  private acceptTreeBgl: unknown = null;
+  private dnConvTreeVerifyPipe: unknown = null;
+  private dnConvTreeCommitPipe: unknown = null;
+  private dnIoPackPipe: unknown = null;
+  private dnIoGatePipe: unknown = null;
+  private dnTreeVerifyPipe: unknown = null;
+  private dnTreeCommitPipe: unknown = null;
+  private gqaTreePipe: unknown = null;
+  private kvCompactPipe: unknown = null;
+  private acceptTreePipe: unknown = null;
+  private treeConvWStrideBytes = 0;
+  private treeDnAuxStrideBytes = 0;
+  private treeRecSlotFloats = 0;
+  private treeRecSlotStrideBytes = 0;
+  private treeConvWeightsBuf: GpuBufferLike | null = null;
+  private treeDnAuxBuf: GpuBufferLike | null = null;
+  private treeRawQkvBuf: GpuBufferLike | null = null;
+  private treeConvOutBuf: GpuBufferLike | null = null;
+  private treeRecInBuf: GpuBufferLike | null = null;
+  private treeRecOutBuf: GpuBufferLike | null = null;
+  private treeMasksBuf: GpuBufferLike | null = null;
+  private treeParentsBuf: GpuBufferLike | null = null;
+  private treeChoiceBuf: GpuBufferLike | null = null;
+  private treeStaging80B: GpuBufferLike | null = null;
+  private treeVerifyPlans = new Map<number, TreeVerifyGraphPlan>();
 
   // Retained bind group layouts for dynamic KV cache reallocation & verify plan cache
   private dynStorage4Bgl!: unknown;
@@ -416,6 +487,10 @@ export class WgslQwen35Engine {
     return this.maxSafeKvCapacity;
   }
 
+  isTreeSpecSupported(): boolean {
+    return this.treeVerifySupported;
+  }
+
   getArchConfig(): ModelArchConfig {
     return { ...this.arch, fullAttnLayers: [...this.arch.fullAttnLayers] };
   }
@@ -432,6 +507,7 @@ export class WgslQwen35Engine {
     allocatedKvMb: number;
     deltaNetStateMb: number;
     estVramMb: number;
+    vramDeltaMb: number | null;
   } {
     const rowBytes = this.kvRowU32s * 4;
     const kvActiveBytes = this.numFaLayers * 2 * this.arch.attnKvHeads * this.seqPos * rowBytes;
@@ -446,6 +522,7 @@ export class WgslQwen35Engine {
       allocatedKvMb,
       deltaNetStateMb,
       estVramMb: this.weightMb + kvCacheMb + deltaNetStateMb,
+      vramDeltaMb: this.vramDeltaMb,
     };
   }
 
@@ -626,6 +703,14 @@ export class WgslQwen35Engine {
           `LM head byte mismatch: planned ${totalVocabBytesPlanned} vs manifest ${manifest.slab2Bytes}.`,
         );
       }
+      if (this.arch.hiddenSize === 2560) {
+        const stockBaselineSlab2Bytes = q4MatrixBytes(248320, 2560);
+        this.vramDeltaMb = Math.round(
+          (manifest.slab2Bytes - stockBaselineSlab2Bytes) / (1024 * 1024),
+        );
+      } else {
+        this.vramDeltaMb = null;
+      }
       if (this.auxLayout.totalF32s * 4 !== manifest.auxBytes) {
         throw new Error(
           `Aux size mismatch: planned (${this.auxLayout.totalF32s * 4}) vs manifest (${manifest.auxBytes})`,
@@ -654,7 +739,7 @@ export class WgslQwen35Engine {
       this.auxBuf = this.track(
         device.createBuffer({
           size: manifest.auxBytes,
-          usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST,
+          usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST | GPU_USAGE.COPY_SRC,
         }),
       );
 
@@ -946,6 +1031,8 @@ export class WgslQwen35Engine {
             }
           }
 
+          await this.initTreeVerifyPipelines(device, wasm);
+
           await this.verifyRealKernels(
             device,
             dynStorage4Bgl,
@@ -1062,19 +1149,19 @@ export class WgslQwen35Engine {
       );
       this.verifyLogitsBuf = this.track(
         device.createBuffer({
-          size: MAX_SPEC_TOKENS * V * 4,
+          size: MAX_TREE_TOKENS * V * 4,
           usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC,
         }),
       );
       this.verifyTokOutBuf = this.track(
         device.createBuffer({
-          size: 32,
+          size: MAX_TREE_TOKENS * 4,
           usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC | GPU_USAGE.COPY_DST,
         }),
       );
       this.verifyAcceptOutBuf = this.track(
         device.createBuffer({
-          size: 64,
+          size: 80,
           usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC,
         }),
       );
@@ -1087,10 +1174,10 @@ export class WgslQwen35Engine {
 
       const argmaxWgCount = Math.ceil(V / 256);
       const partValBuf = this.track(
-        device.createBuffer({ size: MAX_SPEC_TOKENS * argmaxWgCount * 4, usage: GPU_USAGE.STORAGE }),
+        device.createBuffer({ size: MAX_TREE_TOKENS * argmaxWgCount * 4, usage: GPU_USAGE.STORAGE }),
       );
       const partIdxBuf = this.track(
-        device.createBuffer({ size: MAX_SPEC_TOKENS * argmaxWgCount * 4, usage: GPU_USAGE.STORAGE }),
+        device.createBuffer({ size: MAX_TREE_TOKENS * argmaxWgCount * 4, usage: GPU_USAGE.STORAGE }),
       );
       this.partValBuf = partValBuf;
       this.partIdxBuf = partIdxBuf;
@@ -1317,6 +1404,7 @@ export class WgslQwen35Engine {
       }
 
       this.buildStaticDecodePlan();
+      await this.initTreeVerifyBuffers(device, dnLayerAllocCount);
       this.weightMb = totalBundleBytes / (1024 * 1024);
 
       await this.resetState();
@@ -1357,6 +1445,16 @@ export class WgslQwen35Engine {
       }
     }
     this.verifyPlans.clear();
+    for (const plan of this.treeVerifyPlans.values()) {
+      for (const buf of plan.ownedBuffers) {
+        try {
+          buf.destroy();
+        } catch {
+          // Ignore already destroyed buffers
+        }
+      }
+    }
+    this.treeVerifyPlans.clear();
   }
 
   private rebuildKvBindGroups(): void {
@@ -1410,10 +1508,10 @@ export class WgslQwen35Engine {
     if (!this.device || !this.wasm) {
       throw new Error('WGSL engine not loaded.');
     }
-    if (neededSeqLen + 8 <= this.allocatedKvCapacity) {
+    if (neededSeqLen + MAX_TREE_TOKENS <= this.allocatedKvCapacity) {
       return;
     }
-    if (neededSeqLen + 8 > this.maxSafeKvCapacity) {
+    if (neededSeqLen + MAX_TREE_TOKENS > this.maxSafeKvCapacity) {
       throw new Error(
         `Context overflow: needed=${neededSeqLen + 8} exceeds maxSafeKvCapacity=${this.maxSafeKvCapacity}.`,
       );
@@ -3040,6 +3138,920 @@ export class WgslQwen35Engine {
       tokens: predicted.slice(0, acceptedCount + 1),
       acceptedCount,
       draftedCount: draftTokens.length,
+      gpuMs,
+      breatherMs,
+    };
+  }
+
+  private async initTreeVerifyPipelines(device: GpuDeviceLike, wasm: WasmEngineExports): Promise<void> {
+    try {
+      this.dnConvTreeBgl = device.createBindGroupLayout({
+        entries: [
+          { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform' } },
+          { binding: 1, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 2, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 3, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 4, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+          { binding: 5, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+          { binding: 6, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+        ],
+      });
+      this.dnIoBgl = device.createBindGroupLayout({
+        entries: [
+          { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform' } },
+          { binding: 1, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 2, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 3, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 4, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+          { binding: 5, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 6, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 7, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+        ],
+      });
+      this.dnTreeBgl = device.createBindGroupLayout({
+        entries: [
+          { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform' } },
+          { binding: 1, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 2, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 3, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+          { binding: 4, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+          { binding: 5, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+        ],
+      });
+      this.gqaTreeBgl = device.createBindGroupLayout({
+        entries: [
+          { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true } },
+          { binding: 1, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 2, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 3, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 4, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+        ],
+      });
+      this.kvCompactBgl = device.createBindGroupLayout({
+        entries: [
+          { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true } },
+          { binding: 1, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 2, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+        ],
+      });
+      this.acceptTreeBgl = device.createBindGroupLayout({
+        entries: [
+          { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform' } },
+          { binding: 1, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 2, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 3, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 4, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+        ],
+      });
+
+      const dnConvTreeLayout = device.createPipelineLayout({ bindGroupLayouts: [this.dnConvTreeBgl] });
+      const dnIoLayout = device.createPipelineLayout({ bindGroupLayouts: [this.dnIoBgl] });
+      const dnTreeLayout = device.createPipelineLayout({ bindGroupLayouts: [this.dnTreeBgl] });
+      const gqaTreeLayout = device.createPipelineLayout({ bindGroupLayouts: [this.gqaTreeBgl] });
+      const kvCompactLayout = device.createPipelineLayout({ bindGroupLayouts: [this.kvCompactBgl] });
+      const acceptTreeLayout = device.createPipelineLayout({ bindGroupLayouts: [this.acceptTreeBgl] });
+
+      const dnConvSrc = getWgslShaderSource(wasm, 46);
+      const dnIoSrc = getWgslShaderSource(wasm, 47);
+      const dnTreeSrc = getWgslShaderSource(wasm, 48);
+      const gqaTreeSrc = getWgslShaderSource(wasm, 49);
+      const kvCompactSrc = getWgslShaderSource(wasm, 50);
+      const acceptTreeSrc = getWgslShaderSource(wasm, 52);
+
+      [
+        this.dnConvTreeVerifyPipe,
+        this.dnConvTreeCommitPipe,
+        this.dnIoPackPipe,
+        this.dnIoGatePipe,
+        this.dnTreeVerifyPipe,
+        this.dnTreeCommitPipe,
+        this.gqaTreePipe,
+        this.kvCompactPipe,
+        this.acceptTreePipe,
+      ] = await Promise.all([
+        createValidatedPipeline(device, 'e1-dn-conv-tree-verify', dnConvSrc, dnConvTreeLayout, 'verify'),
+        createValidatedPipeline(device, 'e1-dn-conv-tree-commit', dnConvSrc, dnConvTreeLayout, 'commit'),
+        createValidatedPipeline(device, 'e1-dn-io-pack', dnIoSrc, dnIoLayout, 'pack'),
+        createValidatedPipeline(device, 'e1-dn-io-gate', dnIoSrc, dnIoLayout, 'gate'),
+        createValidatedPipeline(device, 'e1-dn-tree-verify', dnTreeSrc, dnTreeLayout, 'verify'),
+        createValidatedPipeline(device, 'e1-dn-tree-commit', dnTreeSrc, dnTreeLayout, 'commit'),
+        createValidatedPipeline(device, 'e2-gqa-tree', gqaTreeSrc, gqaTreeLayout, 'main'),
+        createValidatedPipeline(device, 'e2-kv-compact', kvCompactSrc, kvCompactLayout, 'main'),
+        createValidatedPipeline(device, 'e2-accept-tree', acceptTreeSrc, acceptTreeLayout, 'main'),
+      ]);
+      this.treeVerifySupported = true;
+    } catch (err) {
+      console.warn('[WGSL] E1/E2 tree pipeline init fell back to E0 chain verify:', err);
+      this.treeVerifySupported = false;
+    }
+  }
+
+  private async initTreeVerifyBuffers(device: GpuDeviceLike, dnLayerCount: number): Promise<void> {
+    if (!this.treeVerifySupported || this.arch.dnConvKernel !== 4 || this.arch.dnHeadDim > 128) {
+      this.treeVerifySupported = false;
+      return;
+    }
+    const convWBytes = this.dnConvDim * this.arch.dnConvKernel * 4;
+    const dnAuxFloats = this.arch.dnValHeads * 2 + this.arch.dnHeadDim;
+    const dnAuxBytes = dnAuxFloats * 4;
+    this.treeConvWStrideBytes = alignUp(convWBytes, 256);
+    this.treeDnAuxStrideBytes = alignUp(dnAuxBytes, 256);
+    this.treeRecSlotFloats = this.arch.dnValHeads * (2 * this.arch.dnHeadDim + this.arch.dnHeadDim + 2);
+    this.treeRecSlotStrideBytes = alignUp(this.treeRecSlotFloats * 4, 256);
+    if (this.treeRecSlotStrideBytes !== this.treeRecSlotFloats * 4) {
+      // DN_TREE expects packed slots [slot, head, 3*dim+2] with no per-slot gap
+      this.treeVerifySupported = false;
+      return;
+    }
+
+    this.treeConvWeightsBuf = this.track(
+      device.createBuffer({
+        size: dnLayerCount * this.treeConvWStrideBytes,
+        usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST,
+      }),
+    );
+    this.treeDnAuxBuf = this.track(
+      device.createBuffer({
+        size: dnLayerCount * this.treeDnAuxStrideBytes,
+        usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST,
+      }),
+    );
+    this.treeRawQkvBuf = this.track(
+      device.createBuffer({
+        size: dnLayerCount * MAX_TREE_TOKENS * this.dnConvDim * 4,
+        usage: GPU_USAGE.STORAGE,
+      }),
+    );
+    this.treeConvOutBuf = this.track(
+      device.createBuffer({
+        size: MAX_TREE_TOKENS * this.dnConvDim * 4,
+        usage: GPU_USAGE.STORAGE,
+      }),
+    );
+    this.treeRecInBuf = this.track(
+      device.createBuffer({
+        size: dnLayerCount * MAX_TREE_TOKENS * this.treeRecSlotStrideBytes,
+        usage: GPU_USAGE.STORAGE,
+      }),
+    );
+    this.treeRecOutBuf = this.track(
+      device.createBuffer({
+        size: MAX_TREE_TOKENS * this.dnValDim * 4,
+        usage: GPU_USAGE.STORAGE,
+      }),
+    );
+    this.treeMasksBuf = this.track(
+      device.createBuffer({
+        size: MAX_TREE_TOKENS * 4,
+        usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST,
+      }),
+    );
+    this.treeParentsBuf = this.track(
+      device.createBuffer({
+        size: MAX_TREE_TOKENS * 4,
+        usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST,
+      }),
+    );
+    this.treeChoiceBuf = this.track(
+      device.createBuffer({
+        size: 80,
+        usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_SRC,
+      }),
+    );
+    this.treeStaging80B = this.track(
+      device.createBuffer({
+        size: 80,
+        usage: GPU_USAGE.MAP_READ | GPU_USAGE.COPY_DST,
+      }),
+    );
+
+    const enc = device.createCommandEncoder();
+    for (let l = 0; l < this.arch.numLayers; l++) {
+      const lo = this.layerOffsets[l]!;
+      if (lo.isFullAttn) continue;
+      const la = this.auxLayout.layers[l]!;
+      enc.copyBufferToBuffer(
+        this.auxBuf,
+        la.convWOff * 4,
+        this.treeConvWeightsBuf,
+        lo.dnIdx * this.treeConvWStrideBytes,
+        convWBytes,
+      );
+      enc.copyBufferToBuffer(
+        this.auxBuf,
+        la.dnAuxOff * 4,
+        this.treeDnAuxBuf,
+        lo.dnIdx * this.treeDnAuxStrideBytes,
+        dnAuxBytes,
+      );
+    }
+    device.queue.submit([enc.finish()]);
+    await device.queue.onSubmittedWorkDone();
+  }
+
+  private buildOrGetTreeVerifyPlan(M: number): TreeVerifyGraphPlan {
+    const existing = this.treeVerifyPlans.get(M);
+    if (existing) {
+      return existing;
+    }
+    const device = this.device!;
+    const H = this.arch.hiddenSize;
+    const I = this.arch.intermediateSize;
+    const L = this.arch.numLayers;
+    const V = this.arch.vocabSize;
+    const argmaxWgCount = Math.ceil(V / 256);
+    const batchWx = (rows: number) => Math.ceil(rows / 16);
+    const widePipe = this.gemvBatchWidePipe ?? this.gemvBatchPipe;
+    const wideWx = (rows: number) =>
+      this.gemvBatchWidePipe ? Math.ceil(rows / 8) : Math.ceil(rows / 16);
+    const convTreeWgs = Math.ceil(this.dnConvDim / 64);
+    const dnColWgs = Math.ceil(this.arch.dnHeadDim / 32);
+    const kvCompactWgsX = Math.ceil(this.kvRowU32s / 64);
+    const embedBlocksY = Math.ceil(H / 32);
+    const attnQDim = this.arch.attnQHeads * this.arch.attnHeadDim * 2;
+    const attnKvDim = this.arch.attnKvHeads * this.arch.attnHeadDim;
+    const attnODim = this.arch.attnQHeads * this.arch.attnHeadDim;
+    const qkRopeHeadCount = this.arch.attnQHeads + this.arch.attnKvHeads;
+    const qkRopePacked = this.packQkRopeParam();
+
+    const faCount = this.fa0Count + this.fa1Count;
+    const dynSlotCount = Math.max(1, faCount * 4);
+    const dynCpu = new ArrayBuffer(dynSlotCount * 256);
+    const dynU32 = new Uint32Array(dynCpu);
+
+    const tempTable = new ArrayBuffer(UNIFORM_MAX_SLOTS * 256);
+    const u32View = new Uint32Array(tempTable);
+    const f32View = new Float32Array(tempTable);
+    let nextSlot = dynSlotCount;
+
+    const allocStaticSlot = (
+      vals: [number, number, number, number, number, number, number, number],
+      isFloat5 = false,
+    ): number => {
+      if (nextSlot >= UNIFORM_MAX_SLOTS) {
+        throw new Error(`Tree verify plan exceeded UNIFORM_MAX_SLOTS (${UNIFORM_MAX_SLOTS})`);
+      }
+      const slot = nextSlot++;
+      const byteOff = slot * 256;
+      const uIdx = byteOff / 4;
+      for (let i = 0; i < 8; i++) {
+        if (isFloat5 && i === 5) f32View[uIdx + i] = vals[i];
+        else u32View[uIdx + i] = vals[i];
+      }
+      return byteOff;
+    };
+
+    const ownedBuffers: GpuBufferLike[] = [];
+    const uniformBuf = device.createBuffer({
+      size: UNIFORM_MAX_SLOTS * 256,
+      usage: GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST,
+    });
+    ownedBuffers.push(uniformBuf);
+
+    const makeDyn4 = (b1: GpuBufferLike, b2: GpuBufferLike, b3: GpuBufferLike) =>
+      device.createBindGroup({
+        layout: this.dynStorage4Bgl,
+        entries: [
+          { binding: 0, resource: { buffer: uniformBuf, size: 32 } },
+          { binding: 1, resource: { buffer: b1 } },
+          { binding: 2, resource: { buffer: b2 } },
+          { binding: 3, resource: { buffer: b3 } },
+        ],
+      });
+    const makeDynRw = (b1: GpuBufferLike, b2: GpuBufferLike, b3: GpuBufferLike) =>
+      device.createBindGroup({
+        layout: this.dynRwStorageBgl,
+        entries: [
+          { binding: 0, resource: { buffer: uniformBuf, size: 32 } },
+          { binding: 1, resource: { buffer: b1 } },
+          { binding: 2, resource: { buffer: b2 } },
+          { binding: 3, resource: { buffer: b3 } },
+        ],
+      });
+
+    const tBgEmbedPerSlice = this.lmHeadSlabs.map((slab) =>
+      makeDyn4(this.tokenIdsBuf, slab, this.hiddenBuf),
+    );
+    const tBgRmsNorm = makeDyn4(this.auxBuf, this.hiddenBuf, this.normBuf);
+    const tBgSwiGlu = makeDyn4(this.auxBuf, this.workBuf, this.attnOutBuf);
+    const tBgWSlabNormToTreeQkv = this.wSlabs.map((slab) =>
+      makeDyn4(slab, this.normBuf, this.treeRawQkvBuf!),
+    );
+    const tBgWSlabNormToWork = this.wSlabs.map((slab) => makeDyn4(slab, this.normBuf, this.workBuf));
+    const tBgWSlabNormToAttn = this.wSlabs.map((slab) => makeDyn4(slab, this.normBuf, this.attnOutBuf));
+    const tBgWSlabAttnToHidden = this.wSlabs.map((slab) => makeDyn4(slab, this.attnOutBuf, this.hiddenBuf));
+    const tBgLmHead = this.lmHeadSlabs.map((slab) => makeDyn4(slab, this.normBuf, this.verifyLogitsBuf));
+    const tBgGqaReduce = makeDyn4(this.workBuf, this.gqaSplitBuf, this.attnOutBuf);
+    const tBgQkRope = device.createBindGroup({
+      layout: this.qkRopeBgl,
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuf, size: 32 } },
+        { binding: 1, resource: { buffer: this.auxBuf } },
+        { binding: 2, resource: { buffer: this.workBuf } },
+        { binding: 3, resource: { buffer: this.tokenIdsBuf } },
+      ],
+    });
+    const tBgGqaPrefill0 = makeDynRw(this.workBuf, this.kvSlab0, this.gqaSplitBuf);
+    const tBgGqaPrefill1 = makeDynRw(this.workBuf, this.kvSlab1, this.gqaSplitBuf);
+
+    const tBgGqaTree0 = device.createBindGroup({
+      layout: this.gqaTreeBgl,
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuf, size: 32 } },
+        { binding: 1, resource: { buffer: this.treeMasksBuf! } },
+        { binding: 2, resource: { buffer: this.workBuf } },
+        { binding: 3, resource: { buffer: this.kvSlab0 } },
+        { binding: 4, resource: { buffer: this.gqaSplitBuf } },
+      ],
+    });
+    const tBgGqaTree1 = device.createBindGroup({
+      layout: this.gqaTreeBgl,
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuf, size: 32 } },
+        { binding: 1, resource: { buffer: this.treeMasksBuf! } },
+        { binding: 2, resource: { buffer: this.workBuf } },
+        { binding: 3, resource: { buffer: this.kvSlab1 } },
+        { binding: 4, resource: { buffer: this.gqaSplitBuf } },
+      ],
+    });
+    const tBgKvCompact0 = device.createBindGroup({
+      layout: this.kvCompactBgl,
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuf, size: 16 } },
+        { binding: 1, resource: { buffer: this.treeChoiceBuf! } },
+        { binding: 2, resource: { buffer: this.kvSlab0 } },
+      ],
+    });
+    const tBgKvCompact1 = device.createBindGroup({
+      layout: this.kvCompactBgl,
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuf, size: 16 } },
+        { binding: 1, resource: { buffer: this.treeChoiceBuf! } },
+        { binding: 2, resource: { buffer: this.kvSlab1 } },
+      ],
+    });
+
+    const uDnConvTreeBuf = device.createBuffer({ size: 16, usage: GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST });
+    const uDnIoBuf = device.createBuffer({ size: 16, usage: GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST });
+    const uDnTreeBuf = device.createBuffer({ size: 16, usage: GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST });
+    const uArgBatchBuf = device.createBuffer({ size: 16, usage: GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST });
+    const uAcceptTreeBuf = device.createBuffer({ size: 16, usage: GPU_USAGE.UNIFORM | GPU_USAGE.COPY_DST });
+    ownedBuffers.push(uDnConvTreeBuf, uDnIoBuf, uDnTreeBuf, uArgBatchBuf, uAcceptTreeBuf);
+
+    device.queue.writeBuffer(uDnConvTreeBuf, 0, new Uint32Array([this.dnConvDim, M, 0, 0]));
+    device.queue.writeBuffer(
+      uDnIoBuf,
+      0,
+      new Uint32Array([this.arch.dnValHeads, this.arch.dnKeyHeads, this.arch.dnHeadDim, M]),
+    );
+    device.queue.writeBuffer(
+      uDnTreeBuf,
+      0,
+      new Uint32Array([M, this.arch.dnValHeads, this.arch.dnHeadDim, this.arch.dnHeadDim]),
+    );
+    device.queue.writeBuffer(uArgBatchBuf, 0, new Uint32Array([V, M, argmaxWgCount, 0]));
+    device.queue.writeBuffer(uAcceptTreeBuf, 0, new Uint32Array([M, 0, 0, 0]));
+
+    const bgArgBatch1 = device.createBindGroup({
+      layout: this.staticBgl,
+      entries: [
+        { binding: 0, resource: { buffer: uArgBatchBuf } },
+        { binding: 1, resource: { buffer: this.verifyLogitsBuf } },
+        { binding: 2, resource: { buffer: this.partValBuf } },
+        { binding: 3, resource: { buffer: this.partIdxBuf } },
+      ],
+    });
+    const bgArgBatch2 = device.createBindGroup({
+      layout: this.staticRead2Bgl,
+      entries: [
+        { binding: 0, resource: { buffer: uArgBatchBuf } },
+        { binding: 1, resource: { buffer: this.partValBuf } },
+        { binding: 2, resource: { buffer: this.partIdxBuf } },
+        { binding: 3, resource: { buffer: this.verifyTokOutBuf } },
+      ],
+    });
+    const bgAcceptTree = device.createBindGroup({
+      layout: this.acceptTreeBgl,
+      entries: [
+        { binding: 0, resource: { buffer: uAcceptTreeBuf } },
+        { binding: 1, resource: { buffer: this.treeParentsBuf! } },
+        { binding: 2, resource: { buffer: this.tokenIdsBuf } },
+        { binding: 3, resource: { buffer: this.verifyTokOutBuf } },
+        { binding: 4, resource: { buffer: this.treeChoiceBuf! } },
+      ],
+    });
+
+    const steps: DispatchStep[] = [];
+    const dnCommitSteps: DispatchStep[] = [];
+    const kvCompactSteps: DispatchStep[] = [];
+    const faPatches: TreeVerifyFaPatchTarget[] = [];
+
+    const pushStatic = (
+      pipeline: unknown,
+      bindGroup: unknown,
+      vals: [number, number, number, number, number, number, number, number],
+      wx: number,
+      wy = 1,
+      wz = 1,
+      isFloat5 = false,
+    ) => {
+      steps.push({
+        pipeline,
+        bindGroup,
+        uniformByteOffset: allocStaticSlot(vals, isFloat5),
+        wx,
+        wy,
+        wz,
+      });
+    };
+
+    const pushQ4Batch = (
+      pipeline: unknown,
+      wx: number,
+      bindGroup: unknown,
+      rows: number,
+      cols: number,
+      wOff: number,
+      inOff: number,
+      outOff: number,
+      addRes: number,
+      outStride: number,
+    ) => {
+      const c0 = Math.min(8, M);
+      pushStatic(pipeline, bindGroup, [rows, cols, wOff, inOff, outOff, addRes, c0, outStride], wx);
+      if (M > 8) {
+        const c1 = M - 8;
+        pushStatic(
+          pipeline,
+          bindGroup,
+          [rows, cols, wOff, inOff + 8 * cols, outOff + 8 * outStride, addRes, c1, outStride],
+          wx,
+        );
+      }
+    };
+
+    for (let sIdx = 0; sIdx < this.vocabSlices.length; sIdx++) {
+      const slice = this.vocabSlices[sIdx]!;
+      const rowEnd = this.vocabSlices.length === 1 ? 0 : slice.endRow;
+      pushStatic(this.embedPipe, tBgEmbedPerSlice[sIdx]!, [M, H, slice.startRow, rowEnd, 0, 0, 0, 0], M, embedBlocksY);
+    }
+
+    const dnAuxByteLen = (this.arch.dnValHeads * 2 + this.arch.dnHeadDim) * 4;
+    const dnConvWByteLen = this.dnConvDim * this.arch.dnConvKernel * 4;
+    const dnRawByteLen = M * this.dnConvDim * 4;
+    const dnRecLayerBytes = M * this.treeRecSlotStrideBytes;
+
+    for (let l = 0; l < L; l++) {
+      const la = this.auxLayout.layers[l]!;
+      const lo = this.layerOffsets[l]!;
+      const bgNormToWork = tBgWSlabNormToWork[lo.slabIdx]!;
+      const bgNormToAttn = tBgWSlabNormToAttn[lo.slabIdx]!;
+      const bgAttnToHidden = tBgWSlabAttnToHidden[lo.slabIdx]!;
+
+      if (!lo.isFullAttn) {
+        const [wQkv, wZ, wAb, wOut, wGate, wUp, wDown] = lo.w;
+        pushStatic(this.rmsNormPipe, tBgRmsNorm, [M, H, la.inputNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
+        pushQ4Batch(
+          this.gemvBatchPipe,
+          batchWx(this.dnConvDim),
+          tBgWSlabNormToTreeQkv[lo.slabIdx]!,
+          this.dnConvDim,
+          H,
+          wQkv,
+          0,
+          lo.dnIdx * M * this.dnConvDim,
+          0,
+          this.dnConvDim,
+        );
+        pushQ4Batch(this.gemvBatchPipe, batchWx(this.dnValDim), bgNormToWork, this.dnValDim, H, wZ, 0, 0, 0, this.dnValDim);
+        pushQ4Batch(
+          this.gemvBatchPipe,
+          batchWx(this.arch.dnValHeads * 2),
+          bgNormToWork,
+          this.arch.dnValHeads * 2,
+          H,
+          wAb,
+          0,
+          M * this.dnValDim,
+          0,
+          this.arch.dnValHeads * 2,
+        );
+
+        const bgDnConvTree = device.createBindGroup({
+          layout: this.dnConvTreeBgl,
+          entries: [
+            { binding: 0, resource: { buffer: uDnConvTreeBuf } },
+            { binding: 1, resource: { buffer: this.treeMasksBuf! } },
+            {
+              binding: 2,
+              resource: { buffer: this.treeRawQkvBuf!, offset: lo.dnIdx * dnRawByteLen, size: dnRawByteLen },
+            },
+            {
+              binding: 3,
+              resource: {
+                buffer: this.treeConvWeightsBuf!,
+                offset: lo.dnIdx * this.treeConvWStrideBytes,
+                size: dnConvWByteLen,
+              },
+            },
+            {
+              binding: 4,
+              resource: { buffer: this.dnConvBuf, offset: lo.dnIdx * this.dnConvSingleBytes, size: this.dnConvSingleBytes },
+            },
+            { binding: 5, resource: { buffer: this.treeConvOutBuf!, offset: 0, size: dnRawByteLen } },
+            { binding: 6, resource: { buffer: this.treeChoiceBuf! } },
+          ],
+        });
+        const bgDnIo = device.createBindGroup({
+          layout: this.dnIoBgl,
+          entries: [
+            { binding: 0, resource: { buffer: uDnIoBuf } },
+            { binding: 1, resource: { buffer: this.treeConvOutBuf!, offset: 0, size: dnRawByteLen } },
+            {
+              binding: 2,
+              resource: {
+                buffer: this.workBuf,
+                offset: M * this.dnValDim * 4,
+                size: M * this.arch.dnValHeads * 2 * 4,
+              },
+            },
+            {
+              binding: 3,
+              resource: {
+                buffer: this.treeDnAuxBuf!,
+                offset: lo.dnIdx * this.treeDnAuxStrideBytes,
+                size: dnAuxByteLen,
+              },
+            },
+            {
+              binding: 4,
+              resource: { buffer: this.treeRecInBuf!, offset: lo.dnIdx * dnRecLayerBytes, size: dnRecLayerBytes },
+            },
+            { binding: 5, resource: { buffer: this.treeRecOutBuf!, offset: 0, size: M * this.dnValDim * 4 } },
+            { binding: 6, resource: { buffer: this.workBuf, offset: 0, size: M * this.dnValDim * 4 } },
+            { binding: 7, resource: { buffer: this.attnOutBuf, offset: 0, size: M * this.dnValDim * 4 } },
+          ],
+        });
+        const bgDnTree = device.createBindGroup({
+          layout: this.dnTreeBgl,
+          entries: [
+            { binding: 0, resource: { buffer: uDnTreeBuf } },
+            { binding: 1, resource: { buffer: this.treeMasksBuf! } },
+            {
+              binding: 2,
+              resource: { buffer: this.treeRecInBuf!, offset: lo.dnIdx * dnRecLayerBytes, size: dnRecLayerBytes },
+            },
+            {
+              binding: 3,
+              resource: { buffer: this.dnStateBuf, offset: lo.dnIdx * this.dnSingleBytes, size: this.dnSingleBytes },
+            },
+            { binding: 4, resource: { buffer: this.treeRecOutBuf!, offset: 0, size: M * this.dnValDim * 4 } },
+            { binding: 5, resource: { buffer: this.treeChoiceBuf! } },
+          ],
+        });
+
+        steps.push(
+          {
+            pipeline: this.dnConvTreeVerifyPipe,
+            bindGroup: bgDnConvTree,
+            uniformByteOffset: 0,
+            wx: convTreeWgs,
+            wy: M,
+            wz: 1,
+            isStaticBindGroup: true,
+          },
+          {
+            pipeline: this.dnIoPackPipe,
+            bindGroup: bgDnIo,
+            uniformByteOffset: 0,
+            wx: this.arch.dnValHeads,
+            wy: M,
+            wz: 1,
+            isStaticBindGroup: true,
+          },
+          {
+            pipeline: this.dnTreeVerifyPipe,
+            bindGroup: bgDnTree,
+            uniformByteOffset: 0,
+            wx: dnColWgs,
+            wy: this.arch.dnValHeads,
+            wz: M,
+            isStaticBindGroup: true,
+          },
+          {
+            pipeline: this.dnIoGatePipe,
+            bindGroup: bgDnIo,
+            uniformByteOffset: 0,
+            wx: this.arch.dnValHeads,
+            wy: M,
+            wz: 1,
+            isStaticBindGroup: true,
+          },
+        );
+        dnCommitSteps.push(
+          {
+            pipeline: this.dnTreeCommitPipe,
+            bindGroup: bgDnTree,
+            uniformByteOffset: 0,
+            wx: dnColWgs,
+            wy: this.arch.dnValHeads,
+            wz: 1,
+            isStaticBindGroup: true,
+          },
+          {
+            pipeline: this.dnConvTreeCommitPipe,
+            bindGroup: bgDnConvTree,
+            uniformByteOffset: 0,
+            wx: convTreeWgs,
+            wy: 1,
+            wz: 1,
+            isStaticBindGroup: true,
+          },
+        );
+
+        pushQ4Batch(widePipe, wideWx(H), bgAttnToHidden, H, this.dnValDim, wOut, 0, 0, 1, H);
+        pushStatic(this.rmsNormPipe, tBgRmsNorm, [M, H, la.postNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
+        if (this.gateUpSwigluBatchPipe) {
+          pushQ4Batch(this.gateUpSwigluBatchPipe, Math.ceil(I / 8), bgNormToAttn, I, H, wGate, 0, 0, 0, wUp);
+          // For gate+up batch v2, second arg in slot idx 7 is wUp (outOffset advances by 8*I for M>8)
+          if (M > 8) {
+            const c1Step = steps[steps.length - 1]!;
+            const uIdx = c1Step.uniformByteOffset / 4;
+            u32View[uIdx + 4] = 8 * I;
+            u32View[uIdx + 7] = wUp;
+          }
+        } else {
+          pushQ4Batch(this.gemvBatchPipe, batchWx(I), bgNormToWork, I, H, wGate, 0, 0, 0, I);
+          pushQ4Batch(this.gemvBatchPipe, batchWx(I), bgNormToWork, I, H, wUp, 0, M * I, 0, I);
+          pushStatic(this.swigluPipe, tBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
+        }
+        pushQ4Batch(widePipe, wideWx(H), bgAttnToHidden, H, I, wDown, 0, 0, 1, H);
+      } else {
+        const [wQg, wK, wV, wO, wGate, wUp, wDown] = lo.w;
+        pushStatic(this.rmsNormPipe, tBgRmsNorm, [M, H, la.inputNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
+        pushQ4Batch(this.gemvBatchPipe, batchWx(attnQDim), bgNormToWork, attnQDim, H, wQg, 0, 0, 0, attnQDim);
+        pushQ4Batch(this.gemvBatchPipe, batchWx(attnKvDim), bgNormToWork, attnKvDim, H, wK, 0, M * attnQDim, 0, attnKvDim);
+        pushQ4Batch(
+          this.gemvBatchPipe,
+          batchWx(attnKvDim),
+          bgNormToWork,
+          attnKvDim,
+          H,
+          wV,
+          0,
+          M * (attnQDim + attnKvDim),
+          0,
+          attnKvDim,
+        );
+
+        const qkSlot = lo.faIdx * 4;
+        const gqa0Slot = qkSlot + 1;
+        const gqaTreeSlot = qkSlot + 2;
+        const kvCompactSlot = qkSlot + 3;
+        const qkUIdx = (qkSlot * 256) / 4;
+        const gqa0UIdx = (gqa0Slot * 256) / 4;
+        const gqaTreeUIdx = (gqaTreeSlot * 256) / 4;
+        const kvCompactUIdx = (kvCompactSlot * 256) / 4;
+
+        const inKv0 = lo.faIdx < this.fa0Count;
+        const localKv = inKv0 ? lo.faIdx : lo.faIdx - this.fa0Count;
+        const kvBaseU32 = localKv * (this.kvSingleBytes / 4);
+        const bgGqaPrefill = inKv0 ? tBgGqaPrefill0 : tBgGqaPrefill1;
+        const bgGqaTree = inKv0 ? tBgGqaTree0 : tBgGqaTree1;
+        const bgKvCompact = inKv0 ? tBgKvCompact0 : tBgKvCompact1;
+
+        dynU32.set([M, 0xfffffffe, 0, M * attnQDim, la.qNormOff, la.kNormOff, this.auxLayout.invFreqOff, qkRopePacked], qkUIdx);
+        dynU32.set([0, kvBaseU32, this.maxSeqCapacity, 0, M, M * attnQDim, M * (attnQDim + attnKvDim), 0], gqa0UIdx);
+        dynU32.set(
+          [
+            0,
+            this.maxSeqCapacity,
+            this.arch.attnQHeads,
+            this.arch.attnKvHeads,
+            this.arch.attnHeadDim,
+            this.kvMode === 'int8' ? 1 : 0,
+            kvBaseU32,
+            this.arch.attnHeadDim * 2,
+          ],
+          gqaTreeUIdx,
+        );
+        dynU32.set([0, this.maxSeqCapacity, this.kvRowU32s, kvBaseU32, 0, 0, 0, 0], kvCompactUIdx);
+
+        steps.push(
+          { pipeline: this.qkRopePipe, bindGroup: tBgQkRope, uniformByteOffset: qkSlot * 256, wx: qkRopeHeadCount, wy: M, wz: 1 },
+          { pipeline: this.gqaPrefillPipe, bindGroup: bgGqaPrefill, uniformByteOffset: gqa0Slot * 256, wx: this.arch.attnKvHeads, wy: M, wz: 1 },
+          { pipeline: this.gqaTreePipe, bindGroup: bgGqaTree, uniformByteOffset: gqaTreeSlot * 256, wx: this.arch.attnQHeads, wy: M, wz: 1 },
+        );
+        pushStatic(
+          this.gqaReducePipe,
+          tBgGqaReduce,
+          [0, this.arch.attnHeadDim, 0, this.arch.attnHeadDim * 2, this.arch.attnQHeads, 0, 0, 0],
+          this.arch.attnQHeads,
+          M,
+        );
+        kvCompactSteps.push({
+          pipeline: this.kvCompactPipe,
+          bindGroup: bgKvCompact,
+          uniformByteOffset: kvCompactSlot * 256,
+          wx: kvCompactWgsX,
+          wy: 2 * this.arch.attnKvHeads,
+          wz: 1,
+        });
+        faPatches.push({ qkUIdx, gqa0UIdx, gqaTreeUIdx, kvCompactUIdx });
+
+        pushQ4Batch(widePipe, wideWx(H), bgAttnToHidden, H, attnODim, wO, 0, 0, 1, H);
+        pushStatic(this.rmsNormPipe, tBgRmsNorm, [M, H, la.postNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
+        if (this.gateUpSwigluBatchPipe) {
+          pushQ4Batch(this.gateUpSwigluBatchPipe, Math.ceil(I / 8), bgNormToAttn, I, H, wGate, 0, 0, 0, wUp);
+          if (M > 8) {
+            const c1Step = steps[steps.length - 1]!;
+            const uIdx = c1Step.uniformByteOffset / 4;
+            u32View[uIdx + 4] = 8 * I;
+            u32View[uIdx + 7] = wUp;
+          }
+        } else {
+          pushQ4Batch(this.gemvBatchPipe, batchWx(I), bgNormToWork, I, H, wGate, 0, 0, 0, I);
+          pushQ4Batch(this.gemvBatchPipe, batchWx(I), bgNormToWork, I, H, wUp, 0, M * I, 0, I);
+          pushStatic(this.swigluPipe, tBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
+        }
+        pushQ4Batch(widePipe, wideWx(H), bgAttnToHidden, H, I, wDown, 0, 0, 1, H);
+      }
+    }
+
+    pushStatic(this.rmsNormPipe, tBgRmsNorm, [M, H, this.auxLayout.finalNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
+    for (let sIdx = 0; sIdx < this.vocabSlices.length; sIdx++) {
+      const slice = this.vocabSlices[sIdx]!;
+      pushQ4Batch(
+        this.gemvBatchPipe,
+        batchWx(slice.rowCount),
+        tBgLmHead[sIdx]!,
+        slice.rowCount,
+        H,
+        0,
+        0,
+        slice.startRow,
+        0,
+        V,
+      );
+    }
+
+    const dynByteStart = 0;
+    const staticStartByte = dynSlotCount * 256;
+    const staticByteLen = (nextSlot - dynSlotCount) * 256;
+    if (staticByteLen > 0) {
+      device.queue.writeBuffer(uniformBuf, staticStartByte, tempTable, staticStartByte, staticByteLen);
+    }
+
+    const commitSteps = [...dnCommitSteps, ...kvCompactSteps];
+    const plan: TreeVerifyGraphPlan = {
+      M,
+      uniformBuf,
+      dynCpu,
+      dynU32,
+      dynByteStart,
+      steps,
+      commitSteps,
+      faPatches,
+      bgArgBatch1,
+      bgArgBatch2,
+      bgAcceptTree,
+      ownedBuffers,
+    };
+    this.treeVerifyPlans.set(M, plan);
+    return plan;
+  }
+
+  /**
+   * Phase E1 + E2 Deferred-Commit Tree Verification (`M = 1 + draftTokens.length <= 16`).
+   * Executes branch-aware DeltaNet (`DN_CONV_TREE`, `DN_IO`, `DN_TREE`), tree attention (`GQA_TREE`),
+   * `ACCEPT_TREE`, and single-pass deferred in-place commit (`DN_TREE.commit`, `DN_CONV_TREE.commit`,
+   * `KV_COMPACT`) inside one GPU command submission with zero backup copies or state replay.
+   */
+  async decodeSpeculativeTreeStep(
+    currentTokenId: number,
+    tree: TreeVerifyInput,
+    sampling: SamplingOptions,
+    pacingMode: GpuPacingMode = 'balanced',
+  ): Promise<{
+    tokens: number[];
+    acceptedSlotIds: number[];
+    acceptedCount: number;
+    draftedCount: number;
+    gpuMs: number;
+    breatherMs: number;
+  }> {
+    if (!this.treeVerifySupported) {
+      throw new Error('E1/E2 tree verification pipelines are not initialized.');
+    }
+    if (sampling.temperature > 0 && sampling.topK !== 1) {
+      throw new Error('decodeSpeculativeTreeStep requires greedy sampling.');
+    }
+    if (tree.draftTokens.length === 0 || tree.draftTokens.length > MAX_TREE_DRAFT) {
+      throw new Error(`Invalid draftTokens length (${tree.draftTokens.length}); expected 1..${MAX_TREE_DRAFT}.`);
+    }
+    const M = 1 + tree.draftTokens.length;
+    await this.ensureKvCapacity(this.seqPos + M);
+    const device = this.device!;
+    if (this.seqPos + M > this.maxSeqCapacity) {
+      throw new Error(`Context overflow at seqPos=${this.seqPos} + ${M} > maxSeqCapacity=${this.maxSeqCapacity}`);
+    }
+
+    const prefix = this.seqPos;
+    const V = this.arch.vocabSize;
+    const argmaxWgCount = Math.ceil(V / 256);
+    const plan = this.buildOrGetTreeVerifyPlan(M);
+
+    for (const fp of plan.faPatches) {
+      plan.dynU32[fp.qkUIdx + 1] = 0xfffffffe;
+      plan.dynU32[fp.gqa0UIdx + 3] = prefix;
+      plan.dynU32[fp.gqaTreeUIdx] = prefix;
+      plan.dynU32[fp.kvCompactUIdx] = prefix;
+    }
+
+    const tokAndDepthWords = new Uint32Array(16 + M);
+    tokAndDepthWords[0] = currentTokenId >>> 0;
+    for (let i = 0; i < tree.draftTokens.length; i++) {
+      tokAndDepthWords[1 + i] = tree.draftTokens[i]! >>> 0;
+    }
+    for (let i = 0; i < M; i++) {
+      tokAndDepthWords[16 + i] = (prefix + tree.depths[i]!) >>> 0;
+    }
+
+    const parentsWords = new Uint32Array(M);
+    parentsWords[0] = 0;
+    for (let i = 0; i < tree.draftParents.length; i++) {
+      parentsWords[1 + i] = tree.draftParents[i]! >>> 0;
+    }
+
+    device.queue.writeBuffer(this.tokenIdsBuf, 0, tokAndDepthWords);
+    device.queue.writeBuffer(this.treeMasksBuf!, 0, new Uint32Array(tree.ancestorMasks));
+    device.queue.writeBuffer(this.treeParentsBuf!, 0, parentsWords);
+    device.queue.writeBuffer(plan.uniformBuf, plan.dynByteStart, plan.dynCpu);
+
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    for (let i = 0; i < plan.steps.length; i++) {
+      const st = plan.steps[i]!;
+      pass.setPipeline(st.pipeline);
+      if (st.isStaticBindGroup) {
+        pass.setBindGroup(0, st.bindGroup);
+      } else {
+        pass.setBindGroup(0, st.bindGroup, [st.uniformByteOffset]);
+      }
+      pass.dispatchWorkgroups(st.wx, st.wy, st.wz);
+    }
+    pass.setPipeline(this.argmaxBatch1Pipe);
+    pass.setBindGroup(0, plan.bgArgBatch1);
+    pass.dispatchWorkgroups(argmaxWgCount, M, 1);
+    pass.setPipeline(this.argmaxBatch2Pipe);
+    pass.setBindGroup(0, plan.bgArgBatch2);
+    pass.dispatchWorkgroups(M, 1, 1);
+    pass.setPipeline(this.acceptTreePipe);
+    pass.setBindGroup(0, plan.bgAcceptTree);
+    pass.dispatchWorkgroups(1, 1, 1);
+
+    for (let i = 0; i < plan.commitSteps.length; i++) {
+      const st = plan.commitSteps[i]!;
+      pass.setPipeline(st.pipeline);
+      if (st.isStaticBindGroup) {
+        pass.setBindGroup(0, st.bindGroup);
+      } else {
+        pass.setBindGroup(0, st.bindGroup, [st.uniformByteOffset]);
+      }
+      pass.dispatchWorkgroups(st.wx, st.wy, st.wz);
+    }
+    pass.end();
+    enc.copyBufferToBuffer(this.treeChoiceBuf!, 0, this.treeStaging80B!, 0, 80);
+
+    const t0 = performance.now();
+    device.queue.submit([enc.finish()]);
+    await this.treeStaging80B!.mapAsync(GPU_MAP_READ);
+    const gpuMs = performance.now() - t0;
+    const choiceView = new Uint32Array(this.treeStaging80B!.getMappedRange());
+    const acceptedCount = Math.min(tree.draftTokens.length, choiceView[0]!);
+    const nextToken = choiceView[1]!;
+    const acceptedSlotIds = Array.from(choiceView.subarray(3, 3 + acceptedCount));
+    this.treeStaging80B!.unmap();
+
+    const acceptedDraftTokens = acceptedSlotIds.map((slotId) => tree.draftTokens[slotId - 1]!);
+    this.seqPos = prefix + acceptedCount + 1;
+    this.recordDecodeGpuStepMs(gpuMs / (acceptedCount + 1));
+
+    let breatherMs = 0;
+    const policy = calibratePacingForHardware(pacingMode, this.displayHz, this.emaDecodeStepMs);
+    const burst = computeDecodeBurstBreatherMs(pacingMode, gpuMs, this.decodeBurstMs, policy);
+    this.decodeBurstMs = burst.nextBurstMs;
+    if (burst.breatherMs > 0) {
+      const b0 = performance.now();
+      await sleepMs(burst.breatherMs);
+      breatherMs += performance.now() - b0;
+    }
+
+    return {
+      tokens: [...acceptedDraftTokens, nextToken],
+      acceptedSlotIds,
+      acceptedCount,
+      draftedCount: tree.draftTokens.length,
       gpuMs,
       breatherMs,
     };

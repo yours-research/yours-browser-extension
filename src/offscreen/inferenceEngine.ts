@@ -5,6 +5,7 @@ import {
   BUNDLED_MODEL_IDS,
   DEFAULT_ENGINE_CONFIG,
   INITIAL_TELEMETRY_STATE,
+  MODEL_PRESETS,
   isGemma4ModelId,
   type BenchmarkPoint,
   type BenchmarkSuiteResult,
@@ -36,12 +37,13 @@ import {
   AdaptiveVerifyCostModel,
   EngineASpeculator,
   type ScoredDraftChain,
+  type ScoredDraftTree,
   type ToolSchema,
   type ParamType,
 } from './adaptiveSpeculator.ts';
 import { computeBandwidthStats, isMessagePrefix, type SamplingOptions } from './sampling.ts';
 import { installWebGpuLimitPatch, probeWebGpu } from './webgpuLimits.ts';
-import { WgslQwen35Engine, MAX_SPEC_DRAFT } from './wgslRealEngine.ts';
+import { WgslQwen35Engine, MAX_SPEC_DRAFT, MAX_TREE_DRAFT } from './wgslRealEngine.ts';
 
 const CONTROL_TOKENS_TO_STRIP_RE =
   /<\|im_end\|>|<\|endoftext\|>|<end_of_turn>|<turn\|>|<\|turn>model\r?\n?|<\|im_start\|>assistant\r?\n?|<eos>|<bos>|<pad>/g;
@@ -125,6 +127,53 @@ export interface EngineCallbacks {
 let yieldChannel: MessageChannel | null = null;
 const yieldWaiters: Array<() => void> = [];
 
+function pruneDraftTree(
+  tree: ScoredDraftTree,
+  eosTokenIds: ReadonlySet<number>,
+  tokenizer?: PreTrainedTokenizer | null,
+  emittedTextPrefix = '',
+  stopOnToolCall = false,
+): ScoredDraftTree {
+  const slotMap = new Map<number, number>([[0, 0]]);
+  const slotClosed = new Set<number>();
+  const slotText = new Map<number, string>([[0, stopOnToolCall ? emittedTextPrefix.slice(-64) : '']]);
+  const draftTokens: number[] = [];
+  const draftParents: number[] = [];
+  const ancestorMasks: number[] = [1];
+  const depths: number[] = [0];
+  const probs: number[] = [];
+  const keys: string[] = [];
+
+  for (let i = 0; i < tree.draftTokens.length; i++) {
+    const oldSlot = i + 1;
+    const oldParent = tree.draftParents[i]!;
+    const tok = tree.draftTokens[i]!;
+    const mappedParent = slotMap.get(oldParent);
+    if (mappedParent === undefined || slotClosed.has(oldParent) || eosTokenIds.has(tok)) {
+      continue;
+    }
+    const newSlot = draftTokens.length + 1;
+    slotMap.set(oldSlot, newSlot);
+    draftTokens.push(tok);
+    draftParents.push(mappedParent);
+    depths.push(depths[mappedParent]! + 1);
+    ancestorMasks.push(ancestorMasks[mappedParent]! | (1 << newSlot));
+    probs.push(tree.probs[i]!);
+    keys.push(tree.keys[i]!);
+    if (stopOnToolCall && tokenizer) {
+      const nextText =
+        (slotText.get(oldParent) ?? '') +
+        tokenizer.decode([tok], { skip_special_tokens: false });
+      slotText.set(oldSlot, nextText.slice(-64));
+      if (nextText.includes('</tool_call>') || nextText.includes('<tool_call|>')) {
+        slotClosed.add(oldSlot);
+      }
+    }
+  }
+
+  return { draftTokens, draftParents, ancestorMasks, depths, probs, keys };
+}
+
 function yieldFast(mode: YieldMode): Promise<void> {
   if (mode === 'none') {
     return Promise.resolve();
@@ -190,7 +239,18 @@ export class InferenceEngine {
   private bgPrefillSeq = 0;
   private engineASpeculator: EngineASpeculator | null = null;
   private engineATokenizerRef: PreTrainedTokenizer | null = null;
-  private engineACostModel = new AdaptiveVerifyCostModel({ maxM: 1 + MAX_SPEC_DRAFT });
+  private engineACostModel = new AdaptiveVerifyCostModel({
+    maxM: 1 + MAX_SPEC_DRAFT,
+    initialT1Ms: 9.1,
+    initialSlopeMs: 3.1,
+    initialRejectPenaltyMs: 1.5,
+  });
+  private engineATreeCostModel = new AdaptiveVerifyCostModel({
+    maxM: 1 + MAX_TREE_DRAFT,
+    initialT1Ms: 14.5,
+    initialSlopeMs: 4.8,
+    initialRejectPenaltyMs: 0,
+  });
 
   constructor(
     callbacks: EngineCallbacks,
@@ -287,19 +347,43 @@ export class InferenceEngine {
         ? patch.forceComputeTier
         : (this.config.forceComputeTier ?? null);
     const tierChanged = nextForceTier !== (this.config.forceComputeTier ?? null);
-    const nextBundleBaseUrl =
+
+    let normalizedPatchModelId =
+      typeof patch.modelId === 'string' ? patch.modelId.trim() : undefined;
+    let derivedHfBundleUrl: string | null = null;
+    if (normalizedPatchModelId && normalizedPatchModelId.startsWith('hf://')) {
+      const repoId = normalizedPatchModelId.slice('hf://'.length).replace(/^\/+|\/+$/g, '');
+      normalizedPatchModelId = repoId;
+      derivedHfBundleUrl = `https://huggingface.co/${repoId}/resolve/main`;
+    }
+
+    const explicitBundleBaseUrl =
       patch.bundleBaseUrl !== undefined
         ? (typeof patch.bundleBaseUrl === 'string' && patch.bundleBaseUrl.trim().length > 0
             ? patch.bundleBaseUrl.trim().replace(/\/+$/, '')
             : null)
         : (this.config.bundleBaseUrl ?? null);
+
+    const isKnownPreset =
+      typeof normalizedPatchModelId === 'string' &&
+      MODEL_PRESETS.some((p) => p.id === normalizedPatchModelId);
+    const isBundledPatchModel =
+      typeof normalizedPatchModelId === 'string' &&
+      (BUNDLED_MODEL_IDS as readonly string[]).includes(normalizedPatchModelId);
+
+    const nextBundleBaseUrl =
+      patch.bundleBaseUrl !== undefined
+        ? explicitBundleBaseUrl
+        : derivedHfBundleUrl ??
+          (normalizedPatchModelId && !isBundledPatchModel && isKnownPreset
+            ? `https://huggingface.co/${normalizedPatchModelId}/resolve/main`
+            : explicitBundleBaseUrl);
     const bundleChanged = nextBundleBaseUrl !== (this.config.bundleBaseUrl ?? null);
     const nextModelId =
-      typeof patch.modelId === 'string' &&
-      patch.modelId.trim().length > 0 &&
-      ((BUNDLED_MODEL_IDS as readonly string[]).includes(patch.modelId) ||
-        Boolean(nextBundleBaseUrl))
-        ? patch.modelId
+      typeof normalizedPatchModelId === 'string' &&
+      normalizedPatchModelId.length > 0 &&
+      (isBundledPatchModel || isKnownPreset || Boolean(nextBundleBaseUrl))
+        ? normalizedPatchModelId
         : this.config.modelId;
     const modelChanged = nextModelId !== this.config.modelId;
 
@@ -609,6 +693,7 @@ export class InferenceEngine {
         estVramMb: memStats.estVramMb,
         kvCacheMb: memStats.kvCacheMb,
         deltaNetStateMb: memStats.deltaNetStateMb,
+        vramDeltaMb: memStats.vramDeltaMb ?? null,
         activeContextTokens: wgslEngine.activeSeqPos,
         computeTier: stats.computeTier,
         allocatedKvCapacity: stats.allocatedKvCapacity,
@@ -662,6 +747,8 @@ export class InferenceEngine {
       estVramMb: 0,
       kvCacheMb: 0,
       deltaNetStateMb: 0,
+      vramDeltaMb: null,
+      baselineDecodeTokPerSec: null,
       activeContextTokens: 0,
       hasCpuSnapshot: false,
       cpuSnapshotTokens: null,
@@ -1607,24 +1694,32 @@ export class InferenceEngine {
       let specAccepted = 0;
       let specSteps = 0;
       let specSkippedSteps = 0;
+      let totalSpecGpuMs = 0;
 
       let emittedText = '';
       let finishReason: 'stop' | 'length' | 'abort' = 'length';
       const decodeStartMs = performance.now();
 
-      const buildSpecStats = () =>
-        specSteps > 0 || specSkippedSteps > 0
-          ? {
-              drafted: specDrafted,
-              accepted: specAccepted,
-              steps: specSteps,
-              acceptanceRatePct: specDrafted > 0 ? (specAccepted / specDrafted) * 100 : 0,
-              tau: specSteps > 0 ? 1 + specAccepted / specSteps : 1,
-              alpha: specDrafted > 0 ? specAccepted / specDrafted : 0,
-              avgDraftLen: specSteps > 0 ? specDrafted / specSteps : 0,
-              skippedSteps: specSkippedSteps,
-            }
-          : null;
+      const buildSpecStats = () => {
+        if (specSteps === 0 && specSkippedSteps === 0) return null;
+        const tau = specSteps > 0 ? 1 + specAccepted / specSteps : 1;
+        const meanSpecStepMs = specSteps > 0 && totalSpecGpuMs > 0 ? totalSpecGpuMs / specSteps : 0;
+        const speedupMultiplier =
+          specSteps > 0 && meanSpecStepMs > 0
+            ? Math.max(1, Number(((tau * this.engineACostModel.t1Ms) / meanSpecStepMs).toFixed(2)))
+            : undefined;
+        return {
+          drafted: specDrafted,
+          accepted: specAccepted,
+          steps: specSteps,
+          acceptanceRatePct: specDrafted > 0 ? (specAccepted / specDrafted) * 100 : 0,
+          tau,
+          alpha: specDrafted > 0 ? specAccepted / specDrafted : 0,
+          avgDraftLen: specSteps > 0 ? specDrafted / specSteps : 0,
+          skippedSteps: specSkippedSteps,
+          speedupMultiplier,
+        };
+      };
 
       const emitTokenAndCheckDone = (tok: number): boolean => {
         if (this.abortedRequests.has(requestId)) {
@@ -1678,6 +1773,7 @@ export class InferenceEngine {
           const decodeElapsedSec = Math.max(0.001, (nowMs - decodeStartMs) / 1000);
           this.updateTelemetry({
             tokensPerSec: generatedIds.length / decodeElapsedSec,
+            baselineDecodeTokPerSec: Number((1000 / Math.max(0.5, this.engineACostModel.t1Ms)).toFixed(2)),
             speculativeStats: buildSpecStats(),
           });
         }
@@ -1700,14 +1796,82 @@ export class InferenceEngine {
           remainingToMax > 1;
 
         if (canSpeculate) {
-          const maxDraft = Math.min(MAX_SPEC_DRAFT, remainingToMax - 1);
           const inToolCallBlock =
             stopOnToolCall && (emittedText.includes('<tool_call') || emittedText.includes('<|call>'));
           const supressNearClose =
             inToolCallBlock && (emittedText.endsWith('</tool_call') || emittedText.endsWith('<tool_call|'));
+
+          const maxDraftChain = Math.min(MAX_SPEC_DRAFT, remainingToMax - 1);
           const proposedChain: ScoredDraftChain = supressNearClose
             ? { tokens: [], parents: [], probs: [], keys: [] }
-            : speculator.proposeChain(maxDraft);
+            : speculator.proposeChain(maxDraftChain);
+
+          const canTryTree = this.wgslEngine!.isTreeSpecSupported() && !supressNearClose;
+          const rawTree = canTryTree
+            ? speculator.proposeTree(
+                Math.min(MAX_TREE_DRAFT, remainingToMax - 1),
+                3,
+                this.engineATreeCostModel,
+              )
+            : null;
+          const treeIsBranched =
+            rawTree !== null &&
+            rawTree.draftTokens.length > 0 &&
+            (rawTree.draftTokens.length > MAX_SPEC_DRAFT ||
+              rawTree.draftParents.some((p, idx) => p !== idx));
+
+          const prunedTree =
+            treeIsBranched && rawTree
+              ? pruneDraftTree(rawTree, this.eosTokenIds, this.tokenizer, emittedText, stopOnToolCall)
+              : null;
+          const chainExpGain = proposedChain.probs.reduce((s, p) => s + p, 0);
+          const treeExpGain = prunedTree ? prunedTree.probs.reduce((s, p) => s + p, 0) : 0;
+          const useTreeThisStep =
+            prunedTree !== null &&
+            prunedTree.draftTokens.length > 0 &&
+            this.wgslEngine!.activeSeqPos + 1 + prunedTree.draftTokens.length <=
+              this.wgslEngine!.maxContextTokens &&
+            (proposedChain.tokens.length === 0 ||
+              treeExpGain / Math.max(1, this.engineATreeCostModel.stepMs(1 + prunedTree.draftTokens.length)) >
+                chainExpGain / Math.max(1, this.engineACostModel.stepMs(1 + proposedChain.tokens.length)));
+
+          if (useTreeThisStep && prunedTree) {
+            const treeRes = await this.wgslEngine!.decodeSpeculativeTreeStep!(
+              nextToken,
+              prunedTree,
+              sampleOpts,
+              this.config.gpuPacingMode,
+            );
+            this.engineATreeCostModel.recordStepTiming(
+              1 + prunedTree.draftTokens.length,
+              treeRes.gpuMs,
+              false,
+            );
+            speculator.feedbackTree(prunedTree, treeRes.acceptedSlotIds);
+            this.cachedTokenCount = this.wgslEngine!.activeSeqPos;
+            specDrafted += treeRes.draftedCount;
+            specAccepted += treeRes.acceptedCount;
+            specSteps += 1;
+            totalSpecGpuMs += treeRes.gpuMs;
+            if (!this.config.fastDecodePath || iter % 4 === 0) {
+              this.refreshCacheTelemetry();
+            }
+
+            let stoppedMidBatch = false;
+            for (let i = 0; i < treeRes.acceptedCount; i++) {
+              if (emitTokenAndCheckDone(treeRes.tokens[i]!)) {
+                stoppedMidBatch = true;
+                break;
+              }
+            }
+            if (stoppedMidBatch) {
+              break;
+            }
+            nextToken = treeRes.tokens[treeRes.acceptedCount]!;
+            iter++;
+            continue;
+          }
+
           const cleanDraft: number[] = [];
           let draftSuffixText = emittedText;
           for (const dt of proposedChain.tokens) {
@@ -1748,6 +1912,7 @@ export class InferenceEngine {
             specDrafted += specRes.draftedCount;
             specAccepted += specRes.acceptedCount;
             specSteps += 1;
+            totalSpecGpuMs += specRes.gpuMs;
             if (!this.config.fastDecodePath || iter % 4 === 0) {
               this.refreshCacheTelemetry();
             }
@@ -1780,6 +1945,7 @@ export class InferenceEngine {
         const totalDecodeSec = Math.max(0.001, (performance.now() - decodeStartMs) / 1000);
         this.updateTelemetry({
           tokensPerSec: generatedIds.length / totalDecodeSec,
+          baselineDecodeTokPerSec: Number((1000 / Math.max(0.5, this.engineACostModel.t1Ms)).toFixed(2)),
           speculativeStats: buildSpecStats(),
         });
         this.refreshCacheTelemetry();
@@ -2099,6 +2265,9 @@ export class InferenceEngine {
   }
 
   async runSpeculativeMicrobench(): Promise<void> {
+    if (this.loadingPromise) {
+      await this.loadingPromise.catch(() => {});
+    }
     if (!this.isEngineReady()) {
       await this.loadModel();
     }
@@ -2183,6 +2352,160 @@ export class InferenceEngine {
       const t8Ms = await measureM(8, true);
       const t5RejectMs = await measureM(5, false);
 
+      let tree: SpecMicrobenchResult['tree'] | undefined;
+      if (engine.isTreeSpecSupported()) {
+        const measureTreeM = async (M: number, acceptAll: boolean): Promise<number> => {
+          const draftLen = M - 1;
+          const draftTokens = acceptAll
+            ? refTokens.slice(1, 1 + Math.min(draftLen, 8))
+            : new Array<number>(Math.min(draftLen, 8)).fill((refTokens[1]! + 17) % 1000);
+          while (draftTokens.length < draftLen) {
+            draftTokens.push((refTokens[1]! + 19 + draftTokens.length) % 1000);
+          }
+          const draftParents = draftTokens.map((_, idx) => (idx < 8 ? idx : idx % 4));
+          const depths = [0];
+          const ancestorMasks = [1];
+          for (let i = 0; i < draftTokens.length; i++) {
+            const p = draftParents[i]!;
+            depths.push(depths[p]! + 1);
+            ancestorMasks.push(ancestorMasks[p]! | (1 << (i + 1)));
+          }
+          const treeInput = { draftTokens, draftParents, ancestorMasks, depths };
+          await engine.restoreGpuPrefixSlot(slotId);
+          await engine.decodeSpeculativeTreeStep!(refTokens[0]!, treeInput, greedy, 'max-speed');
+
+          let sum = 0;
+          const iters = 10;
+          for (let i = 0; i < iters; i++) {
+            await engine.restoreGpuPrefixSlot(slotId);
+            const r = await engine.decodeSpeculativeTreeStep!(
+              refTokens[0]!,
+              treeInput,
+              greedy,
+              'max-speed',
+            );
+            sum += r.gpuMs;
+          }
+          return sum / iters;
+        };
+
+        const tr2 = await measureTreeM(2, true);
+        const tr3 = await measureTreeM(3, true);
+        const tr5 = await measureTreeM(5, true);
+        const tr8 = await measureTreeM(8, true);
+        const tr12 = await measureTreeM(12, true);
+        const tr16 = await measureTreeM(16, true);
+        const tr5Reject = await measureTreeM(5, false);
+
+        // Strict non-linear tree parity check (src != dst compaction + M > 8 split)
+        const wrong = (refTokens[1]! + 17) % 1000;
+        const verifyBranchParity = async (
+          label: string,
+          draftTokens: number[],
+          draftParents: number[],
+          expectedSlots: number[],
+        ): Promise<void> => {
+          const depths = [0];
+          const ancestorMasks = [1];
+          for (let i = 0; i < draftTokens.length; i++) {
+            const p = draftParents[i]!;
+            depths.push(depths[p]! + 1);
+            ancestorMasks.push(ancestorMasks[p]! | (1 << (i + 1)));
+          }
+          await engine.restoreGpuPrefixSlot(slotId);
+          const r = await engine.decodeSpeculativeTreeStep!(
+            refTokens[0]!,
+            { draftTokens, draftParents, ancestorMasks, depths },
+            greedy,
+            'max-speed',
+          );
+          const gotFollow = (await engine.decodeStep(r.tokens[r.acceptedCount]!, greedy, 'max-speed')).nextToken;
+          const ok =
+            r.acceptedCount === expectedSlots.length &&
+            expectedSlots.every((s, idx) => r.acceptedSlotIds[idx] === s) &&
+            r.tokens[r.acceptedCount] === refTokens[1 + expectedSlots.length] &&
+            gotFollow === refTokens[2 + expectedSlots.length];
+          if (!ok) {
+            throw new Error(
+              `Tree parity [${label}] failed: got=${JSON.stringify({ accepted: r.acceptedCount, slots: r.acceptedSlotIds, tokens: r.tokens, gotFollow })} expectedSlots=${JSON.stringify(expectedSlots)} ref=${JSON.stringify(refTokens.slice(0, 6))}`,
+            );
+          }
+        };
+
+        await verifyBranchParity(
+          'M=4 zero-accept rollback',
+          [wrong, wrong, wrong],
+          [0, 1, 0],
+          [],
+        );
+        await verifyBranchParity(
+          'M=6 non-linear src!=dst',
+          [wrong, refTokens[1]!, wrong, refTokens[2]!, wrong],
+          [0, 0, 2, 2, 4],
+          [2, 4],
+        );
+        await verifyBranchParity(
+          'M=12 split-batch src!=dst',
+          [wrong, wrong, wrong, wrong, wrong, wrong, wrong, wrong, refTokens[1]!, refTokens[2]!, wrong],
+          [0, 0, 1, 2, 3, 4, 5, 6, 0, 9, 10],
+          [9, 10],
+        );
+
+        // Consecutive multi-step tree verification (step 1 accepts [2, 4], step 2 accepts [3, 6] across M=9 split)
+        await engine.restoreGpuPrefixSlot(slotId);
+        const step1Input = {
+          draftTokens: [wrong, refTokens[1]!, wrong, refTokens[2]!, wrong],
+          draftParents: [0, 0, 2, 2, 4],
+          ancestorMasks: [1, 3, 5, 13, 21, 53],
+          depths: [0, 1, 1, 2, 2, 3],
+        };
+        const s1 = await engine.decodeSpeculativeTreeStep!(refTokens[0]!, step1Input, greedy, 'max-speed');
+        const step2Tok0 = s1.tokens[s1.acceptedCount]!; // == refTokens[3]
+        const step2Tokens = [wrong, wrong, refTokens[4]!, wrong, wrong, refTokens[5]!, wrong, wrong];
+        const step2Parents = [0, 0, 0, 1, 2, 3, 3, 4];
+        const step2Depths = [0];
+        const step2Masks = [1];
+        for (let i = 0; i < step2Tokens.length; i++) {
+          const p = step2Parents[i]!;
+          step2Depths.push(step2Depths[p]! + 1);
+          step2Masks.push(step2Masks[p]! | (1 << (i + 1)));
+        }
+        const s2 = await engine.decodeSpeculativeTreeStep!(
+          step2Tok0,
+          { draftTokens: step2Tokens, draftParents: step2Parents, ancestorMasks: step2Masks, depths: step2Depths },
+          greedy,
+          'max-speed',
+        );
+        const s2Follow = (await engine.decodeStep(s2.tokens[s2.acceptedCount]!, greedy, 'max-speed')).nextToken;
+        if (
+          s1.acceptedCount !== 2 ||
+          s2.acceptedCount !== 2 ||
+          s2.acceptedSlotIds[0] !== 3 ||
+          s2.acceptedSlotIds[1] !== 6 ||
+          s2.tokens[s2.acceptedCount] !== refTokens[6] ||
+          s2Follow !== refTokens[7]
+        ) {
+          throw new Error(
+            `Consecutive tree parity failed: s1=${JSON.stringify(s1)} s2=${JSON.stringify(s2)} s2Follow=${s2Follow} ref6_7=${JSON.stringify(refTokens.slice(6, 8))}`,
+          );
+        }
+
+        tree = {
+          t2Ms: Number(tr2.toFixed(2)),
+          t3Ms: Number(tr3.toFixed(2)),
+          t5Ms: Number(tr5.toFixed(2)),
+          t8Ms: Number(tr8.toFixed(2)),
+          t12Ms: Number(tr12.toFixed(2)),
+          t16Ms: Number(tr16.toFixed(2)),
+          t5RejectMs: Number(tr5Reject.toFixed(2)),
+          ratioT5ToT1: Number((tr5 / Math.max(0.01, t1Ms)).toFixed(3)),
+          ratioT8ToT1: Number((tr8 / Math.max(0.01, t1Ms)).toFixed(3)),
+          ratioT16ToT1: Number((tr16 / Math.max(0.01, t1Ms)).toFixed(3)),
+          rejectOverheadMs: Number((tr5Reject - tr5).toFixed(2)),
+          chainRejectOverheadMs: Number((t5RejectMs - t5Ms).toFixed(2)),
+        };
+      }
+
       engine.deleteGpuPrefixSlot(slotId);
       await this.resetContext(this.prefixCache?.hasBasePrompt() ?? false);
 
@@ -2191,6 +2514,12 @@ export class InferenceEngine {
       this.engineACostModel.t1Ms = t1Ms;
       this.engineACostModel.slopePerTokenMs = Math.max(0.15 * t1Ms, (t5Ms - t1Ms) / 4);
       this.engineACostModel.rejectPenaltyMs = Math.max(0.25, t5RejectMs - t5Ms);
+      if (tree) {
+        const treeSlope = Math.max(0.15 * t1Ms, (tree.t5Ms - tree.t2Ms) / 3);
+        this.engineATreeCostModel.t1Ms = Math.max(t1Ms, tree.t2Ms - treeSlope);
+        this.engineATreeCostModel.slopePerTokenMs = treeSlope;
+        this.engineATreeCostModel.rejectPenaltyMs = Math.max(0, tree.t5RejectMs - tree.t5Ms);
+      }
       const result: SpecMicrobenchResult = {
         modelId: this.config.modelId,
         t1Ms: Number(t1Ms.toFixed(2)),
@@ -2202,6 +2531,7 @@ export class InferenceEngine {
         ratioT5ToT1,
         ratioT8ToT1,
         gatePass: ratioT5ToT1 <= 2.7,
+        ...(tree ? { tree } : {}),
       };
       this.callbacks.onSpecMicrobenchResult?.(result);
     } catch (err) {

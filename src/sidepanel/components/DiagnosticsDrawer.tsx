@@ -194,6 +194,13 @@ export function DiagnosticsDrawer({
                   ? `${Math.round(probeInfo.grantedLimits.maxBufferSize / (1024 * 1024))} MB max buf`
                   : undefined
             }
+            speedupLabel={telemetry.speculativeStats?.speedupMultiplier}
+            acceptedTokLabel={telemetry.speculativeStats?.tau}
+            vramDeltaLabel={
+              telemetry.vramDeltaMb !== null && telemetry.vramDeltaMb !== 0
+                ? `${telemetry.vramDeltaMb > 0 ? '+' : ''}${telemetry.vramDeltaMb} MiB`
+                : undefined
+            }
             status={
               telemetry.status === 'error'
                 ? 'unsupported'
@@ -208,7 +215,14 @@ export function DiagnosticsDrawer({
 
           <div className="info-card">
             <div className="info-title">
-              Model: {isGemma4 ? 'Gemma 4 E4B QAT (q4f16/q2, Bundled Offline)' : 'Qwen3.5-4B (q4f16, Bundled Offline)'}
+              Model:{' '}
+              {isGemma4
+                ? 'Gemma 4 E4B QAT (q4f16/q2, Bundled Offline)'
+                : telemetry.modelId.includes('pragma-exp004')
+                  ? 'Pragma EXP-004 GSPO-RL (v81920, -254 MiB)'
+                  : telemetry.modelId.includes('exp003c')
+                    ? 'Pragma EXP-003c Tool-QAD (v81920, -254 MiB)'
+                    : 'Qwen3.5-4B (q4f16, Bundled Offline)'}
             </div>
             <div className="info-row">
               Engine:{' '}

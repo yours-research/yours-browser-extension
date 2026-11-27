@@ -5906,6 +5906,153 @@ async function main() {
           await sidePanel.setViewportSize(origViewportV15).catch(() => {});
         }
       }
+
+      // ------------------------------------------------------------------
+      // Case 57 (v16): Live Speculative Telemetry Chips + E1/E2 Tree Parity @ 340px
+      // ------------------------------------------------------------------
+      const origViewportV16 = sidePanel.viewportSize();
+      try {
+        const errorsBeforeV16 = runtimeErrors.length;
+        await sidePanel.setViewportSize({ width: 340, height: 720 });
+        await sidePanel.evaluate(async () => {
+          await window.__TINYGPT_CLIENT__.updateConfig({ enableSpeculative: true });
+          window.__TINYGPT_UI__.setEnableThinking(false);
+          await window.__TINYGPT_UI__.clearChat();
+        });
+
+        // Run real WebGPU E1+E2 tree microbench and check parity + deferred-commit timing
+        await sidePanel.evaluate(() => window.__TINYGPT_CLIENT__.runSpecMicrobench());
+        const microV16 = await sidePanel.evaluate(async () => {
+          const deadline = Date.now() + 90000;
+          while (Date.now() < deadline) {
+            const snap = window.__TINYGPT_CLIENT__.getSnapshot();
+            if (snap.lastSpecMicrobench) return snap.lastSpecMicrobench;
+            await new Promise((r) => setTimeout(r, 150));
+          }
+          return null;
+        });
+
+        await sidePanel.evaluate(() => window.__TINYGPT_UI__.clearChat());
+        const v16Turn = await runUiTurn(
+          sidePanel,
+          'Repeat this exact specification word for word: "WebGPU speculative tree verification executes branch-aware DeltaNet recurrence, tree-masked grouped-query attention, and deferred KV compaction."',
+          { timeoutMs: 120000 },
+        );
+
+        const domV16Action = await sidePanel.evaluate(() => {
+          const actionClusters = Array.from(
+            document.querySelectorAll('[data-slot="speed-telemetry"]'),
+          );
+          const lastCluster = actionClusters[actionClusters.length - 1] ?? null;
+          const actionChips = lastCluster
+            ? Array.from(lastCluster.querySelectorAll('.yui-telem-chip')).map((el) => ({
+                text: el.textContent?.trim() ?? '',
+                isSpec: el.classList.contains('is-spec'),
+              }))
+            : [];
+          const actionStyled = lastCluster
+            ? lastCluster.querySelectorAll('[style]').length
+            : 0;
+          return {
+            hasSpeedTelemetryCluster: Boolean(lastCluster),
+            actionChips,
+            actionStyled,
+          };
+        });
+
+        const modelsBtnV16 = sidePanel.locator('button.yui-notch-btn[aria-label="Models"]');
+        await modelsBtnV16.click();
+        await sidePanel
+          .locator('[data-slot="hardware-status-strip"]')
+          .first()
+          .waitFor({ state: 'visible', timeout: 5000 });
+
+        const domV16Hw = await sidePanel.evaluate(() => {
+          const hwStrip = document.querySelector('[data-slot="hardware-status-strip"]');
+          const hwChips = hwStrip
+            ? Array.from(hwStrip.querySelectorAll('.yui-telem-chip')).map((el) => ({
+                text: el.textContent?.trim() ?? '',
+                isSpec: el.classList.contains('is-spec'),
+              }))
+            : [];
+          const hwStyled = hwStrip ? hwStrip.querySelectorAll('[style]').length : 0;
+          const overflowPx = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+          return {
+            hasHwStrip: Boolean(hwStrip),
+            hwChips,
+            hwStyled,
+            overflowPx,
+          };
+        });
+        await modelsBtnV16.click();
+
+        const domV16 = {
+          ...domV16Action,
+          ...domV16Hw,
+          styledTelemNodes: domV16Action.actionStyled + domV16Hw.hwStyled,
+        };
+
+        const tauV16 = v16Turn.metrics?.speculativeStats?.tau ?? 1;
+        const acceptedV16 = v16Turn.metrics?.speculativeStats?.accepted ?? 0;
+        const speedupV16 = v16Turn.metrics?.speculativeStats?.speedupMultiplier ?? 0;
+
+        const v16Checks = {
+          e1E2TreeMicrobenchActive:
+            Boolean(microV16?.gatePass) &&
+            Boolean(microV16?.tree) &&
+            Number(microV16?.tree?.t16Ms ?? 0) > 0,
+          treeSpecAcceptedBranch:
+            acceptedV16 >= 2 && tauV16 > 1.05 && speedupV16 >= 1.0,
+          actionBarTelemetryChipsVisible:
+            domV16.hasSpeedTelemetryCluster &&
+            domV16.actionChips.some((c) => c.isSpec && /^\d+\.\d+x$/i.test(c.text)) &&
+            domV16.actionChips.some((c) => /tok\/step$/i.test(c.text)),
+          hardwareStripTelemetryChipsVisible:
+            domV16.hasHwStrip &&
+            domV16.hwChips.some((c) => c.isSpec && /^\d+\.\d+x$/i.test(c.text)) &&
+            domV16.hwChips.some((c) => /tok\/step$/i.test(c.text)),
+          exactEchoPreserved: /branch-aware DeltaNet/i.test(v16Turn.answerText),
+          zeroInlineStylesAndOverflow:
+            domV16.styledTelemNodes === 0 && domV16.overflowPx === 0,
+          zeroLeaksAndZeroErrors:
+            v16Turn.leakedTags.length === 0 && runtimeErrors.length === errorsBeforeV16,
+        };
+        const v16Score =
+          Object.values(v16Checks).filter(Boolean).length / Object.keys(v16Checks).length;
+        recordCase(
+          {
+            id: 'V16_speculative_telemetry_chips_and_tree_e1_e2_340px',
+            suite: 'harness',
+            passed: v16Score === 1,
+            score: v16Score,
+            latencyMs: v16Turn.elapsedMs,
+            metrics: {
+              tau: round(tauV16, 3),
+              speedupMultiplier: round(speedupV16, 2),
+              accepted: acceptedV16,
+              treeT5Ms: microV16?.tree?.t5Ms ?? 0,
+              treeT16Ms: microV16?.tree?.t16Ms ?? 0,
+              treeRejectOverheadMs: microV16?.tree?.rejectOverheadMs ?? 0,
+              styledNodes: domV16.styledTelemNodes,
+              overflowPx: domV16.overflowPx,
+              leakCount: v16Turn.leakedTags.length,
+            },
+            ...(v16Score < 1
+              ? {
+                  error: `Checks=${JSON.stringify(v16Checks)} dom=${JSON.stringify(domV16)} micro=${JSON.stringify(microV16)} spec=${JSON.stringify(v16Turn.metrics?.speculativeStats)} ans=${JSON.stringify(v16Turn.answerText.slice(0, 140))}`,
+                }
+              : {}),
+          },
+          v16Turn,
+        );
+      } finally {
+        await sidePanel
+          .evaluate(() => window.__TINYGPT_CLIENT__?.updateConfig?.({ enableSpeculative: true }))
+          .catch(() => {});
+        if (origViewportV16) {
+          await sidePanel.setViewportSize(origViewportV16).catch(() => {});
+        }
+      }
     } catch (caseErr) {
       recordCase({
         id: `FATAL_REMAINING_CASES_${caseResults.length + 1}`,

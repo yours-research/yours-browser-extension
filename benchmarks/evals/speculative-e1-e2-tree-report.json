@@ -1,0 +1,93 @@
+{
+  "timestampIso": "2026-11-27T00:21:07.703Z",
+  "runtimeErrors": [],
+  "stockQwen35": {
+    "microbench": {
+      "modelId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+      "t1Ms": 9.13,
+      "t2Ms": 13.71,
+      "t3Ms": 15.73,
+      "t5Ms": 22.64,
+      "t8Ms": 31.04,
+      "t5RejectMs": 26.64,
+      "ratioT5ToT1": 2.479,
+      "ratioT8ToT1": 3.399,
+      "gatePass": true,
+      "tree": {
+        "t2Ms": 18.26,
+        "t3Ms": 22.74,
+        "t5Ms": 31.69,
+        "t8Ms": 49.75,
+        "t12Ms": 70.86,
+        "t16Ms": 89.42,
+        "t5RejectMs": 29.64,
+        "ratioT5ToT1": 3.47,
+        "ratioT8ToT1": 5.447,
+        "ratioT16ToT1": 9.791,
+        "rejectOverheadMs": -2.05,
+        "chainRejectOverheadMs": 4
+      }
+    },
+    "copyTurn": {
+      "decodeTokPerSec": 44.44,
+      "ttftMs": 1046.6,
+      "speculativeStats": {
+        "drafted": 19,
+        "accepted": 19,
+        "steps": 13,
+        "acceptanceRatePct": 100,
+        "tau": 2.4615384615384617,
+        "alpha": 1,
+        "avgDraftLen": 1.4615384615384615,
+        "skippedSteps": 4,
+        "speedupMultiplier": 1.08
+      },
+      "answerSample": "WebGPU speculative tree verification executes branch-aware DeltaNet recurrence, tree-masked grouped-query attention, and single-pass deferred KV compaction in o"
+    }
+  },
+  "exp004": {
+    "microbench": {
+      "modelId": "jtaylorexe/pragma-exp004-gspo-rl",
+      "t1Ms": 8.56,
+      "t2Ms": 12.95,
+      "t3Ms": 15.03,
+      "t5Ms": 21.51,
+      "t8Ms": 29.48,
+      "t5RejectMs": 25.54,
+      "ratioT5ToT1": 2.513,
+      "ratioT8ToT1": 3.445,
+      "gatePass": true,
+      "tree": {
+        "t2Ms": 17.68,
+        "t3Ms": 21.75,
+        "t5Ms": 31.3,
+        "t8Ms": 48.2,
+        "t12Ms": 69.62,
+        "t16Ms": 86.14,
+        "t5RejectMs": 30.33,
+        "ratioT5ToT1": 3.657,
+        "ratioT8ToT1": 5.632,
+        "ratioT16ToT1": 10.065,
+        "rejectOverheadMs": -0.97,
+        "chainRejectOverheadMs": 4.03
+      }
+    },
+    "copyTurn": {
+      "decodeTokPerSec": 117.65,
+      "ttftMs": 920.6,
+      "vramDeltaMb": -254,
+      "speculativeStats": {
+        "drafted": 17,
+        "accepted": 16,
+        "steps": 17,
+        "acceptanceRatePct": 94.11764705882352,
+        "tau": 1.9411764705882353,
+        "alpha": 0.9411764705882353,
+        "avgDraftLen": 1,
+        "skippedSteps": 3,
+        "speedupMultiplier": 1.19
+      },
+      "answerSample": "WebGPU speculative tree verification executes branch-aware DeltaNet recurrence, tree-masked grouped-query attention, and single-pass deferred KV compaction in o"
+    }
+  }
+}

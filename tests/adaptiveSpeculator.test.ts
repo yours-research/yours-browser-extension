@@ -121,6 +121,40 @@ describe('EngineASpeculator & AdaptiveVerifyCostModel', () => {
     expect(engine.calibrator.snapshot()).not.toEqual({});
   });
 
+  it('proposes topological branching trees up to 15 draft nodes (16 slots) and calibrates branches', () => {
+    const tok = makeCharWordTokenizer();
+    const cost = new AdaptiveVerifyCostModel({ initialT1Ms: 10.9, initialSlopeMs: 2.2 });
+    const engine = new EngineASpeculator({
+      tokenizer: tok,
+      corpus: buildToolCorpus(),
+      adaptiveProfile: cost,
+    });
+
+    const prompt =
+      'Alpha branch uses read_tab while Beta branch uses run_sandbox. Compare Alpha branch vs Beta branch.';
+    engine.beginSample(prompt, false);
+    engine.observe(tok.encode(prompt), false);
+    engine.observe(tok.encode('Compare Alpha branch'), true);
+
+    const tree = engine.proposeTree(15, 3);
+    expect(tree.draftTokens.length).toBeGreaterThanOrEqual(2);
+    expect(tree.draftTokens.length).toBeLessThanOrEqual(15);
+    expect(tree.ancestorMasks[0]).toBe(1);
+    expect(tree.depths[0]).toBe(0);
+    for (let i = 0; i < tree.draftTokens.length; i++) {
+      const slot = i + 1;
+      const p = tree.draftParents[i]!;
+      expect(p).toBeLessThan(slot);
+      expect(tree.depths[slot]).toBe(tree.depths[p]! + 1);
+      expect((tree.ancestorMasks[slot]! & (1 << slot)) !== 0).toBe(true);
+      expect((tree.ancestorMasks[slot]! & (1 << p)) !== 0).toBe(true);
+    }
+
+    engine.feedbackTree(tree, [1]);
+    engine.endSample();
+    expect(engine.calibrator.snapshot()).not.toEqual({});
+  });
+
   it('SuffixAutomaton finds longest repeated suffix accurately', () => {
     const sam = new SuffixAutomaton(64);
     sam.extendAll([1, 2, 3, 4, 5, 9, 1, 2, 3]);

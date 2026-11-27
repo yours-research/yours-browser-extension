@@ -687,6 +687,22 @@ export interface ScoredDraftChain {
   keys: string[];
 }
 
+/**
+ * Topologically ordered speculative draft tree rooted at slot `0` (verified root token).
+ * Draft nodes occupy slots `1 .. draftTokens.length`, with `parents[i] < i + 1` (`0` = root).
+ */
+export interface ScoredDraftTree {
+  draftTokens: number[];
+  /** 1-based slot parent (`0` = root) for each draft token in `0 .. draftTokens.length - 1`. */
+  draftParents: number[];
+  /** Inclusive ancestor bitmasks for slots `0 .. M - 1` (`masks[0] = 1`). */
+  ancestorMasks: number[];
+  /** Depth from root for slots `0 .. M - 1` (`depths[0] = 0`). */
+  depths: number[];
+  probs: number[];
+  keys: string[];
+}
+
 export interface EngineAOptions {
   tokenizer: EngineATokenizer;
   extraTools?: ToolSchema[];
@@ -901,7 +917,7 @@ export class EngineASpeculator {
     return null;
   }
 
-  private bestNextChild(cursors: readonly Cursor[]): Child | null {
+  private rankedNextChildren(cursors: readonly Cursor[], limit: number): Child[] {
     const byTok = new Map<number, Child>();
     const add = (token: number, cond: number, key: string, c: Cursor): void => {
       const e = byTok.get(token);
@@ -921,7 +937,7 @@ export class EngineASpeculator {
         add(c.toks[c.idx]!, this.calibrator.p(key, c.prior), key, { ...c, idx: c.idx + 1 });
         continue;
       }
-      const conts = c.sam.continuations(c.state, 3);
+      const conts = c.sam.continuations(c.state, Math.max(limit, 3));
       if (!conts.length) continue;
       const z = c.sam.totalContinuationCount(c.state) + (c.len >= 2 ? 0.15 : 0.35);
       for (const [token, target, cnt] of conts) {
@@ -932,13 +948,13 @@ export class EngineASpeculator {
         add(token, this.calibrator.p(key, prior), key, { ...c, state: target, len: c.len + 1 });
       }
     }
-    let best: Child | null = null;
-    for (const ch of byTok.values()) {
-      if (!best || ch.cond > best.cond || (ch.cond === best.cond && ch.token < best.token)) {
-        best = ch;
-      }
-    }
-    return best;
+    const sorted = Array.from(byTok.values());
+    sorted.sort((a, b) => b.cond - a.cond || a.token - b.token);
+    return sorted.length > limit ? sorted.slice(0, limit) : sorted;
+  }
+
+  private bestNextChild(cursors: readonly Cursor[]): Child | null {
+    return this.rankedNextChildren(cursors, 1)[0] ?? null;
   }
 
   /**
@@ -982,6 +998,92 @@ export class EngineASpeculator {
     };
   }
 
+  /**
+   * Proposes a best-first branching draft tree (`<= maxNodes` draft nodes, total slots `M <= maxNodes + 1 <= 16`).
+   * Every prefix is a valid topologically ordered tree (`draftParents[i] < i + 1`).
+   */
+  proposeTree(maxNodes: number, maxBranching = 3, profileOverride?: VerifyCostProfile): ScoredDraftTree {
+    const t0 = performance.now();
+    const cappedMax = Math.max(0, Math.min(15, maxNodes));
+    const draftTokens: number[] = [];
+    const draftParents: number[] = [];
+    const probs: number[] = [];
+    const keys: string[] = [];
+    const ancestorMasks: number[] = [1];
+    const depths: number[] = [0];
+
+    if (cappedMax > 0) {
+      interface FrontierCandidate {
+        parentSlot: number;
+        depth: number;
+        token: number;
+        jointProb: number;
+        key: string;
+        cursors: Cursor[];
+      }
+      const rootCur = this.rootCursors();
+      const frontier: FrontierCandidate[] = [];
+      for (const ch of this.rankedNextChildren(rootCur, maxBranching)) {
+        if (ch.cond >= this.minProb) {
+          frontier.push({
+            parentSlot: 0,
+            depth: 1,
+            token: ch.token,
+            jointProb: ch.cond,
+            key: ch.key,
+            cursors: ch.cursors,
+          });
+        }
+      }
+
+      while (draftTokens.length < cappedMax && frontier.length > 0) {
+        frontier.sort((a, b) => b.jointProb - a.jointProb || a.token - b.token);
+        const best = frontier.shift()!;
+        const slotIdx = draftTokens.length + 1;
+        draftTokens.push(best.token);
+        draftParents.push(best.parentSlot);
+        probs.push(best.jointProb);
+        keys.push(best.key);
+        depths.push(best.depth);
+        ancestorMasks.push(ancestorMasks[best.parentSlot]! | (1 << slotIdx));
+
+        if (draftTokens.length < cappedMax && best.cursors.length > 0) {
+          const branchCap = best.depth <= 2 ? maxBranching : 2;
+          for (const ch of this.rankedNextChildren(best.cursors, branchCap)) {
+            const nextP = best.jointProb * ch.cond;
+            if (nextP >= this.minProb) {
+              frontier.push({
+                parentSlot: slotIdx,
+                depth: best.depth + 1,
+                token: ch.token,
+                jointProb: nextP,
+                key: ch.key,
+                cursors: ch.cursors,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    let n = draftTokens.length;
+    const activeProfile = profileOverride ?? this.opts.adaptiveProfile;
+    if (activeProfile && n > 0) {
+      n = chooseBudget(probs, activeProfile, cappedMax, this.draftMsEma).nodes;
+    }
+    this.lastBudgetNodes = n;
+    const dt = performance.now() - t0;
+    this.draftMsEma = 0.9 * this.draftMsEma + 0.1 * dt;
+    return {
+      draftTokens: draftTokens.slice(0, n),
+      draftParents: draftParents.slice(0, n),
+      ancestorMasks: ancestorMasks.slice(0, n + 1),
+      depths: depths.slice(0, n + 1),
+      probs: probs.slice(0, n),
+      keys: keys.slice(0, n),
+    };
+  }
+
   feedback(chain: ScoredDraftChain, acceptedCount: number): void {
     const clamped = Math.max(0, Math.min(acceptedCount, chain.tokens.length));
     for (let i = 0; i < clamped; i++) {
@@ -989,6 +1091,25 @@ export class EngineASpeculator {
     }
     if (clamped < chain.tokens.length) {
       this.calibrator.observe(chain.keys[clamped]!, false);
+    }
+  }
+
+  feedbackTree(tree: ScoredDraftTree, acceptedSlotIds: readonly number[]): void {
+    const acceptedSet = new Set<number>();
+    let leafSlot = 0;
+    for (const rawSlot of acceptedSlotIds) {
+      if (rawSlot >= 1 && rawSlot <= tree.draftTokens.length) {
+        acceptedSet.add(rawSlot);
+        this.calibrator.observe(tree.keys[rawSlot - 1]!, true);
+        leafSlot = rawSlot;
+      }
+    }
+    // Penalize rejected candidate children directly under the terminal accepted node
+    for (let i = 0; i < tree.draftTokens.length; i++) {
+      const slot = i + 1;
+      if (tree.draftParents[i] === leafSlot && !acceptedSet.has(slot)) {
+        this.calibrator.observe(tree.keys[i]!, false);
+      }
     }
   }
 }
