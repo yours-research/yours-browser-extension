@@ -57,7 +57,6 @@ import {
 
 export type { WgslComputeTier } from './wgslWebgpu.ts';
 
-const GQA_FP16_NUM_SPLITS = 32;
 const GQA_INT8_NUM_SPLITS = 64;
 const PREFILL_NUM_SPLITS = 16;
 const PREFILL_MAX_CHUNK = 128;
@@ -69,8 +68,55 @@ const UNIFORM_MAX_SLOTS = 1024;
 const MAX_SNAPSHOT_BYTES = 512 * 1024 * 1024;
 const MAX_GPU_PREFIX_VRAM_BYTES = 512 * 1024 * 1024;
 
+function partitionCountGqa(len: number): number {
+  if (len <= 64) return 1;
+  if (len <= 512) return 8;
+  if (len <= 4096) return 16;
+  return 32;
+}
+
 function alignUp(value: number, alignment = 256): number {
   return Math.ceil(value / alignment) * alignment;
+}
+
+/**
+ * Validates that every DeltaNet verify/rollback slice `(dnIdx + 1) * maxSpecTokens * hiddenSize`
+ * lies inside `normBufRows * hiddenSize` and is strictly disjoint from transient block 0
+ * (`[0, maxSpecTokens * hiddenSize)`) and from every other DeltaNet layer's slice.
+ */
+export function assertDisjointVerifyNormSlices(
+  dnLayerCount: number,
+  M: number,
+  maxSpecTokens: number,
+  hiddenSize: number,
+  normBufRows: number,
+): void {
+  const transientEnd = maxSpecTokens * hiddenSize;
+  const totalFloats = normBufRows * hiddenSize;
+  const spans: Array<{ start: number; end: number }> = [];
+  for (let dnIdx = 0; dnIdx < dnLayerCount; dnIdx++) {
+    const start = (dnIdx + 1) * maxSpecTokens * hiddenSize;
+    const end = start + M * hiddenSize;
+    if (start < transientEnd) {
+      throw new Error(
+        `DeltaNet verify norm slice [${start}, ${end}) overlaps transient block 0 [0, ${transientEnd}).`,
+      );
+    }
+    if (end > totalFloats) {
+      throw new Error(
+        `DeltaNet verify norm slice [${start}, ${end}) exceeds normBuf capacity (${totalFloats}).`,
+      );
+    }
+    for (let prev = 0; prev < spans.length; prev++) {
+      const other = spans[prev]!;
+      if (start < other.end && other.start < end) {
+        throw new Error(
+          `DeltaNet verify norm slice ${dnIdx} [${start}, ${end}) overlaps layer ${prev} [${other.start}, ${other.end}).`,
+        );
+      }
+    }
+    spans.push({ start, end });
+  }
 }
 const BUNDLED_MODEL_MISSING_MSG =
   'Bundled model files missing in models/qwen35-4b/. Run npm run bundle:model.';
@@ -133,7 +179,9 @@ export interface TreeVerifyInput {
 interface TreeVerifyFaPatchTarget {
   qkUIdx: number;
   gqa0UIdx: number;
-  gqaTreeUIdx: number;
+  gqaPartUIdx: number;
+  gqaCombUIdx: number;
+  gqaPartStep: DispatchStep;
   kvCompactUIdx: number;
 }
 
@@ -155,8 +203,9 @@ interface TreeVerifyGraphPlan {
 interface VerifyFaPatchTarget {
   qkUIdx: number;
   gqa0UIdx: number;
-  gqa1UIdx: number;
-  gqa1Step: DispatchStep;
+  gqaPartUIdx: number;
+  gqaCombUIdx: number;
+  gqaPartStep: DispatchStep;
 }
 
 interface VerifyGraphPlan {
@@ -312,9 +361,15 @@ export class WgslQwen35Engine {
   private tokenIdsBuf!: GpuBufferLike;
   private hiddenBuf!: GpuBufferLike;
   private normBuf!: GpuBufferLike;
+  private normBufRows = 0;
   private workBuf!: GpuBufferLike;
   private attnOutBuf!: GpuBufferLike;
   private gqaSplitBuf!: GpuBufferLike;
+  private gqaOutBuf!: GpuBufferLike;
+  private scalarMaskBuf!: GpuBufferLike;
+  private chainMasksBuf!: GpuBufferLike;
+  private ropeTableBuf: GpuBufferLike | null = null;
+  private ropeTableCapacity = 0;
   private logitsBuf!: GpuBufferLike;
   private tokOutBuf!: GpuBufferLike;
   private staging4B!: GpuBufferLike;
@@ -351,8 +406,12 @@ export class WgslQwen35Engine {
   private argmaxBatch1Pipe!: unknown;
   private argmaxBatch2Pipe!: unknown;
   private specAcceptPipe!: unknown;
-  private gemvBatchWidePipe: unknown = null;
-  private gateUpSwigluBatchPipe: unknown = null;
+  private q4SmallMV2Pipe!: unknown;
+  private q4SwigluSmallMV2Pipe!: unknown;
+  private q4SmallMV2RowsPerWg = 64;
+  private q4SwigluSmallMV2RowsPerWg = 64;
+  private gqaTreePartialPipe!: unknown;
+  private gqaTreeCombinePipe!: unknown;
   private usingDp4a = false;
 
   // Phase E1 + E2 Deferred-Commit Tree Verification state
@@ -360,7 +419,7 @@ export class WgslQwen35Engine {
   private dnConvTreeBgl: unknown = null;
   private dnIoBgl: unknown = null;
   private dnTreeBgl: unknown = null;
-  private gqaTreeBgl: unknown = null;
+  private gqaTreeBgl!: unknown;
   private kvCompactBgl: unknown = null;
   private acceptTreeBgl: unknown = null;
   private dnConvTreeVerifyPipe: unknown = null;
@@ -369,7 +428,6 @@ export class WgslQwen35Engine {
   private dnIoGatePipe: unknown = null;
   private dnTreeVerifyPipe: unknown = null;
   private dnTreeCommitPipe: unknown = null;
-  private gqaTreePipe: unknown = null;
   private kvCompactPipe: unknown = null;
   private acceptTreePipe: unknown = null;
   private treeConvWStrideBytes = 0;
@@ -390,9 +448,8 @@ export class WgslQwen35Engine {
 
   // Retained bind group layouts for dynamic KV cache reallocation & verify plan cache
   private dynStorage4Bgl!: unknown;
-  private gdnApplyBgl!: unknown;
+  private gdnRecBgl!: unknown;
   private qkRopeBgl!: unknown;
-  private gqaSplitBgl!: unknown;
   private dynRwStorageBgl!: unknown;
   private staticBgl!: unknown;
   private staticRead2Bgl!: unknown;
@@ -408,11 +465,13 @@ export class WgslQwen35Engine {
   private bgConv!: unknown;
   private bgGdnRec!: unknown;
   private bgQkRope!: unknown;
-  private bgGqaSplit0!: unknown;
-  private bgGqaSplit1!: unknown;
   private bgGqaReduce!: unknown;
   private bgGqaPrefill0!: unknown;
   private bgGqaPrefill1!: unknown;
+  private bgDecodeGqaPrefill0!: unknown;
+  private bgDecodeGqaPrefill1!: unknown;
+  private bgDecodeGqaTree0!: unknown;
+  private bgDecodeGqaTree1!: unknown;
 
   // Separate prefill bind groups (using prefillUniformBuf) so static decodeUniformBuf stays untouched
   private pBgEmbedPerSlice: unknown[] = [];
@@ -432,6 +491,10 @@ export class WgslQwen35Engine {
 
   private decodeSteps: DispatchStep[] = [];
   private decodeLayerEndStepIndices: number[] = [];
+  private decodeFaPatches: VerifyFaPatchTarget[] = [];
+  private decodeDynCpu = new ArrayBuffer(4);
+  private decodeDynU32 = new Uint32Array(this.decodeDynCpu);
+  private decodeDynByteLen = 0;
   private lastDecodeGpuMs = 0;
   private emaDecodeStepMs = 0;
   private displayHz = 60;
@@ -897,6 +960,17 @@ export class WgslQwen35Engine {
           { binding: 5, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
         ],
       });
+      const gqaTreeBgl = device.createBindGroupLayout({
+        entries: [
+          { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true } },
+          { binding: 1, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 2, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 3, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 4, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 5, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+          { binding: 6, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
+        ],
+      });
       const staticBgl = device.createBindGroupLayout({
         entries: [
           { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform' } },
@@ -915,9 +989,9 @@ export class WgslQwen35Engine {
       });
 
       this.dynStorage4Bgl = dynStorage4Bgl;
-      this.gdnApplyBgl = gdnApplyBgl;
+      this.gdnRecBgl = gdnRecBgl;
       this.qkRopeBgl = qkRopeBgl;
-      this.gqaSplitBgl = gqaSplitBgl;
+      this.gqaTreeBgl = gqaTreeBgl;
       this.dynRwStorageBgl = dynRwStorageBgl;
       this.staticBgl = staticBgl;
       this.staticRead2Bgl = staticRead2Bgl;
@@ -928,6 +1002,7 @@ export class WgslQwen35Engine {
       const gdnApplyLayout = device.createPipelineLayout({ bindGroupLayouts: [gdnApplyBgl] });
       const qkRopeLayout = device.createPipelineLayout({ bindGroupLayouts: [qkRopeBgl] });
       const gqaSplitLayout = device.createPipelineLayout({ bindGroupLayouts: [gqaSplitBgl] });
+      const gqaTreeLayout = device.createPipelineLayout({ bindGroupLayouts: [gqaTreeBgl] });
       const staticArg1Layout = device.createPipelineLayout({ bindGroupLayouts: [staticBgl] });
       const staticArg2Layout = device.createPipelineLayout({ bindGroupLayouts: [staticRead2Bgl] });
 
@@ -943,6 +1018,10 @@ export class WgslQwen35Engine {
       for (const tier of candidates) {
         try {
           const ids = getTierShaderIds(tier, this.kvMode);
+          const useTier1Q4V2 = tier === 'tier1-f16-subgroups';
+          const gqaTreeV2Src = getWgslShaderSource(wasm, useTier1Q4V2 ? 58 : 49);
+          this.q4SmallMV2RowsPerWg = useTier1Q4V2 ? 16 : 64;
+          this.q4SwigluSmallMV2RowsPerWg = useTier1Q4V2 ? 16 : 64;
           [
             this.embedPipe,
             this.rmsNormPipe,
@@ -965,6 +1044,10 @@ export class WgslQwen35Engine {
             this.argmaxBatch1Pipe,
             this.argmaxBatch2Pipe,
             this.specAcceptPipe,
+            this.q4SmallMV2Pipe,
+            this.q4SwigluSmallMV2Pipe,
+            this.gqaTreePartialPipe,
+            this.gqaTreeCombinePipe,
           ] = await Promise.all([
             createValidatedPipeline(device, `${tier}-embed-lookup`, getWgslShaderSource(wasm, ids.embed), dyn4Layout),
             createValidatedPipeline(device, `${tier}-rmsnorm-batch`, getWgslShaderSource(wasm, ids.rmsNorm), dyn4Layout),
@@ -987,32 +1070,11 @@ export class WgslQwen35Engine {
             createValidatedPipeline(device, `${tier}-argmax-batch-pass1`, getWgslShaderSource(wasm, 132), staticArg1Layout),
             createValidatedPipeline(device, `${tier}-argmax-batch-pass2`, getWgslShaderSource(wasm, 133), staticArg2Layout),
             createValidatedPipeline(device, `${tier}-spec-accept-greedy`, getWgslShaderSource(wasm, 43), staticArg2Layout),
+            createValidatedPipeline(device, `${tier}-q4-gemv-smallm-v2`, getWgslShaderSource(wasm, useTier1Q4V2 ? 56 : 54), dyn4Layout),
+            createValidatedPipeline(device, `${tier}-q4-gate-up-swiglu-smallm-v2`, getWgslShaderSource(wasm, useTier1Q4V2 ? 57 : 55), dyn4Layout),
+            createValidatedPipeline(device, `${tier}-gqa-tree-v2-partial`, gqaTreeV2Src, gqaTreeLayout, 'partial'),
+            createValidatedPipeline(device, `${tier}-gqa-tree-v2-combine`, gqaTreeV2Src, gqaTreeLayout, 'combine'),
           ]);
-
-          this.gemvBatchWidePipe = null;
-          this.gateUpSwigluBatchPipe = null;
-          if (tier === 'tier1-f16-subgroups') {
-            try {
-              this.gemvBatchWidePipe = await createValidatedPipeline(
-                device,
-                'tier1-q4-gemv-batch-wide',
-                getWgslShaderSource(wasm, 44),
-                dyn4Layout,
-              );
-            } catch {
-              this.gemvBatchWidePipe = null;
-            }
-            try {
-              this.gateUpSwigluBatchPipe = await createValidatedPipeline(
-                device,
-                'tier1-q4-gate-up-swiglu-batch-v2',
-                getWgslShaderSource(wasm, 45),
-                dyn4Layout,
-              );
-            } catch {
-              this.gateUpSwigluBatchPipe = null;
-            }
-          }
 
           this.gqaSplitPipe = this.gqaSplitPlainPipe;
           this.usingDp4a = false;
@@ -1108,7 +1170,8 @@ export class WgslQwen35Engine {
       this.hiddenBuf = this.track(
         device.createBuffer({ size: PREFILL_MAX_CHUNK * H * 4, usage: GPU_USAGE.STORAGE }),
       );
-      const normRows = Math.max(PREFILL_MAX_CHUNK, dnLayerAllocCount * MAX_SPEC_TOKENS);
+      const normRows = Math.max(PREFILL_MAX_CHUNK, (dnLayerAllocCount + 1) * MAX_SPEC_TOKENS);
+      this.normBufRows = normRows;
       this.normBuf = this.track(
         device.createBuffer({ size: normRows * H * 4, usage: GPU_USAGE.STORAGE }),
       );
@@ -1127,6 +1190,33 @@ export class WgslQwen35Engine {
           usage: GPU_USAGE.STORAGE,
         }),
       );
+      this.gqaOutBuf = this.track(
+        device.createBuffer({
+          size: MAX_TREE_TOKENS * this.arch.attnQHeads * this.arch.attnHeadDim * 4,
+          usage: GPU_USAGE.STORAGE,
+        }),
+      );
+      this.scalarMaskBuf = this.track(
+        device.createBuffer({
+          size: 16,
+          usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST,
+        }),
+      );
+      device.queue.writeBuffer(this.scalarMaskBuf, 0, new Uint32Array([1, 0, 0, 0]));
+      this.chainMasksBuf = this.track(
+        device.createBuffer({
+          size: MAX_SPEC_TOKENS * 4,
+          usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST,
+        }),
+      );
+      {
+        const chainMasks = new Uint32Array(MAX_SPEC_TOKENS);
+        for (let s = 0; s < MAX_SPEC_TOKENS; s++) {
+          chainMasks[s] = ((1 << (s + 1)) - 1) >>> 0;
+        }
+        device.queue.writeBuffer(this.chainMasksBuf, 0, chainMasks);
+      }
+      this.ensureRopeTable(device, this.allocatedKvCapacity);
       this.logitsBuf = this.track(
         device.createBuffer({
           size: V * 4,
@@ -1258,7 +1348,7 @@ export class WgslQwen35Engine {
       this.bgLmHeadPerSlice = this.lmHeadSlabs.map((slab) =>
         makeDyn4(this.decodeUniformBuf, slab, this.normBuf, this.logitsBuf),
       );
-      this.bgGqaReduce = makeDyn4(this.decodeUniformBuf, this.workBuf, this.gqaSplitBuf, this.attnOutBuf);
+      this.bgGqaReduce = makeDyn4(this.decodeUniformBuf, this.workBuf, this.gqaOutBuf, this.attnOutBuf);
       this.bgConv = makeDynRw(this.decodeUniformBuf, this.auxBuf, this.dnConvBuf, this.workBuf);
       this.bgGdnRec = device.createBindGroup({
         layout: gdnRecBgl,
@@ -1457,27 +1547,95 @@ export class WgslQwen35Engine {
     this.treeVerifyPlans.clear();
   }
 
+  private ensureRopeTable(device: GpuDeviceLike, capacity: number): void {
+    const half = Math.floor(this.arch.ropeDim / 2);
+    if (this.ropeTableBuf && capacity <= this.ropeTableCapacity) {
+      return;
+    }
+    if (half <= 0) {
+      if (!this.ropeTableBuf) {
+        this.ropeTableBuf = this.track(
+          device.createBuffer({ size: 16, usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST }),
+        );
+        device.queue.writeBuffer(this.ropeTableBuf, 0, new Float32Array([0, 0, 0, 0]));
+      }
+      this.ropeTableCapacity = capacity;
+      return;
+    }
+    const nextCap = Math.max(1, capacity);
+    const oldBuf = this.ropeTableBuf;
+    const floatCount = nextCap * half * 2;
+    const table = new Float32Array(floatCount);
+    const invFreq = new Float32Array(half);
+    for (let d = 0; d < half; d++) {
+      invFreq[d] = Math.pow(this.arch.ropeTheta, (-2 * d) / this.arch.ropeDim);
+    }
+    for (let pos = 0; pos < nextCap; pos++) {
+      const base = pos * half * 2;
+      for (let d = 0; d < half; d++) {
+        const ang = pos * invFreq[d]!;
+        table[base + d * 2] = Math.fround(Math.cos(ang));
+        table[base + d * 2 + 1] = Math.fround(Math.sin(ang));
+      }
+    }
+    const newBuf = this.track(
+      device.createBuffer({
+        size: Math.max(16, floatCount * 4),
+        usage: GPU_USAGE.STORAGE | GPU_USAGE.COPY_DST,
+      }),
+    );
+    device.queue.writeBuffer(newBuf, 0, table);
+    this.ropeTableBuf = newBuf;
+    this.ropeTableCapacity = nextCap;
+    if (oldBuf) {
+      this.untrackAndDestroy(oldBuf);
+    }
+  }
+
   private rebuildKvBindGroups(): void {
     this.invalidateVerifyPlans();
     const device = this.device!;
-    this.bgGqaSplit0 = device.createBindGroup({
-      layout: this.gqaSplitBgl,
+    this.ensureRopeTable(device, this.allocatedKvCapacity);
+    this.bgDecodeGqaPrefill0 = device.createBindGroup({
+      layout: this.dynRwStorageBgl,
       entries: [
         { binding: 0, resource: { buffer: this.decodeUniformBuf, size: 32 } },
         { binding: 1, resource: { buffer: this.workBuf } },
         { binding: 2, resource: { buffer: this.kvSlab0 } },
         { binding: 3, resource: { buffer: this.gqaSplitBuf } },
-        { binding: 4, resource: { buffer: this.tokenIdsBuf } },
       ],
     });
-    this.bgGqaSplit1 = device.createBindGroup({
-      layout: this.gqaSplitBgl,
+    this.bgDecodeGqaPrefill1 = device.createBindGroup({
+      layout: this.dynRwStorageBgl,
       entries: [
         { binding: 0, resource: { buffer: this.decodeUniformBuf, size: 32 } },
         { binding: 1, resource: { buffer: this.workBuf } },
         { binding: 2, resource: { buffer: this.kvSlab1 } },
         { binding: 3, resource: { buffer: this.gqaSplitBuf } },
-        { binding: 4, resource: { buffer: this.tokenIdsBuf } },
+      ],
+    });
+    this.bgDecodeGqaTree0 = device.createBindGroup({
+      layout: this.gqaTreeBgl,
+      entries: [
+        { binding: 0, resource: { buffer: this.decodeUniformBuf, size: 48 } },
+        { binding: 1, resource: { buffer: this.scalarMaskBuf } },
+        { binding: 2, resource: { buffer: this.workBuf } },
+        { binding: 3, resource: { buffer: this.ropeTableBuf! } },
+        { binding: 4, resource: { buffer: this.kvSlab0 } },
+        { binding: 5, resource: { buffer: this.gqaSplitBuf } },
+        { binding: 6, resource: { buffer: this.gqaOutBuf } },
+      ],
+    });
+    this.bgDecodeGqaTree1 = device.createBindGroup({
+      layout: this.gqaTreeBgl,
+      entries: [
+        { binding: 0, resource: { buffer: this.decodeUniformBuf, size: 48 } },
+        { binding: 1, resource: { buffer: this.scalarMaskBuf } },
+        { binding: 2, resource: { buffer: this.workBuf } },
+        { binding: 3, resource: { buffer: this.ropeTableBuf! } },
+        { binding: 4, resource: { buffer: this.kvSlab1 } },
+        { binding: 5, resource: { buffer: this.gqaSplitBuf } },
+        { binding: 6, resource: { buffer: this.gqaOutBuf } },
       ],
     });
     this.bgGqaPrefill0 = device.createBindGroup({
@@ -1611,23 +1769,32 @@ export class WgslQwen35Engine {
     return (this.arch.dnValHeads & 0xffff) | ((this.arch.dnKeyHeads & 0xffff) << 16);
   }
 
-  private packQkRopeParam(): number {
+  private packQkRopeParam(skipQRope = false): number {
     return (
-      (this.arch.attnQHeads & 0xff) |
-      ((this.arch.attnKvHeads & 0xff) << 8) |
-      (((this.arch.ropeDim / 2) & 0xffff) << 16)
+      ((this.arch.attnQHeads & 0xff) |
+        ((this.arch.attnKvHeads & 0xff) << 8) |
+        (((this.arch.ropeDim / 2) & 0x7fff) << 16) |
+        (skipQRope ? 0x80000000 : 0)) >>>
+      0
     );
   }
 
   private buildStaticDecodePlan(): void {
     const device = this.device!;
+    const faCount = this.fa0Count + this.fa1Count;
+    const dynSlotCount = Math.max(1, faCount * 3);
+    this.decodeDynByteLen = dynSlotCount * 256;
+    this.decodeDynCpu = new ArrayBuffer(this.decodeDynByteLen);
+    this.decodeDynU32 = new Uint32Array(this.decodeDynCpu);
+
     const uniformTable = new ArrayBuffer(UNIFORM_MAX_SLOTS * 256);
     const u32View = new Uint32Array(uniformTable);
     const f32View = new Float32Array(uniformTable);
 
     this.decodeSteps = [];
     this.decodeLayerEndStepIndices = [];
-    let nextSlot = 0;
+    this.decodeFaPatches = [];
+    let nextSlot = dynSlotCount;
 
     const push = (
       pipeline: unknown,
@@ -1651,13 +1818,11 @@ export class WgslQwen35Engine {
     const H = this.arch.hiddenSize;
     const I = this.arch.intermediateSize;
     const L = this.arch.numLayers;
-    const gemvWx = (rows: number) => Math.ceil(rows / 16);
-    const gemvWideWx = (rows: number) => Math.ceil(rows / 4);
-    const gateUpWx = (rows: number) => Math.ceil(rows / 8);
-    const gqaSplits = this.kvMode === 'int8' ? GQA_INT8_NUM_SPLITS : GQA_FP16_NUM_SPLITS;
-    const gqaSplitsPacked = this.packGqaSplitsParam(gqaSplits);
+    const q4V2Wx = (rows: number) => Math.ceil(rows / this.q4SmallMV2RowsPerWg);
+    const q4SwigluV2Wx = (rows: number) => Math.ceil(rows / this.q4SwigluSmallMV2RowsPerWg);
+    const gqaSplitsZero = this.packGqaSplitsParam(0);
     const gdnHeadsPacked = this.packGdnHeadsParam();
-    const qkRopePacked = this.packQkRopeParam();
+    const qkRopePackedRaw = this.packQkRopeParam(true);
     const convWgs = Math.ceil(this.dnConvDim / 128);
     const embedBlocksY = Math.ceil(H / 32);
     const attnQDim = this.arch.attnQHeads * this.arch.attnHeadDim * 2;
@@ -1690,8 +1855,8 @@ export class WgslQwen35Engine {
 
       if (!lo.isFullAttn) {
         const [wQkv, , , wOut, wGate, wUp, wDown] = lo.w;
-        // Fused QKV+Z+AB projection contiguous in weightSlab
-        push(this.gemvPipe, bgNormToWork, [this.dnQkvzAbRows, H, wQkv, 0, 0, 0, 0, 0], gemvWx(this.dnQkvzAbRows));
+        // Fused QKV+Z+AB projection contiguous in weightSlab via V2 small-M Q4 GEMV (tokens=1)
+        push(this.q4SmallMV2Pipe, bgNormToWork, [this.dnQkvzAbRows, H, wQkv, 0, 0, 0, 1, 0], q4V2Wx(this.dnQkvzAbRows));
         push(
           this.convPipe,
           this.bgConv,
@@ -1713,19 +1878,19 @@ export class WgslQwen35Engine {
           ],
           this.arch.dnValHeads,
         );
-        push(this.gemvWidePipe, bgAttnToHidden, [H, this.dnValDim, wOut, 0, 0, 1, 0, 0], gemvWideWx(H));
+        push(this.q4SmallMV2Pipe, bgAttnToHidden, [H, this.dnValDim, wOut, 0, 0, 1, 1, 0], q4V2Wx(H));
 
         push(this.rmsNormPipe, this.bgRmsNorm, [1, H, la.postNormOff, 0, 0, 1e-6, 0, 0], 1, 1, true);
         push(
-          this.gateUpSwigluPipe,
+          this.q4SwigluSmallMV2Pipe,
           bgNormToAttn,
-          [I, H, wGate, 0, 0, 0, wUp, 0],
-          gateUpWx(I),
+          [I, H, wGate, 0, 0, 0, 1, wUp],
+          q4SwigluV2Wx(I),
         );
-        push(this.gemvWidePipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, 0, 0], gemvWideWx(H));
+        push(this.q4SmallMV2Pipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, 1, 0], q4V2Wx(H));
       } else {
         const [wQg, , , wO, wGate, wUp, wDown] = lo.w;
-        push(this.gemvPipe, bgNormToWork, [this.attnQkvRows, H, wQg, 0, 0, 0, 0, 0], gemvWx(this.attnQkvRows));
+        push(this.q4SmallMV2Pipe, bgNormToWork, [this.attnQkvRows, H, wQg, 0, 0, 0, 1, 0], q4V2Wx(this.attnQkvRows));
 
         push(
           this.qkRopePipe,
@@ -1738,57 +1903,89 @@ export class WgslQwen35Engine {
             la.qNormOff,
             la.kNormOff,
             this.auxLayout.invFreqOff,
-            qkRopePacked,
+            qkRopePackedRaw,
           ],
           qkRopeHeadCount,
           1,
         );
 
+        const gqa0Slot = lo.faIdx * 3;
+        const gqaPartSlot = gqa0Slot + 1;
+        const gqaCombSlot = gqa0Slot + 2;
+        const gqa0UIdx = (gqa0Slot * 256) / 4;
+        const gqaPartUIdx = (gqaPartSlot * 256) / 4;
+        const gqaCombUIdx = (gqaCombSlot * 256) / 4;
+
         const inKv0 = lo.faIdx < this.fa0Count;
         const localKv = inKv0 ? lo.faIdx : lo.faIdx - this.fa0Count;
         const kvBaseU32 = localKv * (this.kvSingleBytes / 4);
-        push(
-          this.gqaSplitPipe,
-          inKv0 ? this.bgGqaSplit0 : this.bgGqaSplit1,
-          [
-            kvBaseU32,
-            this.maxSeqCapacity,
-            0xffffffff,
-            0,
-            attnQDim,
-            attnQDim + attnKvDim,
-            gqaSplitsPacked,
-            this.arch.attnHeadDim * 2,
-          ],
-          this.arch.attnKvHeads,
-          gqaSplits,
+        const bgGqaPrefill = inKv0 ? this.bgDecodeGqaPrefill0 : this.bgDecodeGqaPrefill1;
+        const bgGqaTree = inKv0 ? this.bgDecodeGqaTree0 : this.bgDecodeGqaTree1;
+
+        this.decodeDynU32.set(
+          [0, kvBaseU32, this.maxSeqCapacity, 0, 1, attnQDim, attnQDim + attnKvDim, gqaSplitsZero],
+          gqa0UIdx,
         );
+        const treeParams: [number, number, number, number, number, number, number, number, number, number, number, number] = [
+          0,
+          this.maxSeqCapacity,
+          this.arch.attnQHeads,
+          this.arch.attnKvHeads,
+          this.arch.attnHeadDim,
+          this.kvMode === 'int8' ? 1 : 0,
+          kvBaseU32,
+          this.arch.attnHeadDim * 2,
+          this.arch.ropeDim,
+          1,
+          0,
+          0,
+        ];
+        this.decodeDynU32.set(treeParams, gqaPartUIdx);
+        this.decodeDynU32.set(treeParams, gqaCombUIdx);
+
+        this.decodeSteps.push({
+          pipeline: this.gqaPrefillPipe,
+          bindGroup: bgGqaPrefill,
+          uniformByteOffset: gqa0Slot * 256,
+          wx: this.arch.attnKvHeads,
+          wy: 1,
+          wz: 1,
+        });
+        const gqaPartStep: DispatchStep = {
+          pipeline: this.gqaTreePartialPipe,
+          bindGroup: bgGqaTree,
+          uniformByteOffset: gqaPartSlot * 256,
+          wx: this.arch.attnQHeads,
+          wy: 1,
+          wz: 1,
+        };
+        this.decodeSteps.push(gqaPartStep);
+        this.decodeSteps.push({
+          pipeline: this.gqaTreeCombinePipe,
+          bindGroup: bgGqaTree,
+          uniformByteOffset: gqaCombSlot * 256,
+          wx: this.arch.attnQHeads,
+          wy: 1,
+          wz: 1,
+        });
+        this.decodeFaPatches.push({ qkUIdx: 0, gqa0UIdx, gqaPartUIdx, gqaCombUIdx, gqaPartStep });
 
         push(
           this.gqaReducePipe,
           this.bgGqaReduce,
-          [
-            gqaSplits,
-            this.arch.attnHeadDim,
-            0,
-            this.arch.attnHeadDim * 2,
-            this.arch.attnQHeads,
-            0,
-            0,
-            0,
-          ],
+          [0, this.arch.attnHeadDim, 0, this.arch.attnHeadDim * 2, this.arch.attnQHeads, 0, 0, 0],
           this.arch.attnQHeads,
         );
-        push(this.gemvWidePipe, bgAttnToHidden, [H, attnODim, wO, 0, 0, 1, 0, 0], gemvWideWx(H));
+        push(this.q4SmallMV2Pipe, bgAttnToHidden, [H, attnODim, wO, 0, 0, 1, 1, 0], q4V2Wx(H));
 
         push(this.rmsNormPipe, this.bgRmsNorm, [1, H, la.postNormOff, 0, 0, 1e-6, 0, 0], 1, 1, true);
         push(
-          this.gateUpSwigluPipe,
+          this.q4SwigluSmallMV2Pipe,
           bgNormToAttn,
-          [I, H, wGate, 0, 0, 0, wUp, 0],
-          gateUpWx(I),
+          [I, H, wGate, 0, 0, 0, 1, wUp],
+          q4SwigluV2Wx(I),
         );
-        push(this.gemvWidePipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, 0, 0], gemvWideWx(H));
+        push(this.q4SmallMV2Pipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, 1, 0], q4V2Wx(H));
       }
       if (l < L - 1) {
         this.decodeLayerEndStepIndices.push(this.decodeSteps.length);
@@ -1800,10 +1997,10 @@ export class WgslQwen35Engine {
     for (let sIdx = 0; sIdx < this.vocabSlices.length; sIdx++) {
       const slice = this.vocabSlices[sIdx]!;
       push(
-        this.gemvPipe,
+        this.q4SmallMV2Pipe,
         this.bgLmHeadPerSlice[sIdx]!,
-        [slice.rowCount, H, 0, 0, slice.startRow, 0, 0, 0],
-        gemvWx(slice.rowCount),
+        [slice.rowCount, H, 0, 0, slice.startRow, 0, 1, 0],
+        q4V2Wx(slice.rowCount),
       );
     }
     this.decodeLayerEndStepIndices.push(this.decodeSteps.length);
@@ -1813,7 +2010,12 @@ export class WgslQwen35Engine {
       );
     }
 
-    device.queue.writeBuffer(this.decodeUniformBuf, 0, uniformTable);
+    const staticStartByte = dynSlotCount * 256;
+    const staticByteLen = (nextSlot - dynSlotCount) * 256;
+    device.queue.writeBuffer(this.decodeUniformBuf, 0, this.decodeDynCpu);
+    if (staticByteLen > 0) {
+      device.queue.writeBuffer(this.decodeUniformBuf, staticStartByte, uniformTable, staticStartByte, staticByteLen);
+    }
   }
 
   resetDecodeBurst(): void {
@@ -2577,6 +2779,18 @@ export class WgslQwen35Engine {
       throw new Error(`Context overflow at seqPos=${this.seqPos} (maxSeqCapacity=${this.maxSeqCapacity})`);
     }
     device.queue.writeBuffer(this.tokenIdsBuf, 0, new Uint32Array([tokenId, this.seqPos]));
+    const maxParts = partitionCountGqa(this.seqPos + 1);
+    for (const fp of this.decodeFaPatches) {
+      this.decodeDynU32[fp.gqa0UIdx + 3] = this.seqPos;
+      this.decodeDynU32[fp.gqaPartUIdx] = this.seqPos;
+      this.decodeDynU32[fp.gqaPartUIdx + 9] = maxParts;
+      this.decodeDynU32[fp.gqaCombUIdx] = this.seqPos;
+      this.decodeDynU32[fp.gqaCombUIdx + 9] = maxParts;
+      fp.gqaPartStep.wz = maxParts;
+    }
+    if (this.decodeFaPatches.length > 0) {
+      device.queue.writeBuffer(this.decodeUniformBuf, 0, this.decodeDynCpu);
+    }
 
     const greedy = sampling.temperature <= 0 || sampling.topK === 1;
     const policy = calibratePacingForHardware(pacingMode, this.displayHz, this.emaDecodeStepMs);
@@ -2661,12 +2875,11 @@ export class WgslQwen35Engine {
     const L = this.arch.numLayers;
     const V = this.arch.vocabSize;
     const argmaxWgCount = Math.ceil(V / 256);
-    const batchWx = (rows: number) => Math.ceil(rows / 16);
-    const widePipe = this.gemvBatchWidePipe ?? this.gemvBatchPipe;
-    const wideWx = (rows: number) =>
-      this.gemvBatchWidePipe ? Math.ceil(rows / 8) : Math.ceil(rows / 16);
+    const q4V2Wx = (rows: number) => Math.ceil(rows / this.q4SmallMV2RowsPerWg);
+    const q4SwigluV2Wx = (rows: number) => Math.ceil(rows / this.q4SwigluSmallMV2RowsPerWg);
     const gdnHeadsPacked = this.packGdnHeadsParam();
-    const qkRopePacked = this.packQkRopeParam();
+    const qkRopePackedRaw = this.packQkRopeParam(true);
+    const gqaSplitsZero = this.packGqaSplitsParam(0);
     const convWgs = Math.ceil(this.dnConvDim / 128);
     const embedBlocksY = Math.ceil(H / 32);
     const attnQDim = this.arch.attnQHeads * this.arch.attnHeadDim * 2;
@@ -2733,23 +2946,20 @@ export class WgslQwen35Engine {
       makeDyn4(this.tokenIdsBuf, slab, this.hiddenBuf),
     );
     const vBgRmsNorm = makeDyn4(this.auxBuf, this.hiddenBuf, this.normBuf);
-    const vBgSwiGlu = makeDyn4(this.auxBuf, this.workBuf, this.attnOutBuf);
     const vBgWSlabNormToWork = this.wSlabs.map((slab) => makeDyn4(slab, this.normBuf, this.workBuf));
     const vBgWSlabNormToAttn = this.wSlabs.map((slab) => makeDyn4(slab, this.normBuf, this.attnOutBuf));
     const vBgWSlabAttnToHidden = this.wSlabs.map((slab) => makeDyn4(slab, this.attnOutBuf, this.hiddenBuf));
     const vBgLmHead = this.lmHeadSlabs.map((slab) => makeDyn4(slab, this.normBuf, this.verifyLogitsBuf));
     const vBgConv = makeDynRw(this.auxBuf, this.dnConvBuf, this.workBuf);
-    const vBgGqaReduce = makeDyn4(this.workBuf, this.gqaSplitBuf, this.attnOutBuf);
-    const vBgGdnChunkPrep = makeDyn4(this.auxBuf, this.workBuf, this.gqaSplitBuf);
-    const vBgGdnChunkApply = device.createBindGroup({
-      layout: this.gdnApplyBgl,
+    const vBgGqaReduce = makeDyn4(this.workBuf, this.gqaOutBuf, this.attnOutBuf);
+    const vBgGdnRec = device.createBindGroup({
+      layout: this.gdnRecBgl,
       entries: [
         { binding: 0, resource: { buffer: uniformBuf, size: 32 } },
         { binding: 1, resource: { buffer: this.auxBuf } },
         { binding: 2, resource: { buffer: this.workBuf } },
-        { binding: 3, resource: { buffer: this.gqaSplitBuf } },
-        { binding: 4, resource: { buffer: this.dnStateBuf } },
-        { binding: 5, resource: { buffer: this.attnOutBuf } },
+        { binding: 3, resource: { buffer: this.dnStateBuf } },
+        { binding: 4, resource: { buffer: this.attnOutBuf } },
       ],
     });
     const vBgQkRope = device.createBindGroup({
@@ -2763,6 +2973,30 @@ export class WgslQwen35Engine {
     });
     const vBgGqaPrefill0 = makeDynRw(this.workBuf, this.kvSlab0, this.gqaSplitBuf);
     const vBgGqaPrefill1 = makeDynRw(this.workBuf, this.kvSlab1, this.gqaSplitBuf);
+    const vBgGqaTree0 = device.createBindGroup({
+      layout: this.gqaTreeBgl,
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuf, size: 48 } },
+        { binding: 1, resource: { buffer: this.chainMasksBuf } },
+        { binding: 2, resource: { buffer: this.workBuf } },
+        { binding: 3, resource: { buffer: this.ropeTableBuf! } },
+        { binding: 4, resource: { buffer: this.kvSlab0 } },
+        { binding: 5, resource: { buffer: this.gqaSplitBuf } },
+        { binding: 6, resource: { buffer: this.gqaOutBuf } },
+      ],
+    });
+    const vBgGqaTree1 = device.createBindGroup({
+      layout: this.gqaTreeBgl,
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuf, size: 48 } },
+        { binding: 1, resource: { buffer: this.chainMasksBuf } },
+        { binding: 2, resource: { buffer: this.workBuf } },
+        { binding: 3, resource: { buffer: this.ropeTableBuf! } },
+        { binding: 4, resource: { buffer: this.kvSlab1 } },
+        { binding: 5, resource: { buffer: this.gqaSplitBuf } },
+        { binding: 6, resource: { buffer: this.gqaOutBuf } },
+      ],
+    });
 
     const uArgBatchBuf = device.createBuffer({
       size: 16,
@@ -2840,103 +3074,122 @@ export class WgslQwen35Engine {
 
       if (!lo.isFullAttn) {
         const [wQkv, wZ, wAb, wOut, wGate, wUp, wDown] = lo.w;
-        const dnNormOff = lo.dnIdx * MAX_SPEC_TOKENS * H;
+        const dnNormOff = (lo.dnIdx + 1) * MAX_SPEC_TOKENS * H; // block 0 = transient verify / final-norm rows
         pushStatic(this.rmsNormPipe, vBgRmsNorm, [M, H, la.inputNormOff, 0, dnNormOff, 1e-6, 0, 0], M, 1, 1, true);
-        pushStatic(this.gemvBatchPipe, bgNormToWork, [this.dnConvDim, H, wQkv, dnNormOff, 0, 0, M, 0], batchWx(this.dnConvDim));
-        pushStatic(this.gemvBatchPipe, bgNormToWork, [this.dnValDim, H, wZ, dnNormOff, M * this.dnConvDim, 0, M, 0], batchWx(this.dnValDim));
-        pushStatic(this.gemvBatchPipe, bgNormToWork, [this.arch.dnValHeads * 2, H, wAb, dnNormOff, M * (this.dnConvDim + this.dnValDim), 0, M, 0], batchWx(this.arch.dnValHeads * 2));
+        pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [this.dnConvDim, H, wQkv, dnNormOff, 0, 0, M, 0], q4V2Wx(this.dnConvDim));
+        pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [this.dnValDim, H, wZ, dnNormOff, M * this.dnConvDim, 0, M, 0], q4V2Wx(this.dnValDim));
+        pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [this.arch.dnValHeads * 2, H, wAb, dnNormOff, M * (this.dnConvDim + this.dnValDim), 0, M, 0], q4V2Wx(this.arch.dnValHeads * 2));
 
         pushStatic(this.convPipe, vBgConv, [M, la.convWOff, lo.dnIdx * this.dnConvPerLayerF32s, 0, this.dnConvDim, 0, 0, 0], convWgs);
         pushStatic(
-          this.gdnChunkPrepPipe,
-          vBgGdnChunkPrep,
-          [M, 0, la.dnAuxOff, 0, M * (this.dnConvDim + this.dnValDim), 0, gdnHeadsPacked, 0],
+          this.gdnRecPipe,
+          vBgGdnRec,
+          [
+            M,
+            lo.dnIdx * this.dnStatePerLayerF32s,
+            la.dnAuxOff,
+            0,
+            M * this.dnConvDim,
+            M * (this.dnConvDim + this.dnValDim),
+            0,
+            gdnHeadsPacked,
+          ],
           this.arch.dnValHeads,
         );
-        pushStatic(
-          this.gdnChunkApplyPipe,
-          vBgGdnChunkApply,
-          [0, M, 0, lo.dnIdx * this.dnStatePerLayerF32s, la.dnAuxOff, M * this.dnConvDim, 0, gdnHeadsPacked],
-          this.arch.dnValHeads,
-          8,
-        );
-        pushStatic(
-          this.gdnChunkApplyPipe,
-          vBgGdnChunkApply,
-          [1, M, 0, lo.dnIdx * this.dnStatePerLayerF32s, la.dnAuxOff, M * this.dnConvDim, 0, gdnHeadsPacked],
-          this.arch.dnValHeads,
-          M,
-        );
-        pushStatic(widePipe, bgAttnToHidden, [H, this.dnValDim, wOut, 0, 0, 1, M, 0], wideWx(H));
+        pushStatic(this.q4SmallMV2Pipe, bgAttnToHidden, [H, this.dnValDim, wOut, 0, 0, 1, M, 0], q4V2Wx(H));
         pushStatic(this.rmsNormPipe, vBgRmsNorm, [M, H, la.postNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
-        if (this.gateUpSwigluBatchPipe) {
-          pushStatic(
-            this.gateUpSwigluBatchPipe,
-            vBgWSlabNormToAttn[lo.slabIdx]!,
-            [I, H, wGate, 0, 0, 0, M, wUp],
-            Math.ceil(I / 8),
-          );
-        } else {
-          pushStatic(this.gemvBatchPipe, bgNormToWork, [I, H, wGate, 0, 0, 0, M, 0], batchWx(I));
-          pushStatic(this.gemvBatchPipe, bgNormToWork, [I, H, wUp, 0, M * I, 0, M, 0], batchWx(I));
-          pushStatic(this.swigluPipe, vBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
-        }
-        pushStatic(widePipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, M, 0], wideWx(H));
+        pushStatic(
+          this.q4SwigluSmallMV2Pipe,
+          vBgWSlabNormToAttn[lo.slabIdx]!,
+          [I, H, wGate, 0, 0, 0, M, wUp],
+          q4SwigluV2Wx(I),
+        );
+        pushStatic(this.q4SmallMV2Pipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, M, 0], q4V2Wx(H));
       } else {
         const [wQg, wK, wV, wO, wGate, wUp, wDown] = lo.w;
         pushStatic(this.rmsNormPipe, vBgRmsNorm, [M, H, la.inputNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
-        pushStatic(this.gemvBatchPipe, bgNormToWork, [attnQDim, H, wQg, 0, 0, 0, M, 0], batchWx(attnQDim));
-        pushStatic(this.gemvBatchPipe, bgNormToWork, [attnKvDim, H, wK, 0, M * attnQDim, 0, M, 0], batchWx(attnKvDim));
-        pushStatic(this.gemvBatchPipe, bgNormToWork, [attnKvDim, H, wV, 0, M * (attnQDim + attnKvDim), 0, M, 0], batchWx(attnKvDim));
+        pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [attnQDim, H, wQg, 0, 0, 0, M, 0], q4V2Wx(attnQDim));
+        pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [attnKvDim, H, wK, 0, M * attnQDim, 0, M, 0], q4V2Wx(attnKvDim));
+        pushStatic(this.q4SmallMV2Pipe, bgNormToWork, [attnKvDim, H, wV, 0, M * (attnQDim + attnKvDim), 0, M, 0], q4V2Wx(attnKvDim));
 
         const qkSlot = lo.faIdx * 4;
         const gqa0Slot = qkSlot + 1;
-        const gqa1Slot = qkSlot + 2;
-        const redSlot = qkSlot + 3;
+        const gqaPartSlot = qkSlot + 2;
+        const gqaCombSlot = qkSlot + 3;
         const qkUIdx = (qkSlot * 256) / 4;
         const gqa0UIdx = (gqa0Slot * 256) / 4;
-        const gqa1UIdx = (gqa1Slot * 256) / 4;
-        const redUIdx = (redSlot * 256) / 4;
+        const gqaPartUIdx = (gqaPartSlot * 256) / 4;
+        const gqaCombUIdx = (gqaCombSlot * 256) / 4;
 
         const inKv0 = lo.faIdx < this.fa0Count;
         const localKv = inKv0 ? lo.faIdx : lo.faIdx - this.fa0Count;
         const kvBaseU32 = localKv * (this.kvSingleBytes / 4);
         const bgGqaPrefill = inKv0 ? vBgGqaPrefill0 : vBgGqaPrefill1;
+        const bgGqaTree = inKv0 ? vBgGqaTree0 : vBgGqaTree1;
 
-        dynU32.set([M, 0, 0, M * attnQDim, la.qNormOff, la.kNormOff, this.auxLayout.invFreqOff, qkRopePacked], qkUIdx);
-        dynU32.set([0, kvBaseU32, this.maxSeqCapacity, 0, M, M * attnQDim, M * (attnQDim + attnKvDim), 0], gqa0UIdx);
-        dynU32.set([1, kvBaseU32, this.maxSeqCapacity, 0, M, 0, 0, 0], gqa1UIdx);
-        dynU32.set([1, this.arch.attnHeadDim, 0, this.arch.attnHeadDim * 2, this.arch.attnQHeads, 0, 0, 0], redUIdx);
+        dynU32.set([M, 0, 0, M * attnQDim, la.qNormOff, la.kNormOff, this.auxLayout.invFreqOff, qkRopePackedRaw], qkUIdx);
+        dynU32.set([0, kvBaseU32, this.maxSeqCapacity, 0, M, M * attnQDim, M * (attnQDim + attnKvDim), gqaSplitsZero], gqa0UIdx);
+        const treeParams: [number, number, number, number, number, number, number, number, number, number, number, number] = [
+          0,
+          this.maxSeqCapacity,
+          this.arch.attnQHeads,
+          this.arch.attnKvHeads,
+          this.arch.attnHeadDim,
+          this.kvMode === 'int8' ? 1 : 0,
+          kvBaseU32,
+          this.arch.attnHeadDim * 2,
+          this.arch.ropeDim,
+          1,
+          0,
+          0,
+        ];
+        dynU32.set(treeParams, gqaPartUIdx);
+        dynU32.set(treeParams, gqaCombUIdx);
 
         steps.push({ pipeline: this.qkRopePipe, bindGroup: vBgQkRope, uniformByteOffset: qkSlot * 256, wx: qkRopeHeadCount, wy: M, wz: 1 });
         steps.push({ pipeline: this.gqaPrefillPipe, bindGroup: bgGqaPrefill, uniformByteOffset: gqa0Slot * 256, wx: this.arch.attnKvHeads, wy: M, wz: 1 });
-        const gqa1Step: DispatchStep = { pipeline: this.gqaPrefillPipe, bindGroup: bgGqaPrefill, uniformByteOffset: gqa1Slot * 256, wx: this.arch.attnKvHeads, wy: Math.ceil(M / 2), wz: 1 };
-        steps.push(gqa1Step);
-        steps.push({ pipeline: this.gqaReducePipe, bindGroup: vBgGqaReduce, uniformByteOffset: redSlot * 256, wx: this.arch.attnQHeads, wy: M, wz: 1 });
-        faPatches.push({ qkUIdx, gqa0UIdx, gqa1UIdx, redUIdx, gqa1Step } as VerifyFaPatchTarget & { redUIdx: number });
+        const gqaPartStep: DispatchStep = {
+          pipeline: this.gqaTreePartialPipe,
+          bindGroup: bgGqaTree,
+          uniformByteOffset: gqaPartSlot * 256,
+          wx: this.arch.attnQHeads,
+          wy: M,
+          wz: 1,
+        };
+        steps.push(gqaPartStep);
+        steps.push({
+          pipeline: this.gqaTreeCombinePipe,
+          bindGroup: bgGqaTree,
+          uniformByteOffset: gqaCombSlot * 256,
+          wx: this.arch.attnQHeads,
+          wy: M,
+          wz: 1,
+        });
+        pushStatic(
+          this.gqaReducePipe,
+          vBgGqaReduce,
+          [0, this.arch.attnHeadDim, 0, this.arch.attnHeadDim * 2, this.arch.attnQHeads, 0, 0, 0],
+          this.arch.attnQHeads,
+          M,
+        );
+        faPatches.push({ qkUIdx, gqa0UIdx, gqaPartUIdx, gqaCombUIdx, gqaPartStep });
 
-        pushStatic(widePipe, bgAttnToHidden, [H, attnODim, wO, 0, 0, 1, M, 0], wideWx(H));
+        pushStatic(this.q4SmallMV2Pipe, bgAttnToHidden, [H, attnODim, wO, 0, 0, 1, M, 0], q4V2Wx(H));
         pushStatic(this.rmsNormPipe, vBgRmsNorm, [M, H, la.postNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
-        if (this.gateUpSwigluBatchPipe) {
-          pushStatic(
-            this.gateUpSwigluBatchPipe,
-            vBgWSlabNormToAttn[lo.slabIdx]!,
-            [I, H, wGate, 0, 0, 0, M, wUp],
-            Math.ceil(I / 8),
-          );
-        } else {
-          pushStatic(this.gemvBatchPipe, bgNormToWork, [I, H, wGate, 0, 0, 0, M, 0], batchWx(I));
-          pushStatic(this.gemvBatchPipe, bgNormToWork, [I, H, wUp, 0, M * I, 0, M, 0], batchWx(I));
-          pushStatic(this.swigluPipe, vBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
-        }
-        pushStatic(widePipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, M, 0], wideWx(H));
+        pushStatic(
+          this.q4SwigluSmallMV2Pipe,
+          vBgWSlabNormToAttn[lo.slabIdx]!,
+          [I, H, wGate, 0, 0, 0, M, wUp],
+          q4SwigluV2Wx(I),
+        );
+        pushStatic(this.q4SmallMV2Pipe, bgAttnToHidden, [H, I, wDown, 0, 0, 1, M, 0], q4V2Wx(H));
       }
     }
 
     pushStatic(this.rmsNormPipe, vBgRmsNorm, [M, H, this.auxLayout.finalNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
     for (let sIdx = 0; sIdx < this.vocabSlices.length; sIdx++) {
       const slice = this.vocabSlices[sIdx]!;
-      pushStatic(this.gemvBatchPipe, vBgLmHead[sIdx]!, [slice.rowCount, H, 0, 0, slice.startRow, 0, M, V], batchWx(slice.rowCount));
+      pushStatic(this.q4SmallMV2Pipe, vBgLmHead[sIdx]!, [slice.rowCount, H, 0, 0, slice.startRow, 0, M, V], q4V2Wx(slice.rowCount));
     }
 
     const dynByteStart = 0;
@@ -2945,6 +3198,8 @@ export class WgslQwen35Engine {
     if (staticByteLen > 0) {
       device.queue.writeBuffer(uniformBuf, staticStartByte, tempTable, staticStartByte, staticByteLen);
     }
+
+    this.assertVerifyNormSlicesDisjoint(M, H);
 
     const plan: VerifyGraphPlan = {
       M,
@@ -2961,6 +3216,11 @@ export class WgslQwen35Engine {
     };
     this.verifyPlans.set(M, plan);
     return plan;
+  }
+
+  private assertVerifyNormSlicesDisjoint(M: number, H: number): void {
+    const dnCount = this.layerOffsets.reduce((acc, lo) => acc + (lo.isFullAttn ? 0 : 1), 0);
+    assertDisjointVerifyNormSlices(dnCount, M, MAX_SPEC_TOKENS, H, this.normBufRows);
   }
 
   /**
@@ -2998,22 +3258,20 @@ export class WgslQwen35Engine {
     const V = this.arch.vocabSize;
     const L = this.arch.numLayers;
     const argmaxWgCount = Math.ceil(V / 256);
-    const verifySplits = startPos + M <= 512 ? 1 : startPos + M <= 4096 ? 4 : PREFILL_NUM_SPLITS;
-    const verifySplitsPacked = this.packGqaSplitsParam(verifySplits);
+    const maxParts = partitionCountGqa(startPos + M);
     const gdnHeadsPacked = this.packGdnHeadsParam();
     const convWgs = Math.ceil(this.dnConvDim / 128);
     const dnCount = Math.max(1, this.numDnLayers);
 
     const plan = this.buildOrGetVerifyPlan(M);
     for (const fp of plan.faPatches) {
-      const target = fp as VerifyFaPatchTarget & { redUIdx: number };
-      plan.dynU32[target.qkUIdx + 1] = startPos;
-      plan.dynU32[target.gqa0UIdx + 3] = startPos;
-      plan.dynU32[target.gqa0UIdx + 7] = verifySplitsPacked;
-      plan.dynU32[target.gqa1UIdx + 3] = startPos;
-      plan.dynU32[target.gqa1UIdx + 7] = verifySplitsPacked;
-      plan.dynU32[target.redUIdx] = verifySplits;
-      target.gqa1Step.wz = verifySplits;
+      plan.dynU32[fp.qkUIdx + 1] = startPos;
+      plan.dynU32[fp.gqa0UIdx + 3] = startPos;
+      plan.dynU32[fp.gqaPartUIdx] = startPos;
+      plan.dynU32[fp.gqaPartUIdx + 9] = maxParts;
+      plan.dynU32[fp.gqaCombUIdx] = startPos;
+      plan.dynU32[fp.gqaCombUIdx + 9] = maxParts;
+      fp.gqaPartStep.wz = maxParts;
     }
 
     device.queue.writeBuffer(this.tokenIdsBuf, 0, new Uint32Array(tokens));
@@ -3055,7 +3313,7 @@ export class WgslQwen35Engine {
     if (acceptedCount < draftTokens.length) {
       const keepTokens = acceptedCount + 1;
       const H = this.arch.hiddenSize;
-      const batchWx = (rows: number) => Math.ceil(rows / 16);
+      const q4V2Wx = (rows: number) => Math.ceil(rows / this.q4SmallMV2RowsPerWg);
       const rbU32 = new Uint32Array(this.rbUniformScratch);
       let rbSlot = 0;
       const pushRb = (vals: [number, number, number, number, number, number, number, number]) => {
@@ -3075,23 +3333,23 @@ export class WgslQwen35Engine {
         if (lo.isFullAttn) continue;
         const la = this.auxLayout.layers[l]!;
         const [wQkv, wZ, wAb] = lo.w;
-        const dnNormOff = lo.dnIdx * MAX_SPEC_TOKENS * H;
+        const dnNormOff = (lo.dnIdx + 1) * MAX_SPEC_TOKENS * H; // block 0 = transient verify / final-norm rows
         const pBgNormToWork = this.pBgWSlabNormToWork[lo.slabIdx]!;
 
         const qOff = pushRb([this.dnConvDim, H, wQkv, dnNormOff, 0, 0, keepTokens, 0]);
-        rPass.setPipeline(this.gemvBatchPipe);
+        rPass.setPipeline(this.q4SmallMV2Pipe);
         rPass.setBindGroup(0, pBgNormToWork, [qOff]);
-        rPass.dispatchWorkgroups(batchWx(this.dnConvDim), 1, 1);
+        rPass.dispatchWorkgroups(q4V2Wx(this.dnConvDim), 1, 1);
 
         const zOff = pushRb([this.dnValDim, H, wZ, dnNormOff, keepTokens * this.dnConvDim, 0, keepTokens, 0]);
-        rPass.setPipeline(this.gemvBatchPipe);
+        rPass.setPipeline(this.q4SmallMV2Pipe);
         rPass.setBindGroup(0, pBgNormToWork, [zOff]);
-        rPass.dispatchWorkgroups(batchWx(this.dnValDim), 1, 1);
+        rPass.dispatchWorkgroups(q4V2Wx(this.dnValDim), 1, 1);
 
         const abOff = pushRb([this.arch.dnValHeads * 2, H, wAb, dnNormOff, keepTokens * (this.dnConvDim + this.dnValDim), 0, keepTokens, 0]);
-        rPass.setPipeline(this.gemvBatchPipe);
+        rPass.setPipeline(this.q4SmallMV2Pipe);
         rPass.setBindGroup(0, pBgNormToWork, [abOff]);
-        rPass.dispatchWorkgroups(batchWx(this.arch.dnValHeads * 2), 1, 1);
+        rPass.dispatchWorkgroups(q4V2Wx(this.arch.dnValHeads * 2), 1, 1);
 
         const cOff = pushRb([keepTokens, la.convWOff, lo.dnIdx * this.dnConvPerLayerF32s, 0, this.dnConvDim, 0, 0, 0]);
         rPass.setPipeline(this.convPipe);
@@ -3178,15 +3436,6 @@ export class WgslQwen35Engine {
           { binding: 5, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
         ],
       });
-      this.gqaTreeBgl = device.createBindGroupLayout({
-        entries: [
-          { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true } },
-          { binding: 1, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
-          { binding: 2, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
-          { binding: 3, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'read-only-storage' } },
-          { binding: 4, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'storage' } },
-        ],
-      });
       this.kvCompactBgl = device.createBindGroupLayout({
         entries: [
           { binding: 0, visibility: GPU_SHADER_COMPUTE, buffer: { type: 'uniform', hasDynamicOffset: true } },
@@ -3207,14 +3456,12 @@ export class WgslQwen35Engine {
       const dnConvTreeLayout = device.createPipelineLayout({ bindGroupLayouts: [this.dnConvTreeBgl] });
       const dnIoLayout = device.createPipelineLayout({ bindGroupLayouts: [this.dnIoBgl] });
       const dnTreeLayout = device.createPipelineLayout({ bindGroupLayouts: [this.dnTreeBgl] });
-      const gqaTreeLayout = device.createPipelineLayout({ bindGroupLayouts: [this.gqaTreeBgl] });
       const kvCompactLayout = device.createPipelineLayout({ bindGroupLayouts: [this.kvCompactBgl] });
       const acceptTreeLayout = device.createPipelineLayout({ bindGroupLayouts: [this.acceptTreeBgl] });
 
       const dnConvSrc = getWgslShaderSource(wasm, 46);
       const dnIoSrc = getWgslShaderSource(wasm, 47);
       const dnTreeSrc = getWgslShaderSource(wasm, 48);
-      const gqaTreeSrc = getWgslShaderSource(wasm, 49);
       const kvCompactSrc = getWgslShaderSource(wasm, 50);
       const acceptTreeSrc = getWgslShaderSource(wasm, 52);
 
@@ -3225,7 +3472,6 @@ export class WgslQwen35Engine {
         this.dnIoGatePipe,
         this.dnTreeVerifyPipe,
         this.dnTreeCommitPipe,
-        this.gqaTreePipe,
         this.kvCompactPipe,
         this.acceptTreePipe,
       ] = await Promise.all([
@@ -3235,7 +3481,6 @@ export class WgslQwen35Engine {
         createValidatedPipeline(device, 'e1-dn-io-gate', dnIoSrc, dnIoLayout, 'gate'),
         createValidatedPipeline(device, 'e1-dn-tree-verify', dnTreeSrc, dnTreeLayout, 'verify'),
         createValidatedPipeline(device, 'e1-dn-tree-commit', dnTreeSrc, dnTreeLayout, 'commit'),
-        createValidatedPipeline(device, 'e2-gqa-tree', gqaTreeSrc, gqaTreeLayout, 'main'),
         createValidatedPipeline(device, 'e2-kv-compact', kvCompactSrc, kvCompactLayout, 'main'),
         createValidatedPipeline(device, 'e2-accept-tree', acceptTreeSrc, acceptTreeLayout, 'main'),
       ]);
@@ -3360,10 +3605,8 @@ export class WgslQwen35Engine {
     const L = this.arch.numLayers;
     const V = this.arch.vocabSize;
     const argmaxWgCount = Math.ceil(V / 256);
-    const batchWx = (rows: number) => Math.ceil(rows / 16);
-    const widePipe = this.gemvBatchWidePipe ?? this.gemvBatchPipe;
-    const wideWx = (rows: number) =>
-      this.gemvBatchWidePipe ? Math.ceil(rows / 8) : Math.ceil(rows / 16);
+    const q4V2Wx = (rows: number) => Math.ceil(rows / this.q4SmallMV2RowsPerWg);
+    const q4SwigluV2Wx = (rows: number) => Math.ceil(rows / this.q4SwigluSmallMV2RowsPerWg);
     const convTreeWgs = Math.ceil(this.dnConvDim / 64);
     const dnColWgs = Math.ceil(this.arch.dnHeadDim / 32);
     const kvCompactWgsX = Math.ceil(this.kvRowU32s / 64);
@@ -3372,10 +3615,11 @@ export class WgslQwen35Engine {
     const attnKvDim = this.arch.attnKvHeads * this.arch.attnHeadDim;
     const attnODim = this.arch.attnQHeads * this.arch.attnHeadDim;
     const qkRopeHeadCount = this.arch.attnQHeads + this.arch.attnKvHeads;
-    const qkRopePacked = this.packQkRopeParam();
+    const qkRopePackedRaw = this.packQkRopeParam(true);
+    const gqaSplitsZero = this.packGqaSplitsParam(0);
 
     const faCount = this.fa0Count + this.fa1Count;
-    const dynSlotCount = Math.max(1, faCount * 4);
+    const dynSlotCount = Math.max(1, faCount * 5);
     const dynCpu = new ArrayBuffer(dynSlotCount * 256);
     const dynU32 = new Uint32Array(dynCpu);
 
@@ -3433,7 +3677,6 @@ export class WgslQwen35Engine {
       makeDyn4(this.tokenIdsBuf, slab, this.hiddenBuf),
     );
     const tBgRmsNorm = makeDyn4(this.auxBuf, this.hiddenBuf, this.normBuf);
-    const tBgSwiGlu = makeDyn4(this.auxBuf, this.workBuf, this.attnOutBuf);
     const tBgWSlabNormToTreeQkv = this.wSlabs.map((slab) =>
       makeDyn4(slab, this.normBuf, this.treeRawQkvBuf!),
     );
@@ -3441,7 +3684,7 @@ export class WgslQwen35Engine {
     const tBgWSlabNormToAttn = this.wSlabs.map((slab) => makeDyn4(slab, this.normBuf, this.attnOutBuf));
     const tBgWSlabAttnToHidden = this.wSlabs.map((slab) => makeDyn4(slab, this.attnOutBuf, this.hiddenBuf));
     const tBgLmHead = this.lmHeadSlabs.map((slab) => makeDyn4(slab, this.normBuf, this.verifyLogitsBuf));
-    const tBgGqaReduce = makeDyn4(this.workBuf, this.gqaSplitBuf, this.attnOutBuf);
+    const tBgGqaReduce = makeDyn4(this.workBuf, this.gqaOutBuf, this.attnOutBuf);
     const tBgQkRope = device.createBindGroup({
       layout: this.qkRopeBgl,
       entries: [
@@ -3457,21 +3700,25 @@ export class WgslQwen35Engine {
     const tBgGqaTree0 = device.createBindGroup({
       layout: this.gqaTreeBgl,
       entries: [
-        { binding: 0, resource: { buffer: uniformBuf, size: 32 } },
+        { binding: 0, resource: { buffer: uniformBuf, size: 48 } },
         { binding: 1, resource: { buffer: this.treeMasksBuf! } },
         { binding: 2, resource: { buffer: this.workBuf } },
-        { binding: 3, resource: { buffer: this.kvSlab0 } },
-        { binding: 4, resource: { buffer: this.gqaSplitBuf } },
+        { binding: 3, resource: { buffer: this.ropeTableBuf! } },
+        { binding: 4, resource: { buffer: this.kvSlab0 } },
+        { binding: 5, resource: { buffer: this.gqaSplitBuf } },
+        { binding: 6, resource: { buffer: this.gqaOutBuf } },
       ],
     });
     const tBgGqaTree1 = device.createBindGroup({
       layout: this.gqaTreeBgl,
       entries: [
-        { binding: 0, resource: { buffer: uniformBuf, size: 32 } },
+        { binding: 0, resource: { buffer: uniformBuf, size: 48 } },
         { binding: 1, resource: { buffer: this.treeMasksBuf! } },
         { binding: 2, resource: { buffer: this.workBuf } },
-        { binding: 3, resource: { buffer: this.kvSlab1 } },
-        { binding: 4, resource: { buffer: this.gqaSplitBuf } },
+        { binding: 3, resource: { buffer: this.ropeTableBuf! } },
+        { binding: 4, resource: { buffer: this.kvSlab1 } },
+        { binding: 5, resource: { buffer: this.gqaSplitBuf } },
+        { binding: 6, resource: { buffer: this.gqaOutBuf } },
       ],
     });
     const tBgKvCompact0 = device.createBindGroup({
@@ -3577,17 +3824,7 @@ export class WgslQwen35Engine {
       addRes: number,
       outStride: number,
     ) => {
-      const c0 = Math.min(8, M);
-      pushStatic(pipeline, bindGroup, [rows, cols, wOff, inOff, outOff, addRes, c0, outStride], wx);
-      if (M > 8) {
-        const c1 = M - 8;
-        pushStatic(
-          pipeline,
-          bindGroup,
-          [rows, cols, wOff, inOff + 8 * cols, outOff + 8 * outStride, addRes, c1, outStride],
-          wx,
-        );
-      }
+      pushStatic(pipeline, bindGroup, [rows, cols, wOff, inOff, outOff, addRes, M, outStride], wx);
     };
 
     for (let sIdx = 0; sIdx < this.vocabSlices.length; sIdx++) {
@@ -3612,8 +3849,8 @@ export class WgslQwen35Engine {
         const [wQkv, wZ, wAb, wOut, wGate, wUp, wDown] = lo.w;
         pushStatic(this.rmsNormPipe, tBgRmsNorm, [M, H, la.inputNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
         pushQ4Batch(
-          this.gemvBatchPipe,
-          batchWx(this.dnConvDim),
+          this.q4SmallMV2Pipe,
+          q4V2Wx(this.dnConvDim),
           tBgWSlabNormToTreeQkv[lo.slabIdx]!,
           this.dnConvDim,
           H,
@@ -3623,10 +3860,10 @@ export class WgslQwen35Engine {
           0,
           this.dnConvDim,
         );
-        pushQ4Batch(this.gemvBatchPipe, batchWx(this.dnValDim), bgNormToWork, this.dnValDim, H, wZ, 0, 0, 0, this.dnValDim);
+        pushQ4Batch(this.q4SmallMV2Pipe, q4V2Wx(this.dnValDim), bgNormToWork, this.dnValDim, H, wZ, 0, 0, 0, this.dnValDim);
         pushQ4Batch(
-          this.gemvBatchPipe,
-          batchWx(this.arch.dnValHeads * 2),
+          this.q4SmallMV2Pipe,
+          q4V2Wx(this.arch.dnValHeads * 2),
           bgNormToWork,
           this.arch.dnValHeads * 2,
           H,
@@ -3735,7 +3972,7 @@ export class WgslQwen35Engine {
             uniformByteOffset: 0,
             wx: dnColWgs,
             wy: this.arch.dnValHeads,
-            wz: M,
+            wz: 1,
             isStaticBindGroup: true,
           },
           {
@@ -3769,31 +4006,18 @@ export class WgslQwen35Engine {
           },
         );
 
-        pushQ4Batch(widePipe, wideWx(H), bgAttnToHidden, H, this.dnValDim, wOut, 0, 0, 1, H);
+        pushQ4Batch(this.q4SmallMV2Pipe, q4V2Wx(H), bgAttnToHidden, H, this.dnValDim, wOut, 0, 0, 1, H);
         pushStatic(this.rmsNormPipe, tBgRmsNorm, [M, H, la.postNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
-        if (this.gateUpSwigluBatchPipe) {
-          pushQ4Batch(this.gateUpSwigluBatchPipe, Math.ceil(I / 8), bgNormToAttn, I, H, wGate, 0, 0, 0, wUp);
-          // For gate+up batch v2, second arg in slot idx 7 is wUp (outOffset advances by 8*I for M>8)
-          if (M > 8) {
-            const c1Step = steps[steps.length - 1]!;
-            const uIdx = c1Step.uniformByteOffset / 4;
-            u32View[uIdx + 4] = 8 * I;
-            u32View[uIdx + 7] = wUp;
-          }
-        } else {
-          pushQ4Batch(this.gemvBatchPipe, batchWx(I), bgNormToWork, I, H, wGate, 0, 0, 0, I);
-          pushQ4Batch(this.gemvBatchPipe, batchWx(I), bgNormToWork, I, H, wUp, 0, M * I, 0, I);
-          pushStatic(this.swigluPipe, tBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
-        }
-        pushQ4Batch(widePipe, wideWx(H), bgAttnToHidden, H, I, wDown, 0, 0, 1, H);
+        pushStatic(this.q4SwigluSmallMV2Pipe, bgNormToAttn, [I, H, wGate, 0, 0, 0, M, wUp], q4SwigluV2Wx(I));
+        pushQ4Batch(this.q4SmallMV2Pipe, q4V2Wx(H), bgAttnToHidden, H, I, wDown, 0, 0, 1, H);
       } else {
         const [wQg, wK, wV, wO, wGate, wUp, wDown] = lo.w;
         pushStatic(this.rmsNormPipe, tBgRmsNorm, [M, H, la.inputNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
-        pushQ4Batch(this.gemvBatchPipe, batchWx(attnQDim), bgNormToWork, attnQDim, H, wQg, 0, 0, 0, attnQDim);
-        pushQ4Batch(this.gemvBatchPipe, batchWx(attnKvDim), bgNormToWork, attnKvDim, H, wK, 0, M * attnQDim, 0, attnKvDim);
+        pushQ4Batch(this.q4SmallMV2Pipe, q4V2Wx(attnQDim), bgNormToWork, attnQDim, H, wQg, 0, 0, 0, attnQDim);
+        pushQ4Batch(this.q4SmallMV2Pipe, q4V2Wx(attnKvDim), bgNormToWork, attnKvDim, H, wK, 0, M * attnQDim, 0, attnKvDim);
         pushQ4Batch(
-          this.gemvBatchPipe,
-          batchWx(attnKvDim),
+          this.q4SmallMV2Pipe,
+          q4V2Wx(attnKvDim),
           bgNormToWork,
           attnKvDim,
           H,
@@ -3804,13 +4028,15 @@ export class WgslQwen35Engine {
           attnKvDim,
         );
 
-        const qkSlot = lo.faIdx * 4;
+        const qkSlot = lo.faIdx * 5;
         const gqa0Slot = qkSlot + 1;
-        const gqaTreeSlot = qkSlot + 2;
-        const kvCompactSlot = qkSlot + 3;
+        const gqaPartSlot = qkSlot + 2;
+        const gqaCombSlot = qkSlot + 3;
+        const kvCompactSlot = qkSlot + 4;
         const qkUIdx = (qkSlot * 256) / 4;
         const gqa0UIdx = (gqa0Slot * 256) / 4;
-        const gqaTreeUIdx = (gqaTreeSlot * 256) / 4;
+        const gqaPartUIdx = (gqaPartSlot * 256) / 4;
+        const gqaCombUIdx = (gqaCombSlot * 256) / 4;
         const kvCompactUIdx = (kvCompactSlot * 256) / 4;
 
         const inKv0 = lo.faIdx < this.fa0Count;
@@ -3820,27 +4046,39 @@ export class WgslQwen35Engine {
         const bgGqaTree = inKv0 ? tBgGqaTree0 : tBgGqaTree1;
         const bgKvCompact = inKv0 ? tBgKvCompact0 : tBgKvCompact1;
 
-        dynU32.set([M, 0xfffffffe, 0, M * attnQDim, la.qNormOff, la.kNormOff, this.auxLayout.invFreqOff, qkRopePacked], qkUIdx);
-        dynU32.set([0, kvBaseU32, this.maxSeqCapacity, 0, M, M * attnQDim, M * (attnQDim + attnKvDim), 0], gqa0UIdx);
-        dynU32.set(
-          [
-            0,
-            this.maxSeqCapacity,
-            this.arch.attnQHeads,
-            this.arch.attnKvHeads,
-            this.arch.attnHeadDim,
-            this.kvMode === 'int8' ? 1 : 0,
-            kvBaseU32,
-            this.arch.attnHeadDim * 2,
-          ],
-          gqaTreeUIdx,
-        );
+        dynU32.set([M, 0xfffffffe, 0, M * attnQDim, la.qNormOff, la.kNormOff, this.auxLayout.invFreqOff, qkRopePackedRaw], qkUIdx);
+        dynU32.set([0, kvBaseU32, this.maxSeqCapacity, 0, M, M * attnQDim, M * (attnQDim + attnKvDim), gqaSplitsZero], gqa0UIdx);
+        const treeParams: [number, number, number, number, number, number, number, number, number, number, number, number] = [
+          0,
+          this.maxSeqCapacity,
+          this.arch.attnQHeads,
+          this.arch.attnKvHeads,
+          this.arch.attnHeadDim,
+          this.kvMode === 'int8' ? 1 : 0,
+          kvBaseU32,
+          this.arch.attnHeadDim * 2,
+          this.arch.ropeDim,
+          1,
+          0,
+          0,
+        ];
+        dynU32.set(treeParams, gqaPartUIdx);
+        dynU32.set(treeParams, gqaCombUIdx);
         dynU32.set([0, this.maxSeqCapacity, this.kvRowU32s, kvBaseU32, 0, 0, 0, 0], kvCompactUIdx);
 
+        const gqaPartStep: DispatchStep = {
+          pipeline: this.gqaTreePartialPipe,
+          bindGroup: bgGqaTree,
+          uniformByteOffset: gqaPartSlot * 256,
+          wx: this.arch.attnQHeads,
+          wy: M,
+          wz: 1,
+        };
         steps.push(
           { pipeline: this.qkRopePipe, bindGroup: tBgQkRope, uniformByteOffset: qkSlot * 256, wx: qkRopeHeadCount, wy: M, wz: 1 },
           { pipeline: this.gqaPrefillPipe, bindGroup: bgGqaPrefill, uniformByteOffset: gqa0Slot * 256, wx: this.arch.attnKvHeads, wy: M, wz: 1 },
-          { pipeline: this.gqaTreePipe, bindGroup: bgGqaTree, uniformByteOffset: gqaTreeSlot * 256, wx: this.arch.attnQHeads, wy: M, wz: 1 },
+          gqaPartStep,
+          { pipeline: this.gqaTreeCombinePipe, bindGroup: bgGqaTree, uniformByteOffset: gqaCombSlot * 256, wx: this.arch.attnQHeads, wy: M, wz: 1 },
         );
         pushStatic(
           this.gqaReducePipe,
@@ -3857,24 +4095,12 @@ export class WgslQwen35Engine {
           wy: 2 * this.arch.attnKvHeads,
           wz: 1,
         });
-        faPatches.push({ qkUIdx, gqa0UIdx, gqaTreeUIdx, kvCompactUIdx });
+        faPatches.push({ qkUIdx, gqa0UIdx, gqaPartUIdx, gqaCombUIdx, gqaPartStep, kvCompactUIdx });
 
-        pushQ4Batch(widePipe, wideWx(H), bgAttnToHidden, H, attnODim, wO, 0, 0, 1, H);
+        pushQ4Batch(this.q4SmallMV2Pipe, q4V2Wx(H), bgAttnToHidden, H, attnODim, wO, 0, 0, 1, H);
         pushStatic(this.rmsNormPipe, tBgRmsNorm, [M, H, la.postNormOff, 0, 0, 1e-6, 0, 0], M, 1, 1, true);
-        if (this.gateUpSwigluBatchPipe) {
-          pushQ4Batch(this.gateUpSwigluBatchPipe, Math.ceil(I / 8), bgNormToAttn, I, H, wGate, 0, 0, 0, wUp);
-          if (M > 8) {
-            const c1Step = steps[steps.length - 1]!;
-            const uIdx = c1Step.uniformByteOffset / 4;
-            u32View[uIdx + 4] = 8 * I;
-            u32View[uIdx + 7] = wUp;
-          }
-        } else {
-          pushQ4Batch(this.gemvBatchPipe, batchWx(I), bgNormToWork, I, H, wGate, 0, 0, 0, I);
-          pushQ4Batch(this.gemvBatchPipe, batchWx(I), bgNormToWork, I, H, wUp, 0, M * I, 0, I);
-          pushStatic(this.swigluPipe, tBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
-        }
-        pushQ4Batch(widePipe, wideWx(H), bgAttnToHidden, H, I, wDown, 0, 0, 1, H);
+        pushStatic(this.q4SwigluSmallMV2Pipe, bgNormToAttn, [I, H, wGate, 0, 0, 0, M, wUp], q4SwigluV2Wx(I));
+        pushQ4Batch(this.q4SmallMV2Pipe, q4V2Wx(H), bgAttnToHidden, H, I, wDown, 0, 0, 1, H);
       }
     }
 
@@ -3882,8 +4108,8 @@ export class WgslQwen35Engine {
     for (let sIdx = 0; sIdx < this.vocabSlices.length; sIdx++) {
       const slice = this.vocabSlices[sIdx]!;
       pushQ4Batch(
-        this.gemvBatchPipe,
-        batchWx(slice.rowCount),
+        this.q4SmallMV2Pipe,
+        q4V2Wx(slice.rowCount),
         tBgLmHead[sIdx]!,
         slice.rowCount,
         H,
@@ -3957,6 +4183,7 @@ export class WgslQwen35Engine {
     }
 
     const prefix = this.seqPos;
+    const maxParts = partitionCountGqa(prefix + M);
     const V = this.arch.vocabSize;
     const argmaxWgCount = Math.ceil(V / 256);
     const plan = this.buildOrGetTreeVerifyPlan(M);
@@ -3964,7 +4191,11 @@ export class WgslQwen35Engine {
     for (const fp of plan.faPatches) {
       plan.dynU32[fp.qkUIdx + 1] = 0xfffffffe;
       plan.dynU32[fp.gqa0UIdx + 3] = prefix;
-      plan.dynU32[fp.gqaTreeUIdx] = prefix;
+      plan.dynU32[fp.gqaPartUIdx] = prefix;
+      plan.dynU32[fp.gqaPartUIdx + 9] = maxParts;
+      plan.dynU32[fp.gqaCombUIdx] = prefix;
+      plan.dynU32[fp.gqaCombUIdx + 9] = maxParts;
+      fp.gqaPartStep.wz = maxParts;
       plan.dynU32[fp.kvCompactUIdx] = prefix;
     }
 

@@ -437,7 +437,8 @@ export function ChatThread({
             const resolvedVramDeltaMb =
               engineTelemetry.vramDeltaMb !== null && engineTelemetry.vramDeltaMb !== 0
                 ? engineTelemetry.vramDeltaMb
-                : engineTelemetry.modelId.includes('pragma-exp004') ||
+                : engineTelemetry.modelId.includes('pragma-exp006') ||
+                    engineTelemetry.modelId.includes('pragma-exp004') ||
                     engineTelemetry.modelId.includes('exp003c')
                   ? -254
                   : null;

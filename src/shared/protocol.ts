@@ -26,6 +26,18 @@ export const MODEL_PRESETS: ModelPreset[] = [
     notes: 'Primary Qwen3.5 hybrid baseline. 24 Gated DeltaNet + 8 Full Attention layers.',
   },
   {
+    id: 'jtaylorexe/pragma-exp006-rc1',
+    label: 'Pragma-1-4B RC1 (EXP-006, v81920, -254 MiB)',
+    defaultDtype: 'q4f16',
+    supportedDtypes: ['q4f16', 'q4'],
+    estimatedWeightGB: {
+      q4f16: 2.2,
+      q4: 2.4,
+      fp16: 7.5,
+    },
+    notes: 'Pragma-1-4B RC1 release candidate (EXP-006) with scrubbed [0, 81919] tokenizer (-254 MiB LM head VRAM vs stock).',
+  },
+  {
     id: 'jtaylorexe/pragma-exp004-gspo-rl',
     label: 'Pragma EXP-004 GSPO-RL (v81920, -254 MiB)',
     defaultDtype: 'q4f16',

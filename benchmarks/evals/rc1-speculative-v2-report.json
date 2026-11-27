@@ -1,0 +1,48 @@
+{
+  "timestampIso": "2026-11-27T08:11:21.676Z",
+  "modelId": "jtaylorexe/pragma-exp006-rc1",
+  "runtimeErrors": [],
+  "microbench": {
+    "modelId": "jtaylorexe/pragma-exp006-rc1",
+    "t1Ms": 10.33,
+    "t2Ms": 12.63,
+    "t3Ms": 15.64,
+    "t5Ms": 21.75,
+    "t8Ms": 29.62,
+    "t5RejectMs": 25.42,
+    "ratioT5ToT1": 2.105,
+    "ratioT8ToT1": 2.866,
+    "gatePass": true,
+    "tree": {
+      "t2Ms": 16.2,
+      "t3Ms": 19.84,
+      "t5Ms": 26.21,
+      "t8Ms": 36.06,
+      "t12Ms": 54.39,
+      "t16Ms": 64.54,
+      "t5RejectMs": 25.62,
+      "ratioT5ToT1": 2.536,
+      "ratioT8ToT1": 3.49,
+      "ratioT16ToT1": 6.246,
+      "rejectOverheadMs": -0.59,
+      "chainRejectOverheadMs": 3.67
+    }
+  },
+  "copyTurn": {
+    "decodeTokPerSec": 37.73,
+    "ttftMs": 929.1,
+    "vramDeltaMb": -254,
+    "speculativeStats": {
+      "drafted": 20,
+      "accepted": 19,
+      "steps": 13,
+      "acceptanceRatePct": 95,
+      "tau": 2.4615384615384617,
+      "alpha": 0.95,
+      "avgDraftLen": 1.5384615384615385,
+      "skippedSteps": 4,
+      "speedupMultiplier": 1
+    },
+    "answerSample": "WebGPU speculative tree verification executes branch-aware DeltaNet recurrence, tree-masked grouped-query attention, and single-pass deferred KV compaction in o"
+  }
+}

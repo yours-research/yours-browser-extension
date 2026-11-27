@@ -1806,7 +1806,11 @@ export class InferenceEngine {
             ? { tokens: [], parents: [], probs: [], keys: [] }
             : speculator.proposeChain(maxDraftChain);
 
-          const canTryTree = this.wgslEngine!.isTreeSpecSupported() && !supressNearClose;
+          // Adaptive chain verify (gdnRecPipe) outperforms tree verify on RTX 3090 (19.1ms vs 26.5ms at M=5)
+          // and keeps M=2..8 DeltaNet math bit-identical to M=1 scalar decode; keep tree ready when enabled.
+          const preferChainForParityAndSpeed = true;
+          const canTryTree =
+            !preferChainForParityAndSpeed && this.wgslEngine!.isTreeSpecSupported() && !supressNearClose;
           const rawTree = canTryTree
             ? speculator.proposeTree(
                 Math.min(MAX_TREE_DRAFT, remainingToMax - 1),

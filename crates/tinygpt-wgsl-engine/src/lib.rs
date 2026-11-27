@@ -215,6 +215,11 @@ pub extern "C" fn wgsl_build_shader(shader_id: u32) -> usize {
         51 => set_shader_bytes(WGSL_TOPK_BATCH.as_bytes()),
         52 => set_shader_bytes(WGSL_ACCEPT_TREE.as_bytes()),
         53 => set_shader_bytes(WGSL_Q4_GEMV_SMALLM.as_bytes()),
+        54 => set_shader_bytes(WGSL_Q4_GEMV_SMALLM_V2.as_bytes()),
+        55 => set_shader_bytes(WGSL_Q4_GATE_UP_SWIGLU_SMALLM_V2.as_bytes()),
+        56 => set_shader_bytes(WGSL_Q4_GEMV_SMALLM_V2_F16.as_bytes()),
+        57 => set_shader_bytes(WGSL_Q4_GATE_UP_SWIGLU_SMALLM_V2_F16.as_bytes()),
+        58 => set_shader_bytes(WGSL_GQA_TREE_V2_SG.as_bytes()),
         100..=199 => match gemma4::get_shader(shader_id) {
             Some(bytes) => set_shader_bytes(bytes),
             None => 0,
@@ -1578,7 +1583,8 @@ fn main(
 ) {
   let q_heads = select(params._pad0 & 0xFFu, 16u, params._pad0 == 0u);
   let kv_heads = select((params._pad0 >> 8u) & 0xFFu, 4u, params._pad0 == 0u);
-  let rope_half = select(params._pad0 >> 16u, 32u, params._pad0 == 0u);
+  let skip_q_rope = (params._pad0 & 0x80000000u) != 0u;
+  let rope_half = select((params._pad0 >> 16u) & 0x7FFFu, 32u, params._pad0 == 0u);
   let h_idx = wid.x;
   let tok = wid.y;
   let d = lid.x;
@@ -1615,12 +1621,14 @@ fn main(
   );
   let pos = f32(pos_u32);
   var out_val = sh_head[d];
-  if (d < rope_half) {
-    let ang = pos * aux[params.inv_freq_offset + d];
-    out_val = sh_head[d] * cos(ang) - sh_head[d + rope_half] * sin(ang);
-  } else if (d < rope_half * 2u) {
-    let ang = pos * aux[params.inv_freq_offset + (d - rope_half)];
-    out_val = sh_head[d] * cos(ang) + sh_head[d - rope_half] * sin(ang);
+  if (!(skip_q_rope && is_q)) {
+    if (d < rope_half) {
+      let ang = pos * aux[params.inv_freq_offset + d];
+      out_val = sh_head[d] * cos(ang) - sh_head[d + rope_half] * sin(ang);
+    } else if (d < rope_half * 2u) {
+      let ang = pos * aux[params.inv_freq_offset + (d - rope_half)];
+      out_val = sh_head[d] * cos(ang) + sh_head[d - rope_half] * sin(ang);
+    }
   }
   work[addr] = out_val;
 }
@@ -6761,67 +6769,139 @@ fn gate(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
 "#;
 
 const WGSL_DN_TREE: &str = r#"
-// Post-normalization recurrence. Each lane owns one value column. Slot 0 is
-// the pending root. The inclusive mask selects exactly one topological path.
+// DN_TREE_V2: single-pass shared-ancestor Gated DeltaNet tree recurrence.
+// verify: dispatch (ceil(dv / 32), heads, 1). commit: (ceil(dv / 32), heads, 1).
 struct Params { slots: u32, heads: u32, dk: u32, dv: u32 }
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var<storage,read> masks: array<u32>;
-@group(0) @binding(2) var<storage,read> inputs: array<f32>;
-@group(0) @binding(3) var<storage,read_write> state: array<f32>;
+@group(0) @binding(2) var<storage,read> inputs: array<f32>; // per slot/head: q, k, v, decay, beta
+@group(0) @binding(3) var<storage,read_write> state: array<f32>; // [head, key, value]
 @group(0) @binding(4) var<storage,read_write> out: array<f32>;
-@group(0) @binding(5) var<storage,read> choice: array<u32>;
+@group(0) @binding(5) var<storage,read> choice: array<u32>; // ACCEPT_TREE result
 
-fn scan(column: u32, head: u32, leaf: u32, committing: bool) {
-  if (column >= p.dv) { return; }
-  let state_base = head * p.dk * p.dv + column;
-  var s: array<f32,128>;
-  for (var i = 0u; i < p.dk; i++) { s[i] = state[state_base + i * p.dv]; }
-  let path = masks[leaf];
+const MAX_SLOTS: u32 = 32u;
+const STACK: u32 = 4u;
+
+fn step(s: ptr<function, array<f32,128>>, column: u32, head: u32, slot: u32) -> f32 {
   let stride = 2u * p.dk + p.dv + 2u;
-  for (var slot = 0u; slot <= leaf; slot++) {
-    if ((path & (1u << slot)) == 0u) { continue; }
-    let base = (slot * p.heads + head) * stride;
-    let key = base + p.dk;
-    let value = key + p.dk;
-    let decay = inputs[value + p.dv];
-    var prediction = 0.0;
-    for (var i = 0u; i < p.dk; i++) {
-      s[i] *= decay;
-      prediction += s[i] * inputs[key + i];
-    }
-    let error = (inputs[value + column] - prediction) * inputs[value + p.dv + 1u];
-    var y = 0.0;
-    for (var i = 0u; i < p.dk; i++) {
-      s[i] += inputs[key + i] * error;
-      y += s[i] * inputs[base + i];
-    }
-    if (slot == leaf && !committing) { out[(slot * p.heads + head) * p.dv + column] = y; }
+  let base = (slot * p.heads + head) * stride;
+  let key = base + p.dk;
+  let value = key + p.dk;
+  let decay = inputs[value + p.dv];
+  var prediction = 0.0;
+  for (var i = 0u; i < p.dk; i++) {
+    (*s)[i] *= decay;
+    prediction += (*s)[i] * inputs[key + i];
   }
-  if (committing) {
-    for (var i = 0u; i < p.dk; i++) { state[state_base + i * p.dv] = s[i]; }
+  let error = (inputs[value + column] - prediction) * inputs[value + p.dv + 1u];
+  var y = 0.0;
+  for (var i = 0u; i < p.dk; i++) {
+    (*s)[i] += inputs[key + i] * error;
+    y += (*s)[i] * inputs[base + i];
+  }
+  return y;
+}
+
+@compute @workgroup_size(32)
+fn verify(@builtin(global_invocation_id) id: vec3<u32>) {
+  let column = id.x;
+  let head = id.y;
+  if (column >= p.dv) { return; }
+  let n = min(p.slots, MAX_SLOTS);
+
+  var parent: array<i32, 32>;
+  var size: array<u32, 32>;
+  var first_child: array<i32, 32>;
+  var next_sib: array<i32, 32>;
+  var kids: array<u32, 32>;
+  for (var i = 0u; i < n; i++) {
+    parent[i] = select(i32(firstLeadingBit(masks[i] ^ (1u << i))), -1, i == 0u);
+    var c = 0u;
+    for (var j = i; j < n; j++) { c += (masks[j] >> i) & 1u; }
+    size[i] = c;
+    first_child[i] = -1;
+    next_sib[i] = -1;
+    kids[i] = 0u;
+  }
+  for (var c = 1u; c < n; c++) {
+    let pc = u32(parent[c]);
+    kids[pc] += 1u;
+    let kc = size[c] * 64u + c;
+    var best = -1;
+    var best_key = 0xffffffffu;
+    for (var d = 1u; d < n; d++) {
+      let kd = size[d] * 64u + d;
+      if (parent[d] == i32(pc) && kd > kc && kd < best_key) { best = i32(d); best_key = kd; }
+    }
+    next_sib[c] = best;
+    let f = first_child[pc];
+    if (f < 0 || kc < size[u32(f)] * 64u + u32(f)) { first_child[pc] = i32(c); }
+  }
+
+  var cur: array<f32, 128>;
+  var stack: array<array<f32, 128>, 4>;
+  var sp = 0u;
+  let state_base = head * p.dk * p.dv + column;
+  for (var i = 0u; i < p.dk; i++) { cur[i] = state[state_base + i * p.dv]; }
+
+  var u = 0u;
+  out[(u * p.heads + head) * p.dv + column] = step(&cur, column, head, u);
+  for (var visited = 1u; visited < n; visited++) {
+    if (first_child[u] >= 0) {
+      if (kids[u] >= 2u && sp < STACK) {
+        for (var i = 0u; i < p.dk; i++) { stack[sp][i] = cur[i]; }
+        sp += 1u;
+      }
+      u = u32(first_child[u]);
+    } else {
+      var a = u;
+      while (next_sib[a] < 0 && a != 0u) { a = u32(parent[a]); }
+      let nx = u32(next_sib[a]);
+      for (var i = 0u; i < p.dk; i++) { cur[i] = stack[sp - 1u][i]; }
+      if (next_sib[nx] < 0) { sp -= 1u; }
+      u = nx;
+    }
+    out[(u * p.heads + head) * p.dv + column] = step(&cur, column, head, u);
   }
 }
-@compute @workgroup_size(32)
-fn verify(@builtin(global_invocation_id) id: vec3<u32>) { scan(id.x, id.y, id.z, false); }
+
 @compute @workgroup_size(32)
 fn commit(@builtin(global_invocation_id) id: vec3<u32>) {
-  scan(id.x, id.y, choice[2u + choice[0]], true);
+  let column = id.x;
+  let head = id.y;
+  if (column >= p.dv) { return; }
+  let leaf = choice[2u + choice[0]];
+  let path = masks[leaf];
+  var s: array<f32, 128>;
+  let state_base = head * p.dk * p.dv + column;
+  for (var i = 0u; i < p.dk; i++) { s[i] = state[state_base + i * p.dv]; }
+  for (var slot = 0u; slot <= leaf; slot++) {
+    if ((path & (1u << slot)) == 0u) { continue; }
+    _ = step(&s, column, head, slot);
+  }
+  for (var i = 0u; i < p.dk; i++) { state[state_base + i * p.dv] = s[i]; }
 }
 "#;
 
 const WGSL_GQA_TREE: &str = r#"
-// Dispatch (query_heads, slots, 1). Use the existing append pass before this
-// dispatch. K and Q already have RoPE applied at prefix + popcount(mask) - 1.
+// GQA_TREE_V2: one grouped-query attention family for scalar decode (M = 1) and
+// tree verify (M > 1).
+// Pass 1, entry `partial`: dispatch (q_heads, slots, max_parts).
+// Pass 2, entry `combine`: dispatch (q_heads, slots, 1).
 struct Params {
   prefix: u32, capacity: u32, q_heads: u32, kv_heads: u32,
   dim: u32, int8: u32, base: u32, q_stride: u32,
+  rotary: u32, max_parts: u32, pad0: u32, pad1: u32,
 }
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var<storage,read> masks: array<u32>;
 @group(0) @binding(2) var<storage,read> query: array<f32>;
-@group(0) @binding(3) var<storage,read> cache: array<u32>;
-@group(0) @binding(4) var<storage,read_write> out: array<f32>;
-var<workgroup> partial: array<f32,64>;
+@group(0) @binding(3) var<storage,read> rope: array<f32>;
+@group(0) @binding(4) var<storage,read> cache: array<u32>;
+@group(0) @binding(5) var<storage,read_write> partials: array<f32>;
+@group(0) @binding(6) var<storage,read_write> out: array<f32>;
+var<workgroup> lanes: array<f32,64>;
+var<workgroup> slot_mask: u32;
 fn exp_neg(x: f32) -> f32 {
   if (x <= -87.33654) { return 0.0; }
   let n = i32(round(x * 1.4426950408889634));
@@ -6838,42 +6918,110 @@ fn channel(base: u32, d: u32, scale: f32) -> f32 {
   if (p.int8 == 0u) { return unpack2x16float(cache[base+d/2u])[d%2u]; }
   return f32(extractBits(bitcast<i32>(cache[base+d/4u]), (d%4u)*8u, 8u)) * scale;
 }
+fn partition_count(len: u32) -> u32 {
+  if (len <= 64u) { return 1u; }
+  if (len <= 512u) { return 8u; }
+  if (len <= 4096u) { return 16u; }
+  return 32u;
+}
+
 @compute @workgroup_size(64)
-fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
-  let row = wg.y*p.q_heads + wg.x;
+fn partial(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+  let slot = wg.y;
+  let part = wg.z;
+  if (part >= partition_count(p.prefix + countOneBits(masks[slot]))) { return; }
+  if (lane == 0u) { slot_mask = masks[slot]; }
+  let mask = workgroupUniformLoad(&slot_mask);
+  let len = p.prefix + countOneBits(mask);
+  let chunk = (len + partition_count(len) - 1u) / partition_count(len);
+  let lo = part * chunk;
+  let hi = min(len, lo + chunk);
+  let row = slot*p.q_heads + wg.x;
   let words = select(p.dim/2u, p.dim/4u + 1u, p.int8 != 0u);
   let head = wg.x / (p.q_heads/p.kv_heads);
+
+  let q_base = row*p.q_stride;
+  let half_rotary = p.rotary/2u;
+  var q = vec4<f32>(0.0);
+  for (var d = lane; d < p.dim; d += 64u) {
+    var value = query[q_base+d];
+    if (d < half_rotary) {
+      let angle = ((len-1u)*half_rotary + d)*2u;
+      value = value*rope[angle] - query[q_base+d+half_rotary]*rope[angle+1u];
+    } else if (d < p.rotary) {
+      let i = d - half_rotary;
+      let angle = ((len-1u)*half_rotary + i)*2u;
+      value = value*rope[angle] + query[q_base+i]*rope[angle+1u];
+    }
+    q[d/64u] = value;
+  }
+
   var acc = vec4<f32>(0.0);
   var peak = -3.40282346e38;
   var mass = 0.0;
-  for (var t = 0u; t <= p.prefix + wg.y; t++) {
-    let visible = t < p.prefix || (masks[wg.y] & (1u << (t-p.prefix))) != 0u;
+  var logical = min(lo, p.prefix);
+  for (var t = logical; t <= p.prefix + slot; t++) {
+    if (t >= p.prefix) {
+      if ((mask & (1u << (t-p.prefix))) == 0u) { continue; }
+    }
+    let at = logical;
+    logical += 1u;
+    if (at >= hi) { break; }
+    if (at < lo) { continue; }
     let kb = p.base + (head*p.capacity + t)*words;
     let vb = kb + p.kv_heads*p.capacity*words;
     var scales = vec2<f32>(1.0);
     if (p.int8 != 0u) { scales = unpack2x16float(cache[kb+words-1u]); }
     var dot_product = 0.0;
     for (var d = lane; d < p.dim; d += 64u) {
-      dot_product += query[row*p.q_stride+d] * channel(kb, d, scales.x);
+      dot_product += q[d/64u] * channel(kb, d, scales.x);
     }
-    partial[lane] = dot_product;
+    lanes[lane] = dot_product;
     workgroupBarrier();
     for (var span = 32u; span != 0u; span /= 2u) {
-      if (lane < span) { partial[lane] += partial[lane+span]; }
+      if (lane < span) { lanes[lane] += lanes[lane+span]; }
       workgroupBarrier();
     }
-    let score = partial[0] * inverseSqrt(f32(p.dim));
-    if (visible) {
-      let high = max(peak, score);
-      let a = exp_neg(peak-high);
-      let b = exp_neg(score-high);
-      mass = mass*a + b;
-      for (var d = lane; d < p.dim; d += 64u) {
-        acc[d/64u] = acc[d/64u]*a + channel(vb, d, scales.y)*b;
-      }
-      peak = high;
+    let score = lanes[0] * inverseSqrt(f32(p.dim));
+    let high = max(peak, score);
+    let a = exp_neg(peak-high);
+    let b = exp_neg(score-high);
+    mass = mass*a + b;
+    for (var d = lane; d < p.dim; d += 64u) {
+      acc[d/64u] = acc[d/64u]*a + channel(vb, d, scales.y)*b;
     }
+    peak = high;
     workgroupBarrier();
+  }
+
+  let record = (row*p.max_parts + part)*(p.dim+2u);
+  if (lane == 0u) {
+    partials[record] = peak;
+    partials[record+1u] = mass;
+  }
+  for (var d = lane; d < p.dim; d += 64u) { partials[record+2u+d] = acc[d/64u]; }
+}
+
+@compute @workgroup_size(64)
+fn combine(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+  let slot = wg.y;
+  let row = slot*p.q_heads + wg.x;
+  let count = partition_count(p.prefix + countOneBits(masks[slot]));
+  var acc = vec4<f32>(0.0);
+  var peak = -3.40282346e38;
+  var mass = 0.0;
+  for (var part = 0u; part < count; part++) {
+    let record = (row*p.max_parts + part)*(p.dim+2u);
+    let part_peak = partials[record];
+    let part_mass = partials[record+1u];
+    let high = max(peak, part_peak);
+    let a = exp_neg(peak-high);
+    let b = exp_neg(part_peak-high);
+    mass = mass*a + part_mass*b;
+    for (var d = lane; d < p.dim; d += 64u) {
+      acc[d/64u] = acc[d/64u]*a + partials[record+2u+d]*b;
+    }
+    peak = high;
   }
   for (var d = lane; d < p.dim; d += 64u) { out[row*p.dim+d] = acc[d/64u]*(1.0/mass); }
 }
@@ -7022,6 +7170,614 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
     if (p.residual != 0u) { sum += output[dst]; }
     output[dst] = sum;
   }
+}
+"#;
+
+const WGSL_Q4_GEMV_SMALLM_V2: &str = r#"
+struct Params {
+  rows: u32, cols: u32, weight_offset: u32, input_offset: u32,
+  output_offset: u32, residual: u32, tokens: u32, output_stride: u32,
+}
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage,read> weights: array<u32>;
+@group(0) @binding(2) var<storage,read> input: array<f32>;
+@group(0) @binding(3) var<storage,read_write> output: array<f32>;
+
+var<workgroup> activation: array<vec4<f32>,512>;
+
+fn product(w: f32, x: vec4<f32>) -> vec4<f32> {
+  let bits = bitcast<vec4<u32>>(x*w);
+  return bitcast<vec4<f32>>(select(bits, bits & vec4<u32>(0x80000000u),
+    (bits & vec4<u32>(0x7f800000u)) == vec4<u32>(0u)));
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+  let row = wg.x*64u + lane;
+  let packs = (p.tokens+3u)/4u;
+  let blocks = (p.cols+31u)/32u;
+  var sum: array<vec4<f32>,4>;
+  for (var first = 0u; first < p.cols; first += 128u) {
+    let cols = min(128u, p.cols-first);
+    for (var flat = lane; flat < packs*cols; flat += 64u) {
+      let pack = flat / cols;
+      let c = flat % cols;
+      var x = vec4<f32>(0.0);
+      for (var j = 0u; j < min(4u,p.tokens-4u*pack); j++) {
+        x[j] = input[p.input_offset+(4u*pack+j)*p.cols+first+c];
+      }
+      activation[pack*128u+c] = x;
+    }
+    workgroupBarrier();
+    if (row < p.rows) {
+      for (var block = 0u; block*32u < cols; block++) {
+        let relative = (row*blocks+first/32u+block)*5u;
+        let base = p.weight_offset+relative;
+        let affine = unpack2x16float(weights[base+4u]);
+        for (var word = 0u; word < 4u; word++) {
+          let packed = weights[base+word];
+          for (var j = 0u; j < 8u; j++) {
+            let c = block*32u+word*8u+j;
+            if (c >= cols) { break; }
+            let w = f32(extractBits(packed,j*4u,4u))*affine.x + affine.y;
+            for (var pack = 0u; pack < packs; pack++) {
+              let x = activation[pack*128u+c];
+              sum[pack] += product(w,x);
+            }
+          }
+        }
+      }
+    }
+    workgroupBarrier();
+  }
+  if (row < p.rows) {
+    for (var token = 0u; token < p.tokens; token++) {
+      let stride = select(p.output_stride, p.rows, p.output_stride == 0u);
+      let dst = p.output_offset+token*stride+row;
+      var y = sum[token/4u][token%4u];
+      if (p.residual != 0u) { y += output[dst]; }
+      output[dst] = y;
+    }
+  }
+}
+"#;
+
+const WGSL_Q4_GATE_UP_SWIGLU_SMALLM_V2: &str = r#"
+struct Params {
+  rows: u32, cols: u32, weight_offset: u32, input_offset: u32,
+  output_offset: u32, residual: u32, tokens: u32, up_offset: u32,
+}
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage,read> weights: array<u32>;
+@group(0) @binding(2) var<storage,read> input: array<f32>;
+@group(0) @binding(3) var<storage,read_write> output: array<f32>;
+
+var<workgroup> activation: array<vec4<f32>,512>;
+
+fn product(w: f32, x: vec4<f32>) -> vec4<f32> {
+  let bits = bitcast<vec4<u32>>(x*w);
+  return bitcast<vec4<f32>>(select(bits, bits & vec4<u32>(0x80000000u),
+    (bits & vec4<u32>(0x7f800000u)) == vec4<u32>(0u)));
+}
+
+fn stage(x: f32) -> f32 {
+  let bits = bitcast<u32>(x);
+  return bitcast<f32>(select(bits,bits & 0x80000000u,(bits & 0x7f800000u) == 0u));
+}
+
+fn exp_neg(x: f32) -> f32 {
+  if (x <= -87.33654) { return 0.0; }
+  let n = i32(round(x * 1.4426950408889634));
+  let r = (x - f32(n)*0.693359375) - f32(n)*-0.00021219444005469058;
+  var y = stage(r*0.0013888889) + 0.0083333338;
+  y = stage(r*y) + 0.0416666679;
+  y = stage(r*y) + 0.1666666716;
+  y = stage(r*y) + 0.5;
+  y = stage(r*y) + 1.0;
+  y = stage(r*y) + 1.0;
+  return bitcast<f32>(u32(n+127)<<23u)*y;
+}
+fn swiglu(gate: f32, up: f32) -> f32 {
+  let e = exp_neg(-abs(gate));
+  let sigmoid = stage(select(1.0,e,gate < 0.0) * stage(1.0/(1.0+e)));
+  return stage(stage(gate*sigmoid)*up);
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+  let row = wg.x*64u + lane;
+  let packs = (p.tokens+3u)/4u;
+  let blocks = (p.cols+31u)/32u;
+  var sum: array<vec4<f32>,4>;
+  var up_sum: array<vec4<f32>,4>;
+  for (var first = 0u; first < p.cols; first += 128u) {
+    let cols = min(128u, p.cols-first);
+    for (var flat = lane; flat < packs*cols; flat += 64u) {
+      let pack = flat / cols;
+      let c = flat % cols;
+      var x = vec4<f32>(0.0);
+      for (var j = 0u; j < min(4u,p.tokens-4u*pack); j++) {
+        x[j] = input[p.input_offset+(4u*pack+j)*p.cols+first+c];
+      }
+      activation[pack*128u+c] = x;
+    }
+    workgroupBarrier();
+    if (row < p.rows) {
+      for (var block = 0u; block*32u < cols; block++) {
+        let relative = (row*blocks+first/32u+block)*5u;
+        let base = p.weight_offset+relative;
+        let affine = unpack2x16float(weights[base+4u]);
+        let up_base = p.up_offset+relative;
+        let up_affine = unpack2x16float(weights[up_base+4u]);
+        for (var word = 0u; word < 4u; word++) {
+          let packed = weights[base+word];
+          let up_packed = weights[up_base+word];
+          for (var j = 0u; j < 8u; j++) {
+            let c = block*32u+word*8u+j;
+            if (c >= cols) { break; }
+            let w = f32(extractBits(packed,j*4u,4u))*affine.x + affine.y;
+            let up_w = f32(extractBits(up_packed,j*4u,4u))*up_affine.x + up_affine.y;
+            for (var pack = 0u; pack < packs; pack++) {
+              let x = activation[pack*128u+c];
+              sum[pack] += product(w,x);
+              up_sum[pack] += product(up_w,x);
+            }
+          }
+        }
+      }
+    }
+    workgroupBarrier();
+  }
+  if (row < p.rows) {
+    for (var token = 0u; token < p.tokens; token++) {
+      let dst = p.output_offset+token*p.rows+row;
+      var y = swiglu(sum[token/4u][token%4u], up_sum[token/4u][token%4u]);
+      if (p.residual != 0u) { y += output[dst]; }
+      output[dst] = y;
+    }
+  }
+}
+"#;
+
+const WGSL_Q4_GEMV_SMALLM_V2_F16: &str = r#"
+enable f16;
+enable subgroups;
+
+struct Params {
+  rows: u32, cols: u32, weight_offset: u32, input_offset: u32,
+  output_offset: u32, residual: u32, tokens: u32, output_stride: u32,
+}
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage,read> weights: array<u32>;
+@group(0) @binding(2) var<storage,read> input: array<f32>;
+@group(0) @binding(3) var<storage,read_write> output: array<f32>;
+
+var<workgroup> x_sh: array<vec4<f16>, 1024>;
+var<workgroup> red_sh: array<f32, 128>;
+var<workgroup> linear_flag: atomic<u32>;
+var<workgroup> use_sg: u32;
+
+fn lo4(v: u32) -> vec4<f16> {
+  return vec4<f16>(f16(v & 0xFu), f16((v >> 4u) & 0xFu), f16((v >> 8u) & 0xFu), f16((v >> 12u) & 0xFu));
+}
+fn hi4(v: u32) -> vec4<f16> {
+  return vec4<f16>(f16((v >> 16u) & 0xFu), f16((v >> 20u) & 0xFu), f16((v >> 24u) & 0xFu), f16((v >> 28u) & 0xFu));
+}
+
+@compute @workgroup_size(128)
+fn main(
+  @builtin(workgroup_id) wid: vec3<u32>,
+  @builtin(local_invocation_index) tid: u32,
+  @builtin(subgroup_invocation_id) sid: u32,
+  @builtin(subgroup_size) sg_size: u32,
+) {
+  if (tid == 0u) { atomicStore(&linear_flag, 1u); }
+  workgroupBarrier();
+  let first_lane = subgroupBroadcastFirst(tid);
+  if (sg_size != 32u || sid != (tid & 31u) || first_lane != (tid & ~31u)) {
+    atomicStore(&linear_flag, 0u);
+  }
+  workgroupBarrier();
+  if (tid == 0u) { use_sg = atomicLoad(&linear_flag); }
+  let sg = workgroupUniformLoad(&use_sg) != 0u;
+
+  let grp = tid >> 3u;
+  let lane = tid & 7u;
+  let row = wid.x * 16u + grp;
+  let blocks = (p.cols + 31u) >> 5u;
+  let row_base = p.weight_offset + min(row, max(p.rows, 1u) - 1u) * blocks * 5u;
+  var acc: array<f32, 16>;
+  let ones = vec4<f16>(1.0h);
+
+  for (var kt: u32 = 0u; kt < blocks; kt += 8u) {
+    let tb = min(8u, blocks - kt);
+    let stride_v4 = tb << 3u;
+    let total_v4 = p.tokens * stride_v4;
+    for (var i: u32 = tid; i < total_v4; i += 128u) {
+      let tok = i / stride_v4;
+      let rem = i % stride_v4;
+      let c_base = (kt << 5u) + (rem << 2u);
+      let kb = p.input_offset + tok * p.cols + c_base;
+      let v0 = select(0.0, input[kb + 0u], c_base + 0u < p.cols);
+      let v1 = select(0.0, input[kb + 1u], c_base + 1u < p.cols);
+      let v2 = select(0.0, input[kb + 2u], c_base + 2u < p.cols);
+      let v3 = select(0.0, input[kb + 3u], c_base + 3u < p.cols);
+      x_sh[i] = vec4<f16>(f16(v0), f16(v1), f16(v2), f16(v3));
+    }
+    workgroupBarrier();
+    if (row < p.rows && lane < tb) {
+      let bi = row_base + (kt + lane) * 5u;
+      let w0 = weights[bi + 0u];
+      let w1 = weights[bi + 1u];
+      let w2 = weights[bi + 2u];
+      let w3 = weights[bi + 3u];
+      let aff = unpack2x16float(weights[bi + 4u]);
+      let q0a = lo4(w0); let q0b = hi4(w0);
+      let q1a = lo4(w1); let q1b = hi4(w1);
+      let q2a = lo4(w2); let q2b = hi4(w2);
+      let q3a = lo4(w3); let q3b = hi4(w3);
+      for (var t: u32 = 0u; t < p.tokens; t++) {
+        let xb = t * stride_v4 + (lane << 3u);
+        let x0a = x_sh[xb + 0u]; let x0b = x_sh[xb + 1u];
+        let x1a = x_sh[xb + 2u]; let x1b = x_sh[xb + 3u];
+        let x2a = x_sh[xb + 4u]; let x2b = x_sh[xb + 5u];
+        let x3a = x_sh[xb + 6u]; let x3b = x_sh[xb + 7u];
+        let sx = f32(dot(ones, x0a)) + f32(dot(ones, x0b))
+          + f32(dot(ones, x1a)) + f32(dot(ones, x1b))
+          + f32(dot(ones, x2a)) + f32(dot(ones, x2b))
+          + f32(dot(ones, x3a)) + f32(dot(ones, x3b));
+        let sq = f32(dot(q0a, x0a)) + f32(dot(q0b, x0b))
+          + f32(dot(q1a, x1a)) + f32(dot(q1b, x1b))
+          + f32(dot(q2a, x2a)) + f32(dot(q2b, x2b))
+          + f32(dot(q3a, x3a)) + f32(dot(q3b, x3b));
+        acc[t] += aff.x * sq + aff.y * sx;
+      }
+    }
+    workgroupBarrier();
+  }
+
+  let stride = select(p.output_stride, p.rows, p.output_stride == 0u);
+  let base_lane = tid & ~7u;
+  for (var t: u32 = 0u; t < p.tokens; t++) {
+    var v = acc[t];
+    if (sg) {
+      v += subgroupShuffleXor(v, 4u);
+      v += subgroupShuffleXor(v, 2u);
+      v += subgroupShuffleXor(v, 1u);
+    } else {
+      for (var m = 4u; m > 0u; m >>= 1u) {
+        red_sh[tid] = v;
+        workgroupBarrier();
+        v += red_sh[base_lane | (lane ^ m)];
+        workgroupBarrier();
+      }
+    }
+    if (row < p.rows && lane == 0u) {
+      let dst = p.output_offset + t * stride + row;
+      var y_val = v;
+      if (p.residual != 0u) { y_val += output[dst]; }
+      output[dst] = y_val;
+    }
+  }
+}
+"#;
+
+const WGSL_Q4_GATE_UP_SWIGLU_SMALLM_V2_F16: &str = r#"
+enable f16;
+enable subgroups;
+
+struct Params {
+  rows: u32, cols: u32, weight_offset: u32, input_offset: u32,
+  output_offset: u32, residual: u32, tokens: u32, up_offset: u32,
+}
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage,read> weights: array<u32>;
+@group(0) @binding(2) var<storage,read> input: array<f32>;
+@group(0) @binding(3) var<storage,read_write> output: array<f32>;
+
+var<workgroup> x_sh: array<vec4<f16>, 1024>;
+var<workgroup> red_sh_g: array<f32, 128>;
+var<workgroup> red_sh_u: array<f32, 128>;
+var<workgroup> linear_flag: atomic<u32>;
+var<workgroup> use_sg: u32;
+
+fn lo4(v: u32) -> vec4<f16> {
+  return vec4<f16>(f16(v & 0xFu), f16((v >> 4u) & 0xFu), f16((v >> 8u) & 0xFu), f16((v >> 12u) & 0xFu));
+}
+fn hi4(v: u32) -> vec4<f16> {
+  return vec4<f16>(f16((v >> 16u) & 0xFu), f16((v >> 20u) & 0xFu), f16((v >> 24u) & 0xFu), f16((v >> 28u) & 0xFu));
+}
+
+fn stage(x: f32) -> f32 {
+  let bits = bitcast<u32>(x);
+  return bitcast<f32>(select(bits, bits & 0x80000000u, (bits & 0x7f800000u) == 0u));
+}
+
+fn exp_neg(x: f32) -> f32 {
+  if (x <= -87.33654) { return 0.0; }
+  let n = i32(round(x * 1.4426950408889634));
+  let r = (x - f32(n) * 0.693359375) - f32(n) * -0.00021219444005469058;
+  var y = stage(r * 0.0013888889) + 0.0083333338;
+  y = stage(r * y) + 0.0416666679;
+  y = stage(r * y) + 0.1666666716;
+  y = stage(r * y) + 0.5;
+  y = stage(r * y) + 1.0;
+  y = stage(r * y) + 1.0;
+  return bitcast<f32>(u32(n + 127) << 23u) * y;
+}
+
+fn swiglu(gate: f32, up: f32) -> f32 {
+  let e = exp_neg(-abs(gate));
+  let sigmoid = stage(select(1.0, e, gate < 0.0) * stage(1.0 / (1.0 + e)));
+  return stage(stage(gate * sigmoid) * up);
+}
+
+@compute @workgroup_size(128)
+fn main(
+  @builtin(workgroup_id) wid: vec3<u32>,
+  @builtin(local_invocation_index) tid: u32,
+  @builtin(subgroup_invocation_id) sid: u32,
+  @builtin(subgroup_size) sg_size: u32,
+) {
+  if (tid == 0u) { atomicStore(&linear_flag, 1u); }
+  workgroupBarrier();
+  let first_lane = subgroupBroadcastFirst(tid);
+  if (sg_size != 32u || sid != (tid & 31u) || first_lane != (tid & ~31u)) {
+    atomicStore(&linear_flag, 0u);
+  }
+  workgroupBarrier();
+  if (tid == 0u) { use_sg = atomicLoad(&linear_flag); }
+  let sg = workgroupUniformLoad(&use_sg) != 0u;
+
+  let grp = tid >> 3u;
+  let lane = tid & 7u;
+  let row = wid.x * 16u + grp;
+  let blocks = (p.cols + 31u) >> 5u;
+  let row_words = blocks * 5u;
+  let safe_row = min(row, max(p.rows, 1u) - 1u);
+  let base_g = p.weight_offset + safe_row * row_words;
+  let base_u = p.up_offset + safe_row * row_words;
+  var acc_g: array<f32, 16>;
+  var acc_u: array<f32, 16>;
+  let ones = vec4<f16>(1.0h);
+
+  for (var kt: u32 = 0u; kt < blocks; kt += 8u) {
+    let tb = min(8u, blocks - kt);
+    let stride_v4 = tb << 3u;
+    let total_v4 = p.tokens * stride_v4;
+    for (var i: u32 = tid; i < total_v4; i += 128u) {
+      let tok = i / stride_v4;
+      let rem = i % stride_v4;
+      let c_base = (kt << 5u) + (rem << 2u);
+      let kb = p.input_offset + tok * p.cols + c_base;
+      let v0 = select(0.0, input[kb + 0u], c_base + 0u < p.cols);
+      let v1 = select(0.0, input[kb + 1u], c_base + 1u < p.cols);
+      let v2 = select(0.0, input[kb + 2u], c_base + 2u < p.cols);
+      let v3 = select(0.0, input[kb + 3u], c_base + 3u < p.cols);
+      x_sh[i] = vec4<f16>(f16(v0), f16(v1), f16(v2), f16(v3));
+    }
+    workgroupBarrier();
+    if (row < p.rows && lane < tb) {
+      let boff = (kt + lane) * 5u;
+      let ig = base_g + boff;
+      let iu = base_u + boff;
+      let gw0 = weights[ig + 0u]; let gw1 = weights[ig + 1u];
+      let gw2 = weights[ig + 2u]; let gw3 = weights[ig + 3u];
+      let gaff = unpack2x16float(weights[ig + 4u]);
+      let uw0 = weights[iu + 0u]; let uw1 = weights[iu + 1u];
+      let uw2 = weights[iu + 2u]; let uw3 = weights[iu + 3u];
+      let uaff = unpack2x16float(weights[iu + 4u]);
+      let gq0a = lo4(gw0); let gq0b = hi4(gw0);
+      let gq1a = lo4(gw1); let gq1b = hi4(gw1);
+      let gq2a = lo4(gw2); let gq2b = hi4(gw2);
+      let gq3a = lo4(gw3); let gq3b = hi4(gw3);
+      let uq0a = lo4(uw0); let uq0b = hi4(uw0);
+      let uq1a = lo4(uw1); let uq1b = hi4(uw1);
+      let uq2a = lo4(uw2); let uq2b = hi4(uw2);
+      let uq3a = lo4(uw3); let uq3b = hi4(uw3);
+      for (var t: u32 = 0u; t < p.tokens; t++) {
+        let xb = t * stride_v4 + (lane << 3u);
+        let x0a = x_sh[xb + 0u]; let x0b = x_sh[xb + 1u];
+        let x1a = x_sh[xb + 2u]; let x1b = x_sh[xb + 3u];
+        let x2a = x_sh[xb + 4u]; let x2b = x_sh[xb + 5u];
+        let x3a = x_sh[xb + 6u]; let x3b = x_sh[xb + 7u];
+        let sx = f32(dot(ones, x0a)) + f32(dot(ones, x0b))
+          + f32(dot(ones, x1a)) + f32(dot(ones, x1b))
+          + f32(dot(ones, x2a)) + f32(dot(ones, x2b))
+          + f32(dot(ones, x3a)) + f32(dot(ones, x3b));
+        let sqg = f32(dot(gq0a, x0a)) + f32(dot(gq0b, x0b))
+          + f32(dot(gq1a, x1a)) + f32(dot(gq1b, x1b))
+          + f32(dot(gq2a, x2a)) + f32(dot(gq2b, x2b))
+          + f32(dot(gq3a, x3a)) + f32(dot(gq3b, x3b));
+        let squ = f32(dot(uq0a, x0a)) + f32(dot(uq0b, x0b))
+          + f32(dot(uq1a, x1a)) + f32(dot(uq1b, x1b))
+          + f32(dot(uq2a, x2a)) + f32(dot(uq2b, x2b))
+          + f32(dot(uq3a, x3a)) + f32(dot(uq3b, x3b));
+        acc_g[t] += gaff.x * sqg + gaff.y * sx;
+        acc_u[t] += uaff.x * squ + uaff.y * sx;
+      }
+    }
+    workgroupBarrier();
+  }
+
+  let base_lane = tid & ~7u;
+  for (var t: u32 = 0u; t < p.tokens; t++) {
+    var vg = acc_g[t];
+    var vu = acc_u[t];
+    if (sg) {
+      vg += subgroupShuffleXor(vg, 4u);
+      vg += subgroupShuffleXor(vg, 2u);
+      vg += subgroupShuffleXor(vg, 1u);
+      vu += subgroupShuffleXor(vu, 4u);
+      vu += subgroupShuffleXor(vu, 2u);
+      vu += subgroupShuffleXor(vu, 1u);
+    } else {
+      for (var m = 4u; m > 0u; m >>= 1u) {
+        red_sh_g[tid] = vg;
+        red_sh_u[tid] = vu;
+        workgroupBarrier();
+        let peer = base_lane | (lane ^ m);
+        vg += red_sh_g[peer];
+        vu += red_sh_u[peer];
+        workgroupBarrier();
+      }
+    }
+    if (row < p.rows && lane == 0u) {
+      let dst = p.output_offset + t * p.rows + row;
+      var y_val = swiglu(vg, vu);
+      if (p.residual != 0u) { y_val += output[dst]; }
+      output[dst] = y_val;
+    }
+  }
+}
+"#;
+
+const WGSL_GQA_TREE_V2_SG: &str = r#"
+enable subgroups;
+
+struct Params {
+  prefix: u32, capacity: u32, q_heads: u32, kv_heads: u32,
+  dim: u32, int8: u32, base: u32, q_stride: u32,
+  rotary: u32, max_parts: u32, pad0: u32, pad1: u32,
+}
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage,read> masks: array<u32>;
+@group(0) @binding(2) var<storage,read> query: array<f32>;
+@group(0) @binding(3) var<storage,read> rope: array<f32>;
+@group(0) @binding(4) var<storage,read> cache: array<u32>;
+@group(0) @binding(5) var<storage,read_write> partials: array<f32>;
+@group(0) @binding(6) var<storage,read_write> out: array<f32>;
+var<workgroup> lanes: array<f32, 64>;
+var<workgroup> slot_mask: u32;
+
+fn exp_neg(x: f32) -> f32 {
+  if (x <= -87.33654) { return 0.0; }
+  let n = i32(round(x * 1.4426950408889634));
+  let r = (x - f32(n) * 0.693359375) - f32(n) * -0.00021219444005469058;
+  var y = r * 0.0013888889 + 0.0083333338;
+  y = r * y + 0.0416666679;
+  y = r * y + 0.1666666716;
+  y = r * y + 0.5;
+  y = r * y + 1.0;
+  y = r * y + 1.0;
+  return bitcast<f32>(u32(n + 127) << 23u) * y;
+}
+fn channel(base: u32, d: u32, scale: f32) -> f32 {
+  if (p.int8 == 0u) { return unpack2x16float(cache[base + d / 2u])[d % 2u]; }
+  return f32(extractBits(bitcast<i32>(cache[base + d / 4u]), (d % 4u) * 8u, 8u)) * scale;
+}
+fn partition_count(len: u32) -> u32 {
+  if (len <= 64u) { return 1u; }
+  if (len <= 512u) { return 8u; }
+  if (len <= 4096u) { return 16u; }
+  return 32u;
+}
+
+@compute @workgroup_size(64)
+fn partial(
+  @builtin(workgroup_id) wg: vec3<u32>,
+  @builtin(local_invocation_index) lane: u32,
+  @builtin(subgroup_invocation_id) sg_inv: u32,
+  @builtin(subgroup_size) sg_size: u32,
+) {
+  let slot = wg.y;
+  let part = wg.z;
+  if (part >= partition_count(p.prefix + countOneBits(masks[slot]))) { return; }
+  if (lane == 0u) { slot_mask = masks[slot]; }
+  let mask = workgroupUniformLoad(&slot_mask);
+  let len = p.prefix + countOneBits(mask);
+  let chunk = (len + partition_count(len) - 1u) / partition_count(len);
+  let lo = part * chunk;
+  let hi = min(len, lo + chunk);
+  let row = slot * p.q_heads + wg.x;
+  let words = select(p.dim / 2u, p.dim / 4u + 1u, p.int8 != 0u);
+  let head = wg.x / (p.q_heads / p.kv_heads);
+
+  let q_base = row * p.q_stride;
+  let half_rotary = p.rotary / 2u;
+  var q = vec4<f32>(0.0);
+  for (var d = lane; d < p.dim; d += 64u) {
+    var value = query[q_base + d];
+    if (d < half_rotary) {
+      let angle = ((len - 1u) * half_rotary + d) * 2u;
+      value = value * rope[angle] - query[q_base + d + half_rotary] * rope[angle + 1u];
+    } else if (d < p.rotary) {
+      let i = d - half_rotary;
+      let angle = ((len - 1u) * half_rotary + i) * 2u;
+      value = value * rope[angle] + query[q_base + i] * rope[angle + 1u];
+    }
+    q[d / 64u] = value;
+  }
+
+  var acc = vec4<f32>(0.0);
+  var peak = -3.40282346e38;
+  var mass = 0.0;
+  let sg_step = max(sg_size, 1u);
+  var logical = min(lo, p.prefix);
+  for (var t = logical; t <= p.prefix + slot; t++) {
+    if (t >= p.prefix) {
+      if ((mask & (1u << (t - p.prefix))) == 0u) { continue; }
+    }
+    let at = logical;
+    logical += 1u;
+    if (at >= hi) { break; }
+    if (at < lo) { continue; }
+    let kb = p.base + (head * p.capacity + t) * words;
+    let vb = kb + p.kv_heads * p.capacity * words;
+    var scales = vec2<f32>(1.0);
+    if (p.int8 != 0u) { scales = unpack2x16float(cache[kb + words - 1u]); }
+    var dot_product = 0.0;
+    for (var d = lane; d < p.dim; d += 64u) {
+      dot_product += q[d / 64u] * channel(kb, d, scales.x);
+    }
+    let sg_sum = subgroupAdd(dot_product);
+    if (sg_inv == 0u) { lanes[lane] = sg_sum; }
+    workgroupBarrier();
+    var total_dot: f32 = 0.0;
+    for (var s: u32 = 0u; s < 64u; s += sg_step) {
+      total_dot += lanes[s];
+    }
+    let score = total_dot * inverseSqrt(f32(p.dim));
+    let high = max(peak, score);
+    let a = exp_neg(peak - high);
+    let b = exp_neg(score - high);
+    mass = mass * a + b;
+    for (var d = lane; d < p.dim; d += 64u) {
+      acc[d / 64u] = acc[d / 64u] * a + channel(vb, d, scales.y) * b;
+    }
+    peak = high;
+  }
+
+  let record = (row * p.max_parts + part) * (p.dim + 2u);
+  if (lane == 0u) {
+    partials[record] = peak;
+    partials[record + 1u] = mass;
+  }
+  for (var d = lane; d < p.dim; d += 64u) { partials[record + 2u + d] = acc[d / 64u]; }
+}
+
+@compute @workgroup_size(64)
+fn combine(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+  let slot = wg.y;
+  let row = slot * p.q_heads + wg.x;
+  let count = partition_count(p.prefix + countOneBits(masks[slot]));
+  var acc = vec4<f32>(0.0);
+  var peak = -3.40282346e38;
+  var mass = 0.0;
+  for (var part = 0u; part < count; part++) {
+    let record = (row * p.max_parts + part) * (p.dim + 2u);
+    let part_peak = partials[record];
+    let part_mass = partials[record + 1u];
+    let high = max(peak, part_peak);
+    let a = exp_neg(peak - high);
+    let b = exp_neg(part_peak - high);
+    mass = mass * a + part_mass * b;
+    for (var d = lane; d < p.dim; d += 64u) {
+      acc[d / 64u] = acc[d / 64u] * a + partials[record + 2u + d] * b;
+    }
+    peak = high;
+  }
+  for (var d = lane; d < p.dim; d += 64u) { out[row * p.dim + d] = acc[d / 64u] * (1.0 / mass); }
 }
 "#;
 

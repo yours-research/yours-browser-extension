@@ -26,7 +26,11 @@ import {
   resolveModelArch,
   type ModelArchConfig,
 } from '../src/offscreen/modelConfig.ts';
-import { WgslQwen35Engine } from '../src/offscreen/wgslRealEngine.ts';
+import {
+  assertDisjointVerifyNormSlices,
+  WgslQwen35Engine,
+} from '../src/offscreen/wgslRealEngine.ts';
+import { MODEL_PRESETS } from '../src/shared/protocol.ts';
 import type { WgslComputeTier } from '../src/offscreen/wgslWebgpu.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -509,5 +513,30 @@ describe('WgslQwen35Engine fallback, KV growth, and GPU prefix slots', () => {
     engine.dispose();
     forcedEngine.dispose();
     expect(destroyedBuffers.length).toBeGreaterThan(0);
+  });
+
+  it('validates disjoint DeltaNet verify/rollback slices (P1c) and EXP-006 RC1 geometry', () => {
+    for (const numDnLayers of [1, 24]) {
+      for (const maxSpecTokens of [5, 17]) {
+        const normBufRows = (numDnLayers + 1) * maxSpecTokens;
+        expect(() =>
+          assertDisjointVerifyNormSlices(numDnLayers, maxSpecTokens, maxSpecTokens, 2560, normBufRows),
+        ).not.toThrow();
+        expect(() =>
+          assertDisjointVerifyNormSlices(numDnLayers, maxSpecTokens, maxSpecTokens, 2560, normBufRows - 1),
+        ).toThrow(/exceeds normBuf capacity/);
+      }
+    }
+
+    const rc1Preset = MODEL_PRESETS.find((p) => p.id === 'jtaylorexe/pragma-exp006-rc1');
+    expect(rc1Preset).toBeDefined();
+    expect(rc1Preset?.label).toContain('EXP-006');
+
+    const rc1Manifest = JSON.parse(
+      fs.readFileSync('D:/yours-pragma-lab/05_wgsl_bundles/EXP-006-rc1/manifest.json', 'utf8'),
+    );
+    const resolvedRc1 = resolveModelArch(rc1Manifest);
+    expect(resolvedRc1.vocabSize).toBe(81920);
+    expect(rc1Manifest.slab2Bytes).toBe(131072000);
   });
 });

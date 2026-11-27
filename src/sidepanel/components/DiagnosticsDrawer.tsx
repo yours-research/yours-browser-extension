@@ -218,7 +218,9 @@ export function DiagnosticsDrawer({
               Model:{' '}
               {isGemma4
                 ? 'Gemma 4 E4B QAT (q4f16/q2, Bundled Offline)'
-                : telemetry.modelId.includes('pragma-exp004')
+                : telemetry.modelId.includes('pragma-exp006')
+                  ? 'Pragma-1-4B RC1 (EXP-006, v81920, -254 MiB)'
+                  : telemetry.modelId.includes('pragma-exp004')
                   ? 'Pragma EXP-004 GSPO-RL (v81920, -254 MiB)'
                   : telemetry.modelId.includes('exp003c')
                     ? 'Pragma EXP-003c Tool-QAD (v81920, -254 MiB)'

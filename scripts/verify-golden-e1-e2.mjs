@@ -178,7 +178,7 @@ async function main() {
     );
 
     console.table(results);
-    const failed = results.filter((r) => r.exactMismatches > 0 && r.maxAbsF32Err > 1e-4);
+    const failed = results.filter((r) => r.exactMismatches > 0);
     if (failed.length > 0) {
       console.error('Golden E1/E2 parity failures:', JSON.stringify(failed, null, 2));
       process.exitCode = 1;

@@ -3423,7 +3423,8 @@ export function App() {
                 engineSnapshot.telemetry.vramDeltaMb !== null &&
                 engineSnapshot.telemetry.vramDeltaMb !== 0
                   ? engineSnapshot.telemetry.vramDeltaMb
-                  : engineSnapshot.telemetry.modelId.includes('pragma-exp004') ||
+                  : engineSnapshot.telemetry.modelId.includes('pragma-exp006') ||
+                      engineSnapshot.telemetry.modelId.includes('pragma-exp004') ||
                       engineSnapshot.telemetry.modelId.includes('exp003c')
                     ? -254
                     : null;
