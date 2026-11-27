@@ -36,6 +36,7 @@ export interface WgslRuntimeLoadStats {
   allocatedKvCapacity: number;
   maxSafeKvCapacity: number;
   usingDp4a: boolean;
+  adapterName?: string;
 }
 
 export interface WgslRuntimeEngine extends GpuPrefixSlotBackend {
@@ -102,6 +103,7 @@ export interface WgslRuntimeEngine extends GpuPrefixSlotBackend {
   getTiedTableSlices?(): Array<{ buffer: GPUBuffer; startRow: number; endRow: number }>;
   getDraftAnchorTaps?(): { taps: GPUBuffer; valid: boolean };
   invalidateDraftAnchor?(): void;
+  setCaptureDraftTaps?(enabled: boolean): void;
   flushPendingRollback?(
     point:
       | 'decode-step'

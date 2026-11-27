@@ -53,6 +53,12 @@ import {
   toAdapterOptions,
   type EngineBBenchReport,
 } from './cycle17/bench/engineBHeadBench.ts';
+import {
+  IncrementalTokenDecoder,
+  loadSpecCalibration,
+  saveSpecCalibration,
+  shouldEnableEngineB,
+} from './specCalibration.ts';
 
 const EXP007B_DRAFT_HEAD_SHA256 =
   'b456e39bb8e541809971527ea01092ba6f3f76efba47bc9e75b8b3612dbef3e1';
@@ -209,8 +215,12 @@ export class InferenceEngine {
   private offscreenSpecAdapterPromise: Promise<OffscreenSpecAdapter | null> | null = null;
   private offscreenSpecTokenizerRef: PreTrainedTokenizer | null = null;
   private offscreenSpecDeviceRef: GPUDevice | null = null;
+  private adapterName = 'webgpu-default';
+  private engineBActiveForAdapter = false;
   private measuredChainStepMs: number[] | null = null;
   private measuredEngineBReport: EngineBBenchReport | null = null;
+  private measuredEngineBHeadMs: number | null = null;
+  private measuredRejectPenaltyMs: number | null = null;
   private pendingPhaseEnqueue = new Map<
     string,
     { enqueue: number; bgPrefillActiveAtEnqueue: boolean }
@@ -620,6 +630,7 @@ export class InferenceEngine {
 
       this.tokenizer = tokenizer;
       this.wgslEngine = wgslEngine;
+      this.adapterName = stats.adapterName ?? 'webgpu-default';
       this.eosTokenIds = this.collectEosTokenIds(tokenizer);
       for (const extraId of extraEosIds) {
         this.eosTokenIds.add(extraId);
@@ -646,6 +657,9 @@ export class InferenceEngine {
       this.prefixCache = new PrefixCacheManager(wgslEngine, { maxTabSlots: 8 });
 
       await this.prewarmBaseSystemPrompt();
+      if (!isGemma4) {
+        await this.ensureZeroConfigSpecCalibration();
+      }
 
       const coldLoadMs = performance.now() - startMs;
       const memStats = wgslEngine.getMemoryStats();
@@ -716,6 +730,7 @@ export class InferenceEngine {
       this.offscreenSpecAdapter = null;
     }
     this.offscreenSpecAdapterPromise = null;
+    this.engineBActiveForAdapter = false;
     this.offscreenSpecTokenizerRef = null;
     this.offscreenSpecDeviceRef = null;
     if (this.wgslEngine) {
@@ -1428,6 +1443,179 @@ export class InferenceEngine {
     };
   }
 
+  private async ensureZeroConfigSpecCalibration(): Promise<void> {
+    const engine = this.wgslEngine;
+    const device = engine?.getDevice?.() ?? null;
+    const slices = engine?.getTiedTableSlices?.() ?? [];
+    const totalVocab = slices.reduce((acc, s) => Math.max(acc, s.endRow), 0);
+    if (
+      !engine ||
+      !device ||
+      slices.length === 0 ||
+      totalVocab !== 81920 ||
+      typeof engine.measureSpecStep !== 'function' ||
+      typeof fetch !== 'function'
+    ) {
+      return;
+    }
+    try {
+      const cached = await loadSpecCalibration(this.adapterName, EXP007B_DRAFT_HEAD_SHA256);
+      if (cached) {
+        this.applyMeasuredSpecCalibration(
+          cached.t1Ms,
+          cached.stepMs,
+          cached.headMs,
+          cached.rejectPenaltyMs,
+        );
+        this.log(
+          'info',
+          'offscreen',
+          `Loaded cached spec calibration (${this.adapterName}): t1=${cached.t1Ms.toFixed(2)}ms, headMs=${cached.headMs.toFixed(2)}ms, rejectP=${cached.rejectPenaltyMs.toFixed(2)}ms, engineB=${shouldEnableEngineB(cached.headMs, cached.t1Ms) ? 'enabled' : 'bypassed (Engine A)'}.`,
+        );
+        return;
+      }
+      await this.runFastSpecCalibration();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log('warn', 'offscreen', `Silent spec calibration skipped: ${msg}`);
+    }
+  }
+
+  private applyMeasuredSpecCalibration(
+    t1Ms: number,
+    stepMs: number[],
+    headMs: number,
+    rejectPenaltyMs: number,
+  ): void {
+    this.measuredChainStepMs = [...stepMs];
+    this.measuredEngineBHeadMs = headMs;
+    this.measuredRejectPenaltyMs = rejectPenaltyMs;
+    const t5Ms = stepMs[4] ?? t1Ms * 2.0;
+    this.engineACostModel.t1Ms = t1Ms;
+    this.engineACostModel.slopePerTokenMs = Math.max(0.15 * t1Ms, (t5Ms - t1Ms) / 4);
+    this.engineACostModel.rejectPenaltyMs = Math.max(0.2, rejectPenaltyMs);
+  }
+
+  private async runFastSpecCalibration(): Promise<void> {
+    const engine = this.wgslEngine;
+    const device = engine?.getDevice?.() ?? null;
+    const slices = engine?.getTiedTableSlices?.() ?? [];
+    if (!engine || !device || slices.length === 0 || typeof engine.measureSpecStep !== 'function') {
+      return;
+    }
+    const calSlot = '__spec_calib';
+    const greedy: SamplingOptions = { temperature: 0, topK: 1, topP: 1 };
+    const tCal0 = performance.now();
+    try {
+      engine.setCaptureDraftTaps?.(false);
+      // Warmup & time T(1) across 4 scalar steps from the current/minimal context.
+      if (engine.activeSeqPos === 0) {
+        await engine.prefill([1, 2, 3, 4], {
+          chunkSize: 64,
+          sampling: greedy,
+          pacingMode: 'max-speed',
+          yieldFn: async () => {},
+        });
+      }
+      await engine.saveGpuPrefixSlot(calSlot);
+      const t1Samples: number[] = [];
+      let tok = 10;
+      for (let i = 0; i < 4; i++) {
+        const res = await engine.decodeStep(tok, greedy, 'max-speed');
+        tok = res.nextToken;
+        if (i >= 1) t1Samples.push(res.gpuMs);
+      }
+      t1Samples.sort((a, b) => a - b);
+      const t1Ms = Number((t1Samples[Math.floor(t1Samples.length / 2)] ?? 10.5).toFixed(3));
+
+      // Warmup & measure M=5 verify latency + P9a-P9c reject surcharge via paired steps.
+      await engine.measureSpecStep(5, false);
+      const acceptSamples: number[] = [];
+      const rejectSamples: number[] = [];
+      for (let i = 0; i < 2; i++) {
+        acceptSamples.push(await engine.measureSpecStep(5, false));
+        rejectSamples.push(await engine.measureSpecStep(5, true));
+      }
+      const t5Ms = Number(
+        (acceptSamples.reduce((a, b) => a + b, 0) / acceptSamples.length).toFixed(3),
+      );
+      const t5RejectMs = Number(
+        (rejectSamples.reduce((a, b) => a + b, 0) / rejectSamples.length).toFixed(3),
+      );
+      const rejectPenaltyMs = Number(Math.max(0.2, t5RejectMs - t5Ms).toFixed(3));
+
+      // Time Engine B headMs(k=5) via single-submit chain (1 warmup + 2 reps).
+      const baseStr = resolveExtensionAssetUrl('cycle17/', this.assetBaseUrl);
+      const originFallback =
+        typeof globalThis.location?.href === 'string'
+          ? globalThis.location.href
+          : 'https://extension.invalid/';
+      const cycle17Base = new URL(baseStr.endsWith('/') ? baseStr : `${baseStr}/`, originFallback);
+      const bundle = await loadGdnBundle(new URL('assets/exp007/manifest.json', cycle17Base));
+      const tapsResp = await fetch(new URL('fixtures/trained-exp007/taps.f32', cycle17Base));
+      let headMs = 999;
+      if (bundle && tapsResp.ok) {
+        if (bundle.sha256 !== EXP007B_DRAFT_HEAD_SHA256) {
+          throw new Error('EXP-007b calibration manifest SHA-256 mismatch');
+        }
+        const taps = new Float32Array(await tapsResp.arrayBuffer());
+        const runtime = await GdnDraftRuntime.create(
+          device,
+          bundle,
+          { slices },
+          shaderAssets(new URL('wgsl/', cycle17Base)),
+        );
+        try {
+          const anchor = { taps, rootToken: 271 };
+          await runtime.proposeChain(anchor, 5);
+          const headSamples: number[] = [];
+          for (let i = 0; i < 2; i++) {
+            const h0 = performance.now();
+            await runtime.proposeChain(anchor, 5);
+            headSamples.push(performance.now() - h0);
+          }
+          headSamples.sort((a, b) => a - b);
+          headMs = Number((headSamples[0] ?? 15).toFixed(3));
+        } finally {
+          runtime.dispose();
+        }
+      }
+
+      const slope = Math.max(0.15 * t1Ms, (t5Ms - t1Ms) / 4);
+      const stepMs = [
+        t1Ms,
+        Number((t1Ms + slope).toFixed(3)),
+        Number((t1Ms + 2 * slope).toFixed(3)),
+        Number((t1Ms + 3 * slope).toFixed(3)),
+        t5Ms,
+        Number((t5Ms + slope).toFixed(3)),
+        Number((t5Ms + 2 * slope).toFixed(3)),
+        Number((t5Ms + 3 * slope).toFixed(3)),
+      ];
+
+      this.applyMeasuredSpecCalibration(t1Ms, stepMs, headMs, rejectPenaltyMs);
+      await saveSpecCalibration({
+        adapterName: this.adapterName,
+        dropinSha256: EXP007B_DRAFT_HEAD_SHA256,
+        t1Ms,
+        stepMs,
+        headMs,
+        rejectPenaltyMs,
+        measuredAtIso: new Date().toISOString(),
+      });
+      const calMs = performance.now() - tCal0;
+      this.log(
+        'info',
+        'offscreen',
+        `Silent spec calibration (${calMs.toFixed(0)}ms, ${this.adapterName}): t1=${t1Ms.toFixed(2)}ms, t5=${t5Ms.toFixed(2)}ms, headMs=${headMs.toFixed(2)}ms, rejectP=${rejectPenaltyMs.toFixed(2)}ms, engineB=${shouldEnableEngineB(headMs, t1Ms) ? 'enabled' : 'bypassed (Engine A)'}.`,
+      );
+    } finally {
+      engine.deleteGpuPrefixSlot(calSlot);
+      engine.deleteGpuPrefixSlot('__eb_probe__');
+      await this.resetContext(this.prefixCache?.hasBasePrompt() ?? false);
+    }
+  }
+
   private async getOrCreateOffscreenSpecAdapter(): Promise<OffscreenSpecAdapter | null> {
     const tok = this.tokenizer;
     const engine = this.wgslEngine;
@@ -1470,11 +1658,22 @@ export class InferenceEngine {
         if (this.offscreenSpecAdapter) {
           this.offscreenSpecAdapter.dispose();
         }
+        const effectiveStepMs = this.measuredChainStepMs ?? RC1_CHAIN_STEP_MS;
+        const effectiveT1Ms = effectiveStepMs[0] ?? this.engineACostModel.t1Ms;
+        const effectiveHeadMs =
+          this.measuredEngineBReport?.headMs ?? this.measuredEngineBHeadMs;
+        const effectiveRejectMs =
+          this.measuredEngineBReport?.reject?.rejectPenaltyMs ??
+          this.measuredRejectPenaltyMs ??
+          this.engineACostModel.rejectPenaltyMs;
+        const enableEngineB = shouldEnableEngineB(effectiveHeadMs, effectiveT1Ms);
+        engine.setCaptureDraftTaps?.(enableEngineB);
+
         const measuredOpts = this.measuredEngineBReport
           ? (() => {
               const base = toAdapterOptions(
                 this.measuredEngineBReport,
-                this.measuredChainStepMs ?? RC1_CHAIN_STEP_MS,
+                effectiveStepMs,
                 this.engineACostModel.rejectPenaltyMs,
               );
               return {
@@ -1484,9 +1683,12 @@ export class InferenceEngine {
             })()
           : {
               profile: {
-                stepMs: this.measuredChainStepMs ?? RC1_CHAIN_STEP_MS,
-                rejectPenaltyMs: this.engineACostModel.rejectPenaltyMs,
+                stepMs: effectiveStepMs,
+                rejectPenaltyMs: effectiveRejectMs,
               },
+              ...(effectiveHeadMs !== null
+                ? { cutoff: { headMs: effectiveHeadMs, valueGate: true } }
+                : { cutoff: { valueGate: true } }),
             };
         const adapter = await OffscreenSpecAdapter.create({
           wasm: wasmBytes,
@@ -1500,17 +1702,22 @@ export class InferenceEngine {
                   }),
           },
           ...measuredOpts,
-          engineC: {
-            manifestUrl: new URL('assets/exp007/manifest.json', cycle17Base),
-            expectedSha256: EXP007B_DRAFT_HEAD_SHA256,
-            device,
-            table: { slices },
-            readShader: shaderAssets(new URL('wgsl/', cycle17Base)),
-          },
+          ...(enableEngineB
+            ? {
+                engineC: {
+                  manifestUrl: new URL('assets/exp007/manifest.json', cycle17Base),
+                  expectedSha256: EXP007B_DRAFT_HEAD_SHA256,
+                  device,
+                  table: { slices },
+                  readShader: shaderAssets(new URL('wgsl/', cycle17Base)),
+                },
+              }
+            : {}),
         });
         this.offscreenSpecAdapter = adapter;
         this.offscreenSpecTokenizerRef = tok;
         this.offscreenSpecDeviceRef = device;
+        this.engineBActiveForAdapter = enableEngineB;
         return adapter;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1800,6 +2007,9 @@ export class InferenceEngine {
       const specAdapter = useSpeculative ? await this.getOrCreateOffscreenSpecAdapter() : null;
       const speculator =
         useSpeculative && !specAdapter ? this.getOrCreateEngineASpeculator() : null;
+      this.wgslEngine?.setCaptureDraftTaps?.(
+        Boolean(useSpeculative && specAdapter && this.engineBActiveForAdapter),
+      );
       if (useSpeculative) {
         const seedIds = [...groundingTokens, ...sessionTokenIds];
         // Cap initial SAM ingest at trailing 8192 tokens so turn startup stays <3ms on 32K+ prompts
@@ -1823,6 +2033,7 @@ export class InferenceEngine {
 
       let emittedText = '';
       let finishReason: 'stop' | 'length' | 'abort' = 'length';
+      const incrementalDecoder = new IncrementalTokenDecoder(this.tokenizer!, promptOpensThink);
       const decodeStartMs = performance.now();
       phaseMarks.decodeStart = performance.timeOrigin + decodeStartMs;
 
@@ -1876,14 +2087,11 @@ export class InferenceEngine {
           speculator.observe([tok], true);
         }
 
-        const decodedFull = decodeGeneratedText(this.tokenizer!, generatedIds, {
-          preOpenedThink: promptOpensThink,
-        });
-        // Hold back trailing replacement char U+FFFD if a multi-byte UTF-8 sequence spans tokens.
-        const safeEnd = decodedFull.endsWith('\uFFFD') ? decodedFull.length - 1 : decodedFull.length;
-        if (safeEnd > emittedText.length) {
-          const delta = decodedFull.slice(emittedText.length, safeEnd);
-          emittedText = decodedFull.slice(0, safeEnd);
+        incrementalDecoder.appendToken(tok);
+        const safeText = incrementalDecoder.getSafeEmittedText();
+        if (safeText.length > emittedText.length) {
+          const delta = safeText.slice(emittedText.length);
+          emittedText = safeText;
           if (phaseMarks.firstDelta === undefined) {
             phaseMarks.firstDelta = epochNow();
           }
@@ -2776,13 +2984,7 @@ export class InferenceEngine {
 
       const ratioT5ToT1 = Number((t5Ms / Math.max(0.01, t1Ms)).toFixed(3));
       const ratioT8ToT1 = Number((t8Ms / Math.max(0.01, t1Ms)).toFixed(3));
-      this.engineACostModel.t1Ms = t1Ms;
-      this.engineACostModel.slopePerTokenMs = Math.max(0.15 * t1Ms, (t5Ms - t1Ms) / 4);
-      this.engineACostModel.rejectPenaltyMs = Math.max(
-        0.2,
-        measuredEbReport?.reject?.rejectPenaltyMs ?? t5RejectMs - t5Ms,
-      );
-      this.measuredChainStepMs = [
+      const stepMs = [
         t1Ms,
         t2Ms,
         t3Ms,
@@ -2792,14 +2994,34 @@ export class InferenceEngine {
         t5Ms + (2 * (t8Ms - t5Ms)) / 3,
         t8Ms,
       ];
+      const rejectP = Math.max(
+        0.2,
+        measuredEbReport?.reject?.rejectPenaltyMs ?? t5RejectMs - t5Ms,
+      );
+      this.applyMeasuredSpecCalibration(
+        t1Ms,
+        stepMs,
+        measuredEbReport?.headMs ?? this.measuredEngineBHeadMs ?? 999,
+        rejectP,
+      );
       if (measuredEbReport) {
         this.measuredEngineBReport = measuredEbReport;
+        await saveSpecCalibration({
+          adapterName: this.adapterName,
+          dropinSha256: EXP007B_DRAFT_HEAD_SHA256,
+          t1Ms,
+          stepMs,
+          headMs: measuredEbReport.headMs,
+          rejectPenaltyMs: rejectP,
+          measuredAtIso: new Date().toISOString(),
+        });
       }
       if (this.offscreenSpecAdapter) {
         this.offscreenSpecAdapter.dispose();
         this.offscreenSpecAdapter = null;
       }
       this.offscreenSpecAdapterPromise = null;
+      this.engineBActiveForAdapter = false;
       if (tree) {
         const treeSlope = Math.max(0.15 * t1Ms, (tree.t5Ms - tree.t2Ms) / 3);
         this.engineATreeCostModel.t1Ms = Math.max(t1Ms, tree.t2Ms - treeSlope);

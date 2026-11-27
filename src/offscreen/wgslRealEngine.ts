@@ -139,6 +139,7 @@ export interface WgslLoadStats {
   hasDp4a: boolean;
   usingDp4a: boolean;
   maxBufferSize: number;
+  adapterName?: string;
 }
 
 export interface WgslCpuSnapshot {
@@ -383,6 +384,7 @@ export class WgslQwen35Engine {
   private draftTapBuf!: GpuBufferLike;
   private verifyTapScratchBuf!: GpuBufferLike;
   private draftTapValid = false;
+  private captureDraftTaps = false;
   private rollback = new DeferredRollback<unknown>((cbs) => this.device!.queue.submit(cbs));
   private verifyLogitsBuf!: GpuBufferLike;
   private verifyTokOutBuf!: GpuBufferLike;
@@ -700,6 +702,7 @@ export class WgslQwen35Engine {
       this.wasm = wasm;
       const {
         device,
+        adapterName,
         hasShaderF16,
         hasSubgroups,
         hasDp4a,
@@ -1561,6 +1564,7 @@ export class WgslQwen35Engine {
         hasDp4a,
         usingDp4a: this.usingDp4a,
         maxBufferSize,
+        adapterName,
       };
     } catch (err) {
       this.dispose();
@@ -1612,6 +1616,13 @@ export class WgslQwen35Engine {
 
   invalidateDraftAnchor(): void {
     this.draftTapValid = false;
+  }
+
+  setCaptureDraftTaps(enabled: boolean): void {
+    this.captureDraftTaps = enabled;
+    if (!enabled) {
+      this.draftTapValid = false;
+    }
   }
 
   flushPendingRollback(point: RollbackFlushPoint): void {
@@ -2713,10 +2724,7 @@ export class WgslQwen35Engine {
         push(this.swigluPipe, this.pBgSwiGlu, [M * I, 0, M * I, 0, 0, 0, 0, 0], Math.ceil((M * I) / 256));
         push(this.gemmPipe, bgAttnToHidden, [M, H, I, wDown, 0, 0, 1, 0], Math.ceil(H / 64), mTiles);
       }
-      if (computeLogits && L > 31 && (l === 3 || l === 15 || l === 31)) {
-        prefillTapBoundaries.set(steps.length, l === 3 ? 0 : l === 15 ? 1 : 2);
-      }
-      if (computeLogits && L > 31 && (l === 3 || l === 15 || l === 31)) {
+      if (this.captureDraftTaps && computeLogits && L > 31 && (l === 3 || l === 15 || l === 31)) {
         prefillTapBoundaries.set(steps.length, l === 3 ? 0 : l === 15 ? 1 : 2);
       }
       if ((l + 1) % layersPerSlice === 0 || l === L - 1) {
@@ -2802,7 +2810,7 @@ export class WgslQwen35Engine {
         const tokId = new Uint32Array(this.staging4B.getMappedRange())[0];
         this.staging4B.unmap();
         this.seqPos += M;
-        this.draftTapValid = L > 31 && Boolean(this.draftTapBuf);
+        this.draftTapValid = this.captureDraftTaps && L > 31 && Boolean(this.draftTapBuf);
         return tokId;
       }
       const tSlice = performance.now();
@@ -2828,7 +2836,7 @@ export class WgslQwen35Engine {
     if (!computeLogits) {
       return null;
     }
-    this.draftTapValid = L > 31 && Boolean(this.draftTapBuf);
+    this.draftTapValid = this.captureDraftTaps && L > 31 && Boolean(this.draftTapBuf);
     const logits = await this.readFullLogits();
     return sampleNextToken(logits, sampling);
   }
@@ -2949,7 +2957,7 @@ export class WgslQwen35Engine {
       throw new Error('Decode dispatch plan is empty.');
     }
     const tapStepEnds = new Map<number, number>();
-    if (this.arch.numLayers > 31 && this.draftTapBuf) {
+    if (this.captureDraftTaps && this.arch.numLayers > 31 && this.draftTapBuf) {
       tapStepEnds.set(this.decodeLayerEndStepIndices[3]!, 0);
       tapStepEnds.set(this.decodeLayerEndStepIndices[15]!, 1);
       tapStepEnds.set(this.decodeLayerEndStepIndices[31]!, 2);
@@ -3020,7 +3028,7 @@ export class WgslQwen35Engine {
     }
 
     this.seqPos += 1;
-    this.draftTapValid = this.arch.numLayers > 31 && Boolean(this.draftTapBuf);
+    this.draftTapValid = this.captureDraftTaps && this.arch.numLayers > 31 && Boolean(this.draftTapBuf);
     this.recordDecodeGpuStepMs(gpuMs);
 
     const nextToken =
@@ -3481,7 +3489,7 @@ export class WgslQwen35Engine {
     enc.copyBufferToBuffer(this.dnConvBuf, 0, this.dnConvBackupBuf, 0, dnCount * this.dnConvSingleBytes);
 
     let pass = enc.beginComputePass();
-    const captureTaps = L > 31 && Boolean(this.verifyTapScratchBuf);
+    const captureTaps = this.captureDraftTaps && L > 31 && Boolean(this.verifyTapScratchBuf);
     for (let i = 0; i < plan.steps.length; i++) {
       const st = plan.steps[i]!;
       pass.setPipeline(st.pipeline);
@@ -3534,7 +3542,7 @@ export class WgslQwen35Engine {
     this.verifyStaging64B.unmap();
 
     // Update packed layers [3, 15, 31] anchor taps from the last committed accepted row BEFORE any rollback
-    if (L > 31 && this.draftTapBuf && this.verifyTapScratchBuf) {
+    if (this.captureDraftTaps && L > 31 && this.draftTapBuf && this.verifyTapScratchBuf) {
       const tapEnc = device.createCommandEncoder();
       for (let tapSlot = 0; tapSlot < 3; tapSlot++) {
         tapEnc.copyBufferToBuffer(

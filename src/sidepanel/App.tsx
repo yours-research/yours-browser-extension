@@ -2319,7 +2319,7 @@ export function App() {
   }, [quotedSelection, client, showToast]);
 
   const applyModelParams = useCallback(
-    (next: ModelParametersValue, persist = true) => {
+    (next: ModelParametersValue, persist = true, explicitGpuPacingChange = false) => {
       setModelParams(next);
       const enableThinking =
         next.thinkingMode === 'deep'
@@ -2327,7 +2327,13 @@ export function App() {
           : next.thinkingMode === 'fast'
             ? false
             : DEFAULT_ENGINE_CONFIG.enableThinking;
-      const gpuPacingMode = next.gpuPacing === 'smooth' ? 'smooth-ui' : 'balanced';
+      const currentPacing = client.getSnapshot().config.gpuPacingMode;
+      const gpuPacingMode =
+        next.gpuPacing === 'smooth'
+          ? 'smooth-ui'
+          : !explicitGpuPacingChange && currentPacing === 'max-speed'
+            ? 'max-speed'
+            : 'balanced';
       client.updateConfig({
         enableThinking,
         gpuPacingMode,
@@ -3555,7 +3561,7 @@ export function App() {
             }
             gpuPacing={modelParams.gpuPacing}
             onGpuPacingChange={(pacing: UiGpuPacingMode) =>
-              applyModelParams({ ...modelParams, gpuPacing: pacing })
+              applyModelParams({ ...modelParams, gpuPacing: pacing }, true, true)
             }
             temperature={modelParams.temperature}
             onTemperatureChange={(temperature) =>
@@ -3567,7 +3573,11 @@ export function App() {
             maxTokensLimit={Math.min(8192, engineSnapshot.config.wgslMaxContext || 8192)}
             onMaxTokensChange={(maxTokens) => applyModelParams({ ...modelParams, maxTokens })}
             onReset={(defaults) => {
-              applyModelParams(defaults);
+              applyModelParams(
+                { ...defaults, temperature: DEFAULT_ENGINE_CONFIG.temperature },
+                true,
+                true,
+              );
               showToast('Inference parameters reset to defaults');
             }}
           />

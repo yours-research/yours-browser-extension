@@ -148,6 +148,7 @@ export function getWgslShaderSource(wasm: WasmEngineExports, shaderId: number): 
 
 export async function acquireWgslDevice(): Promise<{
   device: GpuDeviceLike;
+  adapterName: string;
   hasShaderF16: boolean;
   hasSubgroups: boolean;
   hasDp4a: boolean;
@@ -170,9 +171,24 @@ export async function acquireWgslDevice(): Promise<{
     throw new Error('No WebGPU adapter returned.');
   }
   const adapterExtra = adapter as unknown as {
-    info?: { subgroupMinSize?: number };
+    info?: {
+      vendor?: string;
+      architecture?: string;
+      device?: string;
+      description?: string;
+      subgroupMinSize?: number;
+    };
     limits?: { minSubgroupSize?: number };
   };
+  const adapterNameParts = [
+    adapterExtra.info?.vendor,
+    adapterExtra.info?.architecture,
+    adapterExtra.info?.device,
+    adapterExtra.info?.description,
+  ]
+    .map((part) => (typeof part === 'string' ? part.trim() : ''))
+    .filter(Boolean);
+  const adapterName = adapterNameParts.join('|') || 'webgpu-default';
   const subgroupMinSize = Number(
     adapterExtra.info?.subgroupMinSize ?? adapterExtra.limits?.minSubgroupSize ?? 32,
   );
@@ -218,6 +234,7 @@ export async function acquireWgslDevice(): Promise<{
 
   return {
     device,
+    adapterName,
     hasShaderF16: grantedFeatures.has('shader-f16'),
     hasSubgroups: grantedFeatures.has('subgroups'),
     hasDp4a,
